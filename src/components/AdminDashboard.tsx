@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { FolderOpen, Settings, Users, FileText, Undo, Plus, Minus, Search, MousePointerClick, Filter } from "lucide-react";
 import { api } from "../lib/api";
 import { fileToBase64, parseExcel, getSheetData, applyEditsToWorkbook } from "../lib/excel";
-import { getCellMergeInfo, getCellExcelJSStyle, getColumnWidth, getRowHeight, isCellInRange } from "../lib/utils-excel";
+import { SpreadsheetViewer } from "./SpreadsheetViewer";
 import { insertRowWithExcelJS, deleteRowWithExcelJS, insertColWithExcelJS, deleteColWithExcelJS, loadExcelJSWorkbook, updateMergedCellInExcelJS } from "../lib/exceljs-helper";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -673,125 +673,30 @@ export function AdminDashboard() {
               ))}
             </div>
             <div 
-              className="flex-1 overflow-auto bg-white p-2 relative"
+              className="flex-1 overflow-hidden flex flex-col relative"
               onMouseUp={handleCellMouseUp}
               onMouseLeave={() => { if (dragStart) handleCellMouseUp(); }}
             >
-              <table className="w-full border-collapse" style={{ tableLayout: "fixed" }}>
-                <thead>
-                  <tr className="shadow-3xs">
-                    <th className="border border-slate-300 p-2 bg-slate-200 w-12 text-slate-500 font-bold text-xs text-center select-none sticky top-0 left-0 z-20" style={{ width: "48px", minWidth: "48px", maxWidth: "48px" }}>#</th>
-                    {Array.from({ length: Math.max(10, sheetData[0]?.length || 0) }).map((_, i) => {
-                      const colLetter = XLSX.utils.encode_col(i);
-                      const currentRange = ranges[activeSheet] || "";
-                      const isSelected = currentRange.includes(`${colLetter}:${colLetter}`);
-                      const ejWs = exceljsWorkbook?.getWorksheet(activeSheet);
-                      const ws = workbook?.Sheets?.[activeSheet];
-                      const colWidth = getColumnWidth(ejWs, ws, i);
-                      return (
-                        <th
-                          key={i}
-                          className={`border border-slate-300 p-2.5 text-center cursor-pointer font-extrabold text-xs tracking-wider transition-colors select-none sticky top-0 z-10 ${isSelected
-                            ? 'bg-blue-600 text-white border-blue-700 hover:bg-blue-700'
-                            : 'bg-slate-200 text-slate-700 hover:text-indigo-700 hover:bg-indigo-50'
-                            }`}
-                          style={{ width: `${colWidth}px`, minWidth: `${colWidth}px`, maxWidth: `${colWidth}px` }}
-                          onClick={() => handleColumnClick(i)}
-                        >
-                          {colLetter}
-                        </th>
-                      );
-                    })}
-                  </tr>
-                </thead>
-                <tbody>
-                  {sheetData.slice(0, previewLimit === -1 ? sheetData.length : previewLimit).map((row, r) => {
-                    const ejWs = exceljsWorkbook?.getWorksheet(activeSheet);
-                    const ws = workbook?.Sheets?.[activeSheet];
-                    const rowHeight = getRowHeight(ejWs, ws, r);
-
-                    return (
-                      <tr key={r} style={rowHeight ? { height: `${rowHeight}px` } : undefined}>
-                        <td className="border border-slate-300 p-2 bg-slate-100 text-center font-medium text-slate-500 select-none sticky left-0 z-10" style={{ width: "48px", minWidth: "48px", maxWidth: "48px" }}>{r + 1}</td>
-                        {Array.from({ length: Math.max(10, sheetData[0]?.length || 0) }).map((_, c) => {
-                          const cellRef = XLSX.utils.encode_cell({ r, c });
-                          const currentRange = ranges[activeSheet] || "";
-                          const inRange = isCellInRange(cellRef, currentRange);
-
-                          const mergeInfo = getCellMergeInfo(ws, r, c, ejWs);
-                          if (mergeInfo.shouldSkip) return null;
-                          const cellStyle = getCellExcelJSStyle(ejWs, r, c);
-                          const cellWidth = getColumnWidth(ejWs, ws, c);
-
-                          const totalWidth = (mergeInfo.colSpan && mergeInfo.colSpan > 1) ? (() => {
-                            let w = 0;
-                            for (let offset = 0; offset < (mergeInfo.colSpan || 1); offset++) {
-                              w += getColumnWidth(ejWs, ws, c + offset);
-                            }
-                            return w;
-                          })() : cellWidth;
-
-                          const shouldTruncate = totalWidth < 120;
-                          const isInSelectedBlock = isInDragSelection(r, c);
-
-                          let baseBgColor = cellStyle.fillColor || "transparent";
-                          if (baseBgColor === "transparent" || baseBgColor === "#ffffff") {
-                            baseBgColor = inRange ? "#ecfdf5" : "transparent"; // Light green for editable
-                          }
-                          const finalBgColor = isInSelectedBlock ? "rgba(79, 70, 229, 0.15)" : baseBgColor;
-
-                          const finalTdStyle: any = {
-                            ...cellStyle,
-                            backgroundColor: finalBgColor,
-                            width: `${totalWidth}px`,
-                            minWidth: `${totalWidth}px`,
-                            maxWidth: `${totalWidth}px`,
-                          };
-
-                          const spanStyle = {
-                            textAlign: finalTdStyle.textAlign || 'left',
-                            fontWeight: finalTdStyle.fontWeight,
-                            fontStyle: finalTdStyle.fontStyle,
-                            textDecoration: finalTdStyle.textDecoration,
-                            color: finalTdStyle.color || '#1e293b',
-                            fontSize: finalTdStyle.fontSize,
-                            writingMode: finalTdStyle.writingMode,
-                            textOrientation: finalTdStyle.textOrientation,
-                            transform: finalTdStyle.transform,
-                            transformOrigin: finalTdStyle.transformOrigin,
-                            whiteSpace: finalTdStyle.whiteSpace || 'pre-wrap',
-                            wordBreak: finalTdStyle.wordBreak || 'break-word',
-                          };
-
-                          return (
-                            <td
-                              key={c}
-                              className={`border border-slate-300 p-2 cursor-crosshair ${shouldTruncate ? 'truncate' : ''}`}
-                              style={finalTdStyle}
-                              title={sheetData[r]?.[c] || ""}
-                              rowSpan={mergeInfo.rowSpan}
-                              colSpan={mergeInfo.colSpan}
-                              onMouseDown={() => handleCellMouseDown(r, c)}
-                              onMouseEnter={() => handleCellMouseEnter(r, c)}
-                            >
-                              <span style={spanStyle}>
-                                {sheetData[r]?.[c] || ""}
-                              </span>
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    );
-                  })}
-                  {sheetData.length === 0 && (
-                    <tr>
-                      <td colSpan={Math.max(11, (sheetData[0]?.length || 0) + 1)} className="border p-8 text-center text-slate-400 font-semibold bg-white">
-                        Không có dữ liệu hiển thị. Hãy chèn dòng đầu tiên bằng chức năng trên!
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+              <SpreadsheetViewer
+                workbook={workbook}
+                exceljsWorkbook={exceljsWorkbook}
+                sheetData={sheetData}
+                activeSheet={activeSheet}
+                mode="admin"
+                editableRange={ranges[activeSheet] || ""}
+                selectedRange={(() => {
+                  if (!dragStart || !dragEnd) return "";
+                  const r1 = Math.min(dragStart.r, dragEnd.r);
+                  const r2 = Math.max(dragStart.r, dragEnd.r);
+                  const c1 = Math.min(dragStart.c, dragEnd.c);
+                  const c2 = Math.max(dragStart.c, dragEnd.c);
+                  return `${XLSX.utils.encode_cell({ r: r1, c: c1 })}:${XLSX.utils.encode_cell({ r: r2, c: c2 })}`;
+                })()}
+                previewLimit={previewLimit}
+                onColumnClick={handleColumnClick}
+                onCellMouseDown={handleCellMouseDown}
+                onCellMouseEnter={handleCellMouseEnter}
+              />
             </div>
             <div className="bg-slate-50 border-t px-4 py-1.5 shrink-0 flex justify-between items-center text-[11px] text-slate-500 font-medium">
               <span>Đang hiển thị {previewLimit === -1 ? sheetData.length : Math.min(previewLimit, sheetData.length)} / {sheetData.length} dòng.</span>

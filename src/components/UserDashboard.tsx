@@ -2,8 +2,9 @@ import { useState, useEffect } from "react";
 import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
 import { parseExcel, getSheetData, applyEditsToWorkbook, downloadBase64File } from "../lib/excel";
-import { isCellInRange, getCellMergeInfo, getCellExcelJSStyle, getColumnWidth, getRowHeight } from "../lib/utils-excel";
-import { loadExcelJSWorkbook, workbookToBase64, updateMergedCellInExcelJS } from "../lib/exceljs-helper";
+import { isCellInRange } from "../lib/utils-excel";
+import { loadExcelJSWorkbook, updateMergedCellInExcelJS, workbookToBase64 } from "../lib/exceljs-helper";
+import { SpreadsheetViewer } from "./SpreadsheetViewer";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
@@ -27,7 +28,7 @@ export function UserDashboard() {
   const [activeSheet, setActiveSheet] = useState<string>("");
   const [edits, setEdits] = useState<any[]>([]);
   const [selectedColumn, setSelectedColumn] = useState<number | null>(null);
-  const [editingCell, setEditingCell] = useState<{ r: number; c: number; value: string } | null>(null);
+
   const [searchQ, setSearchQ] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
 
@@ -87,48 +88,7 @@ export function UserDashboard() {
     setSelectedColumn(null);
   };
 
-  const flushActiveEdit = async (activeWb = exceljsWorkbook, activeSheetName = activeSheet) => {
-    if (!editingCell || !activeWb || locked) return activeWb;
-    const { r, c, value } = editingCell;
-    const cellRef = XLSX.utils.encode_cell({ r, c });
-    const rangeStr = selectedProject?.editableRanges?.[activeSheetName];
 
-    if (isCellInRange(cellRef, rangeStr)) {
-      const wsXLSX = workbook?.Sheets[activeSheetName];
-      const cellObj = wsXLSX ? wsXLSX[cellRef] : null;
-      const oldValue = cellObj && cellObj.v !== undefined && cellObj.v !== null ? String(cellObj.v) : "";
-
-      if (oldValue !== value) {
-        const editData = {
-          userId: user?.id,
-          username: user?.username,
-          sheetName: activeSheetName,
-          cell: cellRef,
-          oldValue,
-          newValue: value,
-        };
-
-        try {
-          api.saveEdit(selectedProject.id, editData).catch(e => console.error("Save edit background error:", e));
-          setEdits(prev => [...prev, editData]);
-
-          if (workbook) {
-            applyEditsToWorkbook(workbook, [editData]);
-            setSheetData(getSheetData(workbook, activeSheetName));
-          }
-
-          const ejWs = activeWb.getWorksheet(activeSheetName);
-          if (ejWs) {
-            updateMergedCellInExcelJS(ejWs, cellRef, value);
-          }
-        } catch (e) {
-          console.error(e);
-        }
-      }
-    }
-    setEditingCell(null);
-    return activeWb;
-  };
 
   const handleCellChange = async (r: number, c: number, newValue: string) => {
     if (!selectedProject || !workbook || !exceljsWorkbook) return;
@@ -246,8 +206,7 @@ export function UserDashboard() {
   const handleExport = async () => {
     if (!selectedProject || !exceljsWorkbook) return;
     try {
-      const refreshedWb = await flushActiveEdit();
-      const base64 = await workbookToBase64(refreshedWb);
+      const base64 = await workbookToBase64(exceljsWorkbook);
       downloadBase64File(base64, selectedProject.name?.replace(/\.xlsx$/i, "") || "baogia");
       toast.success("Đã tải Excel (đã áp dụng các ô bạn điền). Bản gốc trên hệ thống không đổi.");
     } catch (e) {
@@ -406,147 +365,18 @@ export function UserDashboard() {
                 </button>
               ))}
             </div>
-            <div className="flex-1 overflow-auto bg-white p-2 relative">
-              <table className="w-full border-collapse" style={{ tableLayout: "fixed" }}>
-                <thead>
-                  <tr className="shadow-3xs">
-                    <th className="border border-slate-300 p-2 bg-slate-200 w-12 text-slate-500 font-bold text-xs text-center select-none sticky top-0 left-0 z-20" style={{ width: "48px", minWidth: "48px", maxWidth: "48px" }}>#</th>
-                    {Array.from({ length: Math.max(10, sheetData[0]?.length || 0) }).map((_, i) => {
-                      const ejWs = exceljsWorkbook?.getWorksheet(activeSheet);
-                      const ws = workbook?.Sheets?.[activeSheet];
-                      const colWidth = getColumnWidth(ejWs, ws, i);
-                      return (
-                        <th
-                          key={i}
-                          className={`border border-slate-300 p-2.5 text-center cursor-pointer font-extrabold text-xs tracking-wider transition-colors select-none sticky top-0 z-10 ${selectedColumn === i
-                            ? 'bg-blue-200 text-blue-900 border-blue-300'
-                            : 'bg-slate-200 text-slate-700 hover:text-indigo-700 hover:bg-indigo-50'
-                            }`}
-                          style={{ width: `${colWidth}px`, minWidth: `${colWidth}px`, maxWidth: `${colWidth}px` }}
-                          onClick={() => setSelectedColumn(selectedColumn === i ? null : i)}
-                        >
-                          {XLSX.utils.encode_col(i)}
-                        </th>
-                      );
-                    })}
-                  </tr>
-                </thead>
-                <tbody>
-                  {Array.from({ length: Math.max(20, sheetData.length) }).map((_, r) => {
-                    const ejWs = exceljsWorkbook?.getWorksheet(activeSheet);
-                    const ws = workbook?.Sheets?.[activeSheet];
-                    const rowHeight = getRowHeight(ejWs, ws, r);
-
-                    return (
-                      <tr key={r} style={rowHeight ? { height: `${rowHeight}px` } : undefined}>
-                        <td className="border border-slate-300 p-2 bg-slate-100 text-center font-medium text-slate-500 select-none sticky left-0 z-10" style={{ width: "48px", minWidth: "48px", maxWidth: "48px" }}>{r + 1}</td>
-                        {Array.from({ length: Math.max(10, sheetData[0]?.length || 0) }).map((_, c) => {
-                          const cellRef = XLSX.utils.encode_cell({ r, c });
-                          const rangeStr = selectedProject.editableRanges?.[activeSheet];
-                          const isEditable = !locked && isCellInRange(cellRef, rangeStr);
-                          const val = sheetData[r]?.[c] || "";
-                          const isSelected = selectedColumn === c;
-
-                          const mergeInfo = getCellMergeInfo(ws, r, c, ejWs);
-                          if (mergeInfo.shouldSkip) return null;
-                          const cellStyle = getCellExcelJSStyle(ejWs, r, c);
-                          const cellWidth = getColumnWidth(ejWs, ws, c);
-
-                          const totalWidth = (mergeInfo.colSpan && mergeInfo.colSpan > 1) ? (() => {
-                            let w = 0;
-                            for (let offset = 0; offset < (mergeInfo.colSpan || 1); offset++) {
-                              w += getColumnWidth(ejWs, ws, c + offset);
-                            }
-                            return w;
-                          })() : cellWidth;
-
-                          const shouldTruncate = totalWidth < 120;
-                          
-                          let baseBgColor = cellStyle.fillColor || "transparent";
-                          if (baseBgColor === "transparent" || baseBgColor === "#ffffff") {
-                            baseBgColor = isEditable ? "#ecfdf5" : "transparent"; // Light green for editable
-                          }
-                          const finalBgColor = isSelected ? "rgba(191, 219, 254, 0.5)" : baseBgColor;
-
-                          const finalTdStyle: any = {
-                            ...cellStyle,
-                            backgroundColor: finalBgColor,
-                            width: `${totalWidth}px`,
-                            minWidth: `${totalWidth}px`,
-                            maxWidth: `${totalWidth}px`,
-                          };
-
-                          const spanStyle = {
-                            textAlign: finalTdStyle.textAlign || 'left',
-                            fontWeight: finalTdStyle.fontWeight,
-                            fontStyle: finalTdStyle.fontStyle,
-                            textDecoration: finalTdStyle.textDecoration,
-                            color: finalTdStyle.color || '#1e293b',
-                            fontSize: finalTdStyle.fontSize,
-                            writingMode: finalTdStyle.writingMode,
-                            textOrientation: finalTdStyle.textOrientation,
-                            transform: finalTdStyle.transform,
-                            transformOrigin: finalTdStyle.transformOrigin,
-                            whiteSpace: finalTdStyle.whiteSpace || 'pre-wrap',
-                            wordBreak: finalTdStyle.wordBreak || 'break-word',
-                          };
-
-                          return (
-                            <td
-                              key={c}
-                              className={`border border-slate-300 p-2 ${isEditable ? "cursor-text hover:outline hover:outline-2 hover:outline-indigo-500 hover:-outline-offset-2" : "cursor-not-allowed"} ${shouldTruncate ? 'truncate' : ''}`}
-                              style={finalTdStyle}
-                              title={val}
-                              rowSpan={mergeInfo.rowSpan}
-                              colSpan={mergeInfo.colSpan}
-                              onClick={() => {
-                                if (isEditable) {
-                                  setEditingCell({ r, c, value: val });
-                                } else {
-                                  if (locked) toast.error("Đã khóa, không thể sửa");
-                                  else toast.error("Ô này không được cấp quyền sửa");
-                                }
-                              }}
-                            >
-                              {editingCell?.r === r && editingCell?.c === c ? (
-                                <textarea
-                                  // eslint-disable-next-line jsx-a11y/no-autofocus
-                                  autoFocus
-                                  className="w-full h-full p-1 border-2 border-indigo-500 rounded bg-white shadow-inner focus:outline-none text-slate-800 resize-none min-h-[60px]"
-                                  value={editingCell.value}
-                                  onChange={(e) => setEditingCell({ ...editingCell, value: e.target.value })}
-                                  onBlur={() => { flushActiveEdit(); setEditingCell(null); }}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter" && !e.shiftKey) {
-                                      e.preventDefault();
-                                      flushActiveEdit();
-                                      setEditingCell(null);
-                                    } else if (e.key === "Escape") {
-                                      setEditingCell(null);
-                                    }
-                                  }}
-                                />
-                              ) : (
-                                <span style={spanStyle}>
-                                  {val}
-                                </span>
-                              )}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    );
-                  })}
-                  {sheetData.length === 0 && (
-                    <tr>
-                      <td colSpan={Math.max(11, (sheetData[0]?.length || 0) + 1)} className="border p-8 text-center text-slate-400 font-semibold bg-white">
-                        Không có dữ liệu hiển thị.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+            <SpreadsheetViewer
+              workbook={workbook}
+              exceljsWorkbook={exceljsWorkbook}
+              sheetData={sheetData}
+              activeSheet={activeSheet}
+              mode="user"
+              locked={locked}
+              editableRange={selectedProject.editableRanges?.[activeSheet] || ""}
+              selectedColumn={selectedColumn}
+              onColumnClick={(i) => setSelectedColumn(selectedColumn === i ? null : i)}
+              onCellEdit={handleCellChange}
+            />
             {locked && (
               <div className="bg-amber-50 border-t border-amber-200 px-4 py-2 shrink-0 flex items-center justify-center text-amber-700 text-xs font-bold gap-2">
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
