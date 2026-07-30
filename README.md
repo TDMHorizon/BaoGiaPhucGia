@@ -1,20 +1,25 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# Hệ Thống Quản Lý Báo Giá - Phúc Gia
 
-# Run and deploy your AI Studio app
+Hệ thống quản lý báo giá và tạo form nhập liệu Excel nội bộ.
 
-This contains everything you need to run your app locally.
+## Chức Năng Chính
+- Đăng nhập và phân quyền người dùng (Admin, Manager, User).
+- Quản lý danh sách dự án, báo giá.
+- Hỗ trợ tạo và chỉnh sửa form điền liệu Excel trực tiếp.
+- Lưu trữ lịch sử chỉnh sửa và tải về file báo giá hoàn thiện.
 
-View your app in AI Studio: https://ai.studio/apps/02504ca4-abe6-41c4-8bd0-cad2fd74e319
+## Cài Đặt & Khởi Chạy (Local)
 
-## Run Locally
+**Yêu cầu:** Node.js
 
-**Prerequisites:**  Node.js
+1. Cài đặt các thư viện cần thiết:
+   ```bash
+   npm install
+   ```
 
+2. Khởi chạy dự án:
+   ```bash
+   npm run dev
+   ```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+Dự án sẽ tự động chạy song song Backend (API) và Frontend tại địa chỉ http://localhost:3000.
