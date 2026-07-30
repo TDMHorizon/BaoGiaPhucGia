@@ -114,6 +114,7 @@ export function UserDashboard() {
 
           if (workbook) {
             applyEditsToWorkbook(workbook, [editData]);
+            setSheetData(getSheetData(workbook, activeSheetName));
           }
 
           const ejWs = activeWb.getWorksheet(activeSheetName);
@@ -486,8 +487,8 @@ export function UserDashboard() {
                             textOrientation: finalTdStyle.textOrientation,
                             transform: finalTdStyle.transform,
                             transformOrigin: finalTdStyle.transformOrigin,
-                            whiteSpace: finalTdStyle.whiteSpace,
-                            wordBreak: finalTdStyle.wordBreak,
+                            whiteSpace: finalTdStyle.whiteSpace || 'pre-wrap',
+                            wordBreak: finalTdStyle.wordBreak || 'break-word',
                           };
 
                           return (
@@ -508,15 +509,16 @@ export function UserDashboard() {
                               }}
                             >
                               {editingCell?.r === r && editingCell?.c === c ? (
-                                <input
+                                <textarea
                                   // eslint-disable-next-line jsx-a11y/no-autofocus
                                   autoFocus
-                                  className="w-full h-full p-1 border-2 border-indigo-500 rounded bg-white shadow-inner focus:outline-none text-slate-800"
+                                  className="w-full h-full p-1 border-2 border-indigo-500 rounded bg-white shadow-inner focus:outline-none text-slate-800 resize-none min-h-[60px]"
                                   value={editingCell.value}
                                   onChange={(e) => setEditingCell({ ...editingCell, value: e.target.value })}
                                   onBlur={() => { flushActiveEdit(); setEditingCell(null); }}
                                   onKeyDown={(e) => {
-                                    if (e.key === "Enter") {
+                                    if (e.key === "Enter" && !e.shiftKey) {
+                                      e.preventDefault();
                                       flushActiveEdit();
                                       setEditingCell(null);
                                     } else if (e.key === "Escape") {

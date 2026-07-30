@@ -759,8 +759,8 @@ export function AdminDashboard() {
                             textOrientation: finalTdStyle.textOrientation,
                             transform: finalTdStyle.transform,
                             transformOrigin: finalTdStyle.transformOrigin,
-                            whiteSpace: finalTdStyle.whiteSpace,
-                            wordBreak: finalTdStyle.wordBreak,
+                            whiteSpace: finalTdStyle.whiteSpace || 'pre-wrap',
+                            wordBreak: finalTdStyle.wordBreak || 'break-word',
                           };
 
                           return (
