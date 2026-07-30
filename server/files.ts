@@ -1,4 +1,5 @@
 import fs from "fs";
+import fsPromises from "fs/promises";
 import path from "path";
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -26,49 +27,67 @@ export function projectFilePath(id: string) {
   return path.join(FILES_DIR, `${id}.xlsx`);
 }
 
-export function saveProjectFile(id: string, fileBase64: string) {
+export async function saveProjectFile(id: string, fileBase64: string) {
   ensureDataDirs();
-  fs.writeFileSync(projectFilePath(id), stripDataUrl(fileBase64));
+  console.time(`saveProjectFile-${id}`);
+  await fsPromises.writeFile(projectFilePath(id), stripDataUrl(fileBase64));
+  console.timeEnd(`saveProjectFile-${id}`);
 }
 
-export function readProjectFile(id: string): string | null {
+export async function readProjectFile(id: string): Promise<string | null> {
   const p = projectFilePath(id);
   if (!fs.existsSync(p)) return null;
-  return toDataUrl(fs.readFileSync(p));
+  console.time(`readProjectFile-${id}`);
+  const buf = await fsPromises.readFile(p);
+  const data = toDataUrl(buf);
+  console.timeEnd(`readProjectFile-${id}`);
+  return data;
 }
 
-export function deleteProjectFile(id: string) {
+export async function deleteProjectFile(id: string) {
   const p = projectFilePath(id);
-  if (fs.existsSync(p)) fs.unlinkSync(p);
+  if (fs.existsSync(p)) await fsPromises.unlink(p);
   const vDir = path.join(VERSIONS_DIR, id);
-  if (fs.existsSync(vDir)) fs.rmSync(vDir, { recursive: true, force: true });
+  if (fs.existsSync(vDir)) await fsPromises.rm(vDir, { recursive: true, force: true });
 }
 
-export function saveVersionSnapshot(projectId: string, version: number, fileBase64: string) {
+export async function saveVersionSnapshot(projectId: string, version: number, fileBase64: string) {
   ensureDataDirs();
   const dir = path.join(VERSIONS_DIR, projectId);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, `v${version}.xlsx`), stripDataUrl(fileBase64));
+  console.time(`saveVersionSnapshot-${projectId}-v${version}`);
+  await fsPromises.writeFile(path.join(dir, `v${version}.xlsx`), stripDataUrl(fileBase64));
+  console.timeEnd(`saveVersionSnapshot-${projectId}-v${version}`);
 }
 
-export function readVersionSnapshot(projectId: string, version: number): string | null {
+export async function readVersionSnapshot(projectId: string, version: number): Promise<string | null> {
   const p = path.join(VERSIONS_DIR, projectId, `v${version}.xlsx`);
   if (!fs.existsSync(p)) return null;
-  return toDataUrl(fs.readFileSync(p));
+  console.time(`readVersionSnapshot-${projectId}-v${version}`);
+  const buf = await fsPromises.readFile(p);
+  const data = toDataUrl(buf);
+  console.timeEnd(`readVersionSnapshot-${projectId}-v${version}`);
+  return data;
 }
 
-export function saveTemplateFile(id: string, fileBase64: string) {
+export async function saveTemplateFile(id: string, fileBase64: string) {
   ensureDataDirs();
-  fs.writeFileSync(path.join(TEMPLATES_DIR, `${id}.xlsx`), stripDataUrl(fileBase64));
+  console.time(`saveTemplateFile-${id}`);
+  await fsPromises.writeFile(path.join(TEMPLATES_DIR, `${id}.xlsx`), stripDataUrl(fileBase64));
+  console.timeEnd(`saveTemplateFile-${id}`);
 }
 
-export function readTemplateFile(id: string): string | null {
+export async function readTemplateFile(id: string): Promise<string | null> {
   const p = path.join(TEMPLATES_DIR, `${id}.xlsx`);
   if (!fs.existsSync(p)) return null;
-  return toDataUrl(fs.readFileSync(p));
+  console.time(`readTemplateFile-${id}`);
+  const buf = await fsPromises.readFile(p);
+  const data = toDataUrl(buf);
+  console.timeEnd(`readTemplateFile-${id}`);
+  return data;
 }
 
-export function deleteTemplateFile(id: string) {
+export async function deleteTemplateFile(id: string) {
   const p = path.join(TEMPLATES_DIR, `${id}.xlsx`);
-  if (fs.existsSync(p)) fs.unlinkSync(p);
+  if (fs.existsSync(p)) await fsPromises.unlink(p);
 }

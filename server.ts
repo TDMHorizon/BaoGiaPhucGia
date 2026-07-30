@@ -1,3 +1,7 @@
+import { AppError } from "./server/utils/AppError";
+import { catchAsync } from "./server/utils/catchAsync";
+import { z } from "zod";
+import { validate } from "./server/middlewares/validate";
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
@@ -44,10 +48,10 @@ function loadProject(id: string): ProjectRow | undefined {
   return getDb().prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | undefined;
 }
 
-function projectWithFile(p: ProjectRow) {
+async function projectWithFile(p: ProjectRow) {
   const members = getProjectMembers(p.id);
   const json = projectToJson(p, members);
-  const fileBase64 = readProjectFile(p.id);
+  const fileBase64 = await readProjectFile(p.id);
   return { ...json, fileBase64 };
 }
 
@@ -86,7 +90,7 @@ async function startServer() {
   });
 
   app.get("/api/me", authMiddleware, (req, res) => {
-    res.json((req as any).user);
+    res.json(req.user!);
   });
 
   // Users (admin)
@@ -140,7 +144,7 @@ async function startServer() {
   });
 
   app.delete("/api/users/:id", authMiddleware, requireAdmin, (req, res) => {
-    const user = (req as any).user;
+    const user = req.user!;
     if (user.id === req.params.id) return res.status(400).json({ error: "Cannot delete yourself" });
     const result = getDb().prepare("DELETE FROM users WHERE id = ?").run(req.params.id);
     if (!result.changes) return res.status(404).json({ error: "User not found" });
@@ -149,7 +153,7 @@ async function startServer() {
 
   // Projects list
   app.get("/api/projects", authMiddleware, (req, res) => {
-    const user = (req as any).user;
+    const user = req.user!;
     const q = String(req.query.q || "").trim().toLowerCase();
     const status = String(req.query.status || "").trim();
     const assignee = String(req.query.assignee || "").trim();
@@ -184,8 +188,8 @@ async function startServer() {
     res.json({ count: row.c });
   });
 
-  app.post("/api/projects", authMiddleware, (req, res) => {
-    const user = (req as any).user;
+  app.post("/api/projects", authMiddleware, catchAsync(async (req, res) => {
+    const user = req.user!;
     const {
       name,
       fileBase64,
@@ -227,22 +231,22 @@ async function startServer() {
       );
 
     if (members.length) setProjectMembers(id, members);
-    saveProjectFile(id, fileBase64);
+    await saveProjectFile(id, fileBase64);
 
     const project = loadProject(id)!;
-    res.json(projectWithFile(project));
-  });
+    res.json(await projectWithFile(project));
+  }));
 
-  app.get("/api/projects/:id", authMiddleware, (req, res) => {
-    const user = (req as any).user;
+  app.get("/api/projects/:id", authMiddleware, catchAsync(async (req, res) => {
+    const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
-    res.json(projectWithFile(project));
-  });
+    res.json(await projectWithFile(project));
+  }));
 
-  app.patch("/api/projects/:id", authMiddleware, (req, res) => {
-    const user = (req as any).user;
+  app.patch("/api/projects/:id", authMiddleware, catchAsync(async (req, res) => {
+    const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (user.role !== "admin" && user.role !== "manager" && !userCanAccessProject(user, project)) {
@@ -278,28 +282,28 @@ async function startServer() {
       )
       .run(name, soBaoGia, tenKhachHang, nguoiPhuTrachId, ghiChu, editableRanges, sheets, now(), project.id);
 
-    res.json(projectWithFile(loadProject(project.id)!));
-  });
+    res.json(await projectWithFile(loadProject(project.id)!));
+  }));
 
-  app.delete("/api/projects/:id", authMiddleware, requireAdminOrManager, (req, res) => {
+  app.delete("/api/projects/:id", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
     getDb().prepare("DELETE FROM projects WHERE id = ?").run(project.id);
-    deleteProjectFile(project.id);
+    await deleteProjectFile(project.id);
     res.json({ ok: true });
-  });
+  }));
 
-  app.put("/api/projects/:id/ranges", authMiddleware, requireAdminOrManager, (req, res) => {
+  app.put("/api/projects/:id/ranges", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
     getDb()
       .prepare("UPDATE projects SET editable_ranges = ?, updated_at = ? WHERE id = ?")
       .run(JSON.stringify(req.body.editableRanges || {}), now(), project.id);
-    res.json(projectWithFile(loadProject(project.id)!));
-  });
+    res.json(await projectWithFile(loadProject(project.id)!));
+  }));
 
   // Chỉ admin được cập nhật file gốc (cấu trúc sheet). Nhân viên không ghi đè.
-  app.put("/api/projects/:id/file", authMiddleware, requireAdminOrManager, (req, res) => {
+  app.put("/api/projects/:id/file", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
 
@@ -315,12 +319,12 @@ async function startServer() {
       getDb().prepare("UPDATE projects SET updated_at = ? WHERE id = ?").run(now(), project.id);
     }
 
-    res.json(projectWithFile(loadProject(project.id)!));
-  });
+    res.json(await projectWithFile(loadProject(project.id)!));
+  }));
 
   // Status workflow
-  app.post("/api/projects/:id/status", authMiddleware, (req, res) => {
-    const user = (req as any).user;
+  app.post("/api/projects/:id/status", authMiddleware, catchAsync(async (req, res) => {
+    const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
@@ -340,12 +344,12 @@ async function startServer() {
       .prepare("UPDATE projects SET trang_thai = ?, updated_at = ? WHERE id = ?")
       .run(nextStatus, now(), project.id);
 
-    res.json(projectWithFile(loadProject(project.id)!));
-  });
+    res.json(await projectWithFile(loadProject(project.id)!));
+  }));
 
   // Versions
   app.get("/api/projects/:id/versions", authMiddleware, (req, res) => {
-    const user = (req as any).user;
+    const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
@@ -366,21 +370,21 @@ async function startServer() {
     );
   });
 
-  app.get("/api/projects/:id/versions/:version", authMiddleware, (req, res) => {
-    const user = (req as any).user;
+  app.get("/api/projects/:id/versions/:version", authMiddleware, catchAsync(async (req, res) => {
+    const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
 
     const version = Number(req.params.version);
-    const fileBase64 = readVersionSnapshot(project.id, version);
+    const fileBase64 = await readVersionSnapshot(project.id, version);
     if (!fileBase64) return res.status(404).json({ error: "Version not found" });
     res.json({ version, fileBase64 });
-  });
+  }));
 
   // Edits
   app.post("/api/projects/:id/edits", authMiddleware, (req, res) => {
-    const user = (req as any).user;
+    const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
@@ -414,7 +418,7 @@ async function startServer() {
   });
 
   app.get("/api/projects/:id/edits", authMiddleware, (req, res) => {
-    const user = (req as any).user;
+    const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
@@ -459,14 +463,14 @@ async function startServer() {
     );
   });
 
-  app.post("/api/templates", authMiddleware, requireAdminOrManager, (req, res) => {
+  app.post("/api/templates", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
     const { name, fileBase64, sheets, editableRanges } = req.body || {};
     if (!name || !fileBase64) return res.status(400).json({ error: "Missing fields" });
     const id = newId();
     getDb()
       .prepare("INSERT INTO templates (id, name, sheets, editable_ranges, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(id, name, JSON.stringify(sheets || []), JSON.stringify(editableRanges || {}), now());
-    saveTemplateFile(id, fileBase64);
+    await saveTemplateFile(id, fileBase64);
     res.json({
       id,
       name,
@@ -474,14 +478,14 @@ async function startServer() {
       editableRanges: editableRanges || {},
       createdAt: now(),
     });
-  });
+  }));
 
-  app.post("/api/templates/:id/clone", authMiddleware, (req, res) => {
-    const user = (req as any).user;
+  app.post("/api/templates/:id/clone", authMiddleware, catchAsync(async (req, res) => {
+    const user = req.user!;
     const template = getDb().prepare("SELECT * FROM templates WHERE id = ?").get(req.params.id) as TemplateRow | undefined;
     if (!template) return res.status(404).json({ error: "Template not found" });
 
-    const fileBase64 = readTemplateFile(template.id);
+    const fileBase64 = await readTemplateFile(template.id);
     if (!fileBase64) return res.status(404).json({ error: "Template file missing" });
 
     const name = req.body?.name || `Báo giá từ ${template.name}`;
@@ -506,16 +510,16 @@ async function startServer() {
         ts,
         ts
       );
-    saveProjectFile(id, fileBase64);
-    res.json(projectWithFile(loadProject(id)!));
-  });
+    await saveProjectFile(id, fileBase64);
+    res.json(await projectWithFile(loadProject(id)!));
+  }));
 
-  app.delete("/api/templates/:id", authMiddleware, requireAdminOrManager, (req, res) => {
+  app.delete("/api/templates/:id", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
     const result = getDb().prepare("DELETE FROM templates WHERE id = ?").run(req.params.id);
     if (!result.changes) return res.status(404).json({ error: "Template not found" });
-    deleteTemplateFile(req.params.id);
+    await deleteTemplateFile(req.params.id);
     res.json({ ok: true });
-  });
+  }));
 
   // Vite / static
   if (process.env.NODE_ENV !== "production") {
@@ -531,6 +535,31 @@ async function startServer() {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
+
+  
+  // Global Error Handler
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error(err);
+    if (err.code === 'ER_DUP_ENTRY' || err.code === '23505' || err.code === 'SQLITE_CONSTRAINT_UNIQUE' || err.code === 'SQLITE_CONSTRAINT') {
+      return res.status(409).json({ error: 'Dữ liệu đã tồn tại hoặc vi phạm ràng buộc dữ liệu.' });
+    }
+    if (err.name === 'ZodError') {
+      return res.status(400).json({ error: err.errors });
+    }
+    const statusCode = err.statusCode || 500;
+    return res.status(statusCode).json({ error: err.message || 'Internal Server Error' });
+  });
+
+  // Handle uncaught exceptions
+  process.on('uncaughtException', (err) => {
+    console.error('UNCAUGHT EXCEPTION! Shutting down...', err);
+    process.exit(1);
+  });
+  
+  process.on('unhandledRejection', (err) => {
+    console.error('UNHANDLED REJECTION! Shutting down...', err);
+    process.exit(1);
+  });
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);

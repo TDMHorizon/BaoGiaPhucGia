@@ -40,12 +40,12 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
   const row = db.prepare("SELECT * FROM users WHERE id = ?").get(user.id) as UserRow | undefined;
   if (!row || !row.active) return res.status(401).json({ error: "User inactive" });
 
-  (req as any).user = publicUser(row);
+  req.user = publicUser(row) as AuthUser;
   next();
 }
 
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  const user = (req as any).user as AuthUser | undefined;
+  const user = req.user;
   if (!user || user.role !== "admin") {
     return res.status(403).json({ error: "Admin only" });
   }
@@ -53,7 +53,7 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction) {
 }
 
 export function requireAdminOrManager(req: Request, res: Response, next: NextFunction) {
-  const user = (req as any).user as AuthUser | undefined;
+  const user = req.user;
   if (!user || (user.role !== "admin" && user.role !== "manager")) {
     return res.status(403).json({ error: "Admin or Manager only" });
   }

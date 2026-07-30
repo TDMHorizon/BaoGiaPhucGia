@@ -206,11 +206,14 @@ export function getProjectMembers(projectId: string): string[] {
 }
 
 export function setProjectMembers(projectId: string, memberIds: string[]) {
-  db.prepare("DELETE FROM project_members WHERE project_id = ?").run(projectId);
-  const insert = db.prepare("INSERT INTO project_members (project_id, user_id) VALUES (?, ?)");
-  for (const uid of memberIds) {
-    insert.run(projectId, uid);
-  }
+  const setMembersTx = db.transaction((pId: string, mIds: string[]) => {
+    db.prepare("DELETE FROM project_members WHERE project_id = ?").run(pId);
+    const insert = db.prepare("INSERT INTO project_members (project_id, user_id) VALUES (?, ?)");
+    for (const uid of mIds) {
+      insert.run(pId, uid);
+    }
+  });
+  setMembersTx(projectId, memberIds);
 }
 
 export function userCanAccessProject(user: { id: string; role: string }, project: ProjectRow): boolean {
