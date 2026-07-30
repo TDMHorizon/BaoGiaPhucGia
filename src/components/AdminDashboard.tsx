@@ -696,7 +696,7 @@ export function AdminDashboard() {
                             : 'bg-slate-200 text-slate-700 hover:text-indigo-700 hover:bg-indigo-50'
                             }`}
                           style={{ width: `${colWidth}px`, minWidth: `${colWidth}px`, maxWidth: `${colWidth}px` }}
-                          onClick={() => handleColumnSelect(i)}
+                          onClick={() => handleColumnClick(i)}
                         >
                           {colLetter}
                         </th>
@@ -740,7 +740,7 @@ export function AdminDashboard() {
                           }
                           const finalBgColor = isInSelectedBlock ? "rgba(79, 70, 229, 0.15)" : baseBgColor;
 
-                          const finalTdStyle = {
+                          const finalTdStyle: any = {
                             ...cellStyle,
                             backgroundColor: finalBgColor,
                             width: `${totalWidth}px`,

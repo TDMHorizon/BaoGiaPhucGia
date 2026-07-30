@@ -7,10 +7,11 @@ import { loadExcelJSWorkbook, workbookToBase64, updateMergedCellInExcelJS } from
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
-import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogClose } from "./ui/dialog";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
+import { FolderOpen, Download, Printer, Search } from "lucide-react";
 import { StatusBadge } from "./StatusBadge";
 import { StatusWorkflow } from "./StatusWorkflow";
 import { isLockedStatus, TRANG_THAI_LABELS, type TrangThai } from "../lib/constants";
@@ -466,7 +467,7 @@ export function UserDashboard() {
                           }
                           const finalBgColor = isSelected ? "rgba(191, 219, 254, 0.5)" : baseBgColor;
 
-                          const finalTdStyle = {
+                          const finalTdStyle: any = {
                             ...cellStyle,
                             backgroundColor: finalBgColor,
                             width: `${totalWidth}px`,
