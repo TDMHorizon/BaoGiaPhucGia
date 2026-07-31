@@ -2,7 +2,7 @@
 
 Thư mục này (`SpreadsheetViewer`) chứa toàn bộ mã nguồn giao diện của bảng tính. Các thành phần logic kết nối API và xử lý quyền đã được tách rời hoàn toàn ra bên ngoài (ở `UserDashboard` và `AdminDashboard`).
 
-Bạn có thể tự do thay đổi cấu trúc HTML (`div`, `span`, `table`) và các class Tailwind bên trong thư mục này. Tuy nhiên, **TUYỆT ĐỐI KHÔNG ĐƯỢC** đổi tên, xóa, hoặc thay đổi kiểu dữ liệu của các Props dưới đây để tránh làm gãy kết nối với hệ thống lõi.
+Có thể tự do thay đổi cấu trúc HTML (`div`, `span`, `table`) và các class Tailwind bên trong thư mục này. Tuy nhiên, **TUYỆT ĐỐI KHÔNG ĐƯỢC** đổi tên, xóa, hoặc thay đổi kiểu dữ liệu của các Props dưới đây để tránh làm gãy kết nối với hệ thống lõi.
 
 ---
 
@@ -65,9 +65,9 @@ const [editValue, setEditValue] = useState(value); // Giá trị chữ đang gõ
 ## 4. Quản lý Màu sắc và CSS Phức tạp
 
 Toàn bộ các quy tắc tính toán màu nền (VD: màu xanh cho ô được quyền sửa), gộp ô (merge cells), in đậm/nghiêng từ file Excel sang CSS web được xử lý tại:
-👉 `utils/styleCalculator.ts`
+ `utils/styleCalculator.ts`
 
 Nếu bạn muốn thay đổi màu sắc hệ thống (ví dụ đổi mã màu xanh `#ecfdf5` thành màu khác), hãy sửa trực tiếp trong file này.
 
 ---
-💡 **Lời khuyên**: Nếu dự án muốn chuyển sang sử dụng các thư viện bảng tính nâng cao (như `ag-grid`, `react-data-grid`, hay `handsontable`) thay thế cho thẻ `<table>` truyền thống, bạn chỉ cần cấu hình các Props và Callbacks kể trên khớp với API của thư viện mới. Kiến trúc hệ thống sẽ không bị ảnh hưởng!
+ **Lời khuyên**: Nếu dự án muốn chuyển sang sử dụng các thư viện bảng tính nâng cao (như `ag-grid`, `react-data-grid`, hay `handsontable`) thay thế cho thẻ `<table>` truyền thống, bạn chỉ cần cấu hình các Props và Callbacks kể trên khớp với API của thư viện mới. Kiến trúc hệ thống sẽ không bị ảnh hưởng!
