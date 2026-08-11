@@ -1,20 +1,21 @@
 import React, { useState } from 'react';
 import * as XLSX from 'xlsx';
-import ExcelJS from 'exceljs';
 import { HeaderCell } from './components/HeaderCell';
 import { Row } from './components/Row';
 import { useExcelData } from './hooks/useExcelData';
 import { SpreadsheetToolbar } from './components/SpreadsheetToolbar';
+import { FormulaBar } from './components/FormulaBar';
 import { SpreadsheetViewerProps } from './types/spreadsheet';
+import './styles/spreadsheet-scrollbar.css';
 
 /**
  * SpreadsheetViewer - Main spreadsheet component
  *
  * Features:
  * - Toolbar with file name and action buttons
- * - Formula bar (Phase 2)
+ * - Formula bar with cell reference and value
  * - Spreadsheet grid with sticky headers
- * - Sheet tabs (Phase 4)
+ * - Custom scrollbar styling
  */
 export function SpreadsheetViewer({
   workbook,
@@ -28,11 +29,14 @@ export function SpreadsheetViewer({
   selectedColumn = null,
   previewLimit = -1,
   fileName: initialFileName = "Untitled.xlsx",
+  cellReference = "A1",
+  cellValue = "",
   onColumnClick,
   onCellEdit,
   onCellMouseDown,
   onCellMouseEnter,
   onFileNameChange,
+  onCellValueChange,
   onPreview,
   onDownload,
   onSaveAsNew,
@@ -56,6 +60,10 @@ export function SpreadsheetViewer({
     onFileNameChange?.(name);
   };
 
+  const handleCellValueChange = (value: string) => {
+    onCellValueChange?.(value);
+  };
+
   return (
     <div className="flex flex-col h-full bg-[#faf8ff]">
       {/* Toolbar */}
@@ -68,9 +76,17 @@ export function SpreadsheetViewer({
         onSave={onSave}
       />
 
+      {/* Formula Bar */}
+      <FormulaBar
+        cellReference={cellReference}
+        value={cellValue}
+        onChange={handleCellValueChange}
+        editable={mode === 'admin'}
+      />
+
       {/* Spreadsheet Content */}
       <div className="flex-1 overflow-hidden relative">
-        <div className="h-full overflow-auto bg-white">
+        <div className="h-full overflow-auto spreadsheet-scroll bg-white">
           <table className="w-full border-collapse" style={{ tableLayout: "fixed" }}>
             <thead>
               <tr className="shadow-sm">

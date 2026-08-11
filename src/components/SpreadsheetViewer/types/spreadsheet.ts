@@ -29,10 +29,16 @@ export interface SpreadsheetViewerProps {
   previewLimit?: number;
   /** File name for display */
   fileName?: string;
+  /** Current cell reference (e.g., "C5") for formula bar */
+  cellReference?: string;
+  /** Current cell value for formula bar */
+  cellValue?: string;
   /** Callback when column header is clicked */
   onColumnClick?: (colIndex: number) => void;
   /** Callback when cell is edited */
   onCellEdit?: (r: number, c: number, newValue: string) => void;
+  /** Callback when cell value in formula bar changes */
+  onCellValueChange?: (value: string) => void;
   /** Callback when mouse down on cell */
   onCellMouseDown?: (r: number, c: number) => void;
   /** Callback when mouse enters cell */
