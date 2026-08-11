@@ -1,25 +1,32 @@
 import React, { useState, useEffect } from 'react';
 import { CellUIStyles } from '../utils/styleCalculator';
+import { SpreadsheetCellProps } from '../types/spreadsheet';
 
-interface CellProps {
-  r: number;
-  c: number;
-  value: string;
-  uiStyles: CellUIStyles;
-  mode: 'user' | 'admin';
-  isEditable: boolean;
-  onCellEdit?: (r: number, c: number, newValue: string) => void;
-  onMouseDown?: (r: number, c: number) => void;
-  onMouseEnter?: (r: number, c: number) => void;
-}
-
-export const Cell = React.memo(({ r, c, value, uiStyles, mode, isEditable, onCellEdit, onMouseDown, onMouseEnter }: CellProps) => {
+/**
+ * Cell - Cell component for spreadsheet
+ *
+ * Matches Stitch design:
+ * - Border: #E2E8F0
+ * - Edit mode: border-2 border-[#004ac6]
+ * - Selection: border-2 border-primary
+ */
+export const Cell = React.memo(function Cell({
+  r,
+  c,
+  value,
+  uiStyles,
+  mode,
+  isEditable,
+  onCellEdit,
+  onMouseDown,
+  onMouseEnter
+}: SpreadsheetCellProps) {
   const [isEditing, setIsEditing] = useState(false);
-  const [editValue, setEditValue] = useState(value);
+  const [editValue, setEditValue] = useState(String(value ?? ''));
 
-  // Sync internal state if external value changes (e.g. from another user's edit or undo)
+  // Sync internal state if external value changes
   useEffect(() => {
-    setEditValue(value);
+    setEditValue(String(value ?? ''));
   }, [value]);
 
   if (uiStyles.shouldSkip) return null;
@@ -27,40 +34,44 @@ export const Cell = React.memo(({ r, c, value, uiStyles, mode, isEditable, onCel
   const handleDoubleClick = () => {
     if (mode === 'user' && isEditable) {
       setIsEditing(true);
-      setEditValue(value);
+      setEditValue(String(value ?? ''));
     }
   };
 
   const handleSave = () => {
-    if (editValue !== value && onCellEdit) {
+    if (editValue !== String(value) && onCellEdit) {
       onCellEdit(r, c, editValue);
     }
     setIsEditing(false);
   };
 
-  const className = `border border-slate-300 p-2 ${
-    mode === 'admin' 
-      ? 'cursor-crosshair' 
-      : isEditable 
-        ? "cursor-text hover:outline hover:outline-2 hover:outline-indigo-500 hover:-outline-offset-2" 
-        : "cursor-not-allowed"
-  } ${uiStyles.shouldTruncate ? 'truncate' : ''}`;
+  const baseClassName = `relative ${uiStyles.shouldTruncate ? 'truncate' : ''}`;
+
+  const cursorClassName = mode === 'admin'
+    ? 'cursor-crosshair'
+    : isEditable
+      ? 'cursor-text hover:outline hover:outline-2 hover:outline-[#004ac6] hover:-outline-offset-1'
+      : 'cursor-not-allowed';
 
   return (
     <td
-      className={className}
-      style={uiStyles.finalTdStyle}
-      title={value}
+      className={`${baseClassName} ${cursorClassName}`}
+      style={{
+        ...uiStyles.finalTdStyle,
+        borderRight: '1px solid #E2E8F0',
+        borderBottom: '1px solid #E2E8F0'
+      }}
+      title={String(value ?? '')}
       rowSpan={uiStyles.mergeInfo && 'rowSpan' in uiStyles.mergeInfo ? uiStyles.mergeInfo.rowSpan : undefined}
       colSpan={uiStyles.mergeInfo && 'colSpan' in uiStyles.mergeInfo ? uiStyles.mergeInfo.colSpan : undefined}
-      onMouseDown={() => onMouseDown && onMouseDown(r, c)}
-      onMouseEnter={() => onMouseEnter && onMouseEnter(r, c)}
+      onMouseDown={() => onMouseDown?.(r, c)}
+      onMouseEnter={() => onMouseEnter?.(r, c)}
       onDoubleClick={handleDoubleClick}
     >
       {isEditing ? (
         <textarea
           autoFocus
-          className="w-full h-full p-1 border-2 border-indigo-500 rounded bg-white shadow-inner focus:outline-none text-slate-800 resize-none min-h-[60px]"
+          className="absolute inset-0 w-full h-full p-1 border-2 border-[#004ac6] rounded bg-white shadow-inner focus:outline-none text-[#191b23] resize-none"
           value={editValue}
           onChange={(e) => setEditValue(e.target.value)}
           onBlur={handleSave}
@@ -70,7 +81,7 @@ export const Cell = React.memo(({ r, c, value, uiStyles, mode, isEditable, onCel
               handleSave();
             } else if (e.key === "Escape") {
               setIsEditing(false);
-              setEditValue(value);
+              setEditValue(String(value ?? ''));
             }
           }}
         />
@@ -82,4 +93,5 @@ export const Cell = React.memo(({ r, c, value, uiStyles, mode, isEditable, onCel
     </td>
   );
 });
+
 Cell.displayName = 'Cell';
