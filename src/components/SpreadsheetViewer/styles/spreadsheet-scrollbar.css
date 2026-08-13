@@ -1,0 +1,44 @@
+/* SpreadsheetViewer Custom Scrollbar Styles
+ * Matches Stitch design for spreadsheet scrollbar
+ */
+
+/* Main scrollbar */
+.spreadsheet-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.spreadsheet-scroll::-webkit-scrollbar-track {
+  background: #F8FAFC;
+}
+
+.spreadsheet-scroll::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+.spreadsheet-scroll::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Firefox support */
+.spreadsheet-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 #F8FAFC;
+}
+
+/* Cell border styles for consistent look */
+.spreadsheet-cell {
+  border-right: 1px solid #E2E8F0;
+  border-bottom: 1px solid #E2E8F0;
+}
+
+/* Header cell base styles */
+.spreadsheet-header-cell {
+  background-color: #F8FAFC;
+  color: #475569;
+  font-weight: 500;
+  text-align: center;
+  border-right: 1px solid #cbd5e1;
+  border-bottom: 1px solid #cbd5e1;
+}
