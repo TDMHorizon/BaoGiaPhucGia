@@ -1,45 +1,27 @@
 import React from 'react';
 import * as XLSX from 'xlsx';
-import { ColumnHeaderProps } from '../types/spreadsheet';
 
-/**
- * ColumnHeader - Column header component for spreadsheet
- *
- * Matches Stitch design:
- * - Background: #F8FAFC
- * - Color: #475569
- * - Font: 12px/500 (label-sm)
- * - Selected: primary background (#004ac6)
- */
-export const HeaderCell = React.memo(function HeaderCell({
-  colIndex,
-  colWidth,
-  isSelected,
-  onColumnClick
-}: ColumnHeaderProps) {
+interface HeaderCellProps {
+  colIndex: number;
+  colWidth: number;
+  isSelected: boolean;
+  onColumnClick: (colIndex: number) => void;
+}
+
+export const HeaderCell = React.memo(({ colIndex, colWidth, isSelected, onColumnClick }: HeaderCellProps) => {
   const colLetter = XLSX.utils.encode_col(colIndex);
 
   return (
     <th
-      className={`
-        p-2.5 text-center cursor-pointer font-medium text-xs
-        transition-colors select-none sticky top-0 z-10
-        border-r border-b border-[#cbd5e1]
-        ${isSelected
-          ? 'bg-[#004ac6] text-white hover:bg-[#003db3]'
-          : 'bg-[#F8FAFC] text-[#475569] hover:bg-[#F1F5F9]'
-        }
-      `}
-      style={{
-        width: `${colWidth}px`,
-        minWidth: `${colWidth}px`,
-        maxWidth: `${colWidth}px`
-      }}
+      className={`border border-slate-300 p-2.5 text-center cursor-pointer font-extrabold text-xs tracking-wider transition-colors select-none sticky top-0 z-10 ${isSelected
+        ? 'bg-blue-600 text-white border-blue-700 hover:bg-blue-700'
+        : 'bg-slate-200 text-slate-700 hover:text-indigo-700 hover:bg-indigo-50'
+        }`}
+      style={{ width: `${colWidth}px`, minWidth: `${colWidth}px`, maxWidth: `${colWidth}px` }}
       onClick={() => onColumnClick(colIndex)}
     >
       {colLetter}
     </th>
   );
 });
-
 HeaderCell.displayName = 'HeaderCell';
