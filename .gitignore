@@ -7,6 +7,3 @@ data/
 *.log
 .env*
 !.env.example
-.claude/
-CLAUDE.md
-stitch/
