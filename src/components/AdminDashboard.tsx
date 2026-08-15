@@ -454,7 +454,7 @@ export function AdminDashboard() {
                             <ul className="divide-y divide-slate-100">
                               {projects.map((p) => (
                                 <li key={p.id} className={`p-3 hover:bg-slate-50 flex justify-between items-center group ${selectedProject?.id === p.id ? "bg-indigo-50/50" : ""}`}>
-                                  <DialogClose render={<div className="flex-1 cursor-pointer" onClick={() => handleSelectProject(p.id)} />}>
+                                  <DialogClose render={<button type="button" className="flex-1 cursor-pointer text-left" onClick={() => handleSelectProject(p.id)} />}>
                                     <p className="font-bold text-slate-800 text-xs mb-0.5 text-left group-hover:text-indigo-600">{p.name}</p>
                                     <div className="flex items-center gap-2 mt-1">
                                       <StatusBadge status={p.trangThai as TrangThai} />

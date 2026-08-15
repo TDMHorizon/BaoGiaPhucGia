@@ -51,7 +51,9 @@ export const Row = React.memo(({
           isSelected = selectedColumn === c;
         } else {
           // Admin drag selection 
-          isSelected = isCellInRange(cellRef, selectedRange) || selectedRange.includes(`${XLSX.utils.encode_col(c)}:${XLSX.utils.encode_col(c)}`); // Also check if full column is selected in admin
+          isSelected = selectedRange 
+            ? (isCellInRange(cellRef, selectedRange) || selectedRange.includes(`${XLSX.utils.encode_col(c)}:${XLSX.utils.encode_col(c)}`))
+            : false; // Also check if full column is selected in admin
         }
 
         const uiStyles = computeCellUIStyles({
