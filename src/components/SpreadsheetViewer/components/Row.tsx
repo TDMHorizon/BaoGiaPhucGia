@@ -5,6 +5,30 @@ import { Cell } from './Cell';
 import { computeCellUIStyles } from '../utils/styleCalculator';
 import { MergeInfo, isCellInRange } from '../../../lib/utils-excel';
 
+interface RowHeaderProps {
+  rowNumber: number;
+  width?: number;
+}
+
+export const RowHeader = React.memo(({ rowNumber, width = 48 }: RowHeaderProps) => {
+  return (
+    <td
+      className="
+        sticky left-0 z-10
+        w-12 min-w-12 max-w-12 px-1 py-2
+        bg-surface-container-lowest
+        border-r border-b border-border
+        text-center text-label-sm font-medium text-on-surface-variant
+        select-none
+      "
+      style={{ width: `${width}px`, minWidth: `${width}px`, maxWidth: `${width}px` }}
+    >
+      {rowNumber}
+    </td>
+  );
+});
+RowHeader.displayName = 'RowHeader';
+
 interface RowProps {
   r: number;
   rowData: string[];
@@ -29,20 +53,20 @@ export const Row = React.memo(({
   onCellEdit, onMouseDown, onMouseEnter
 }: RowProps) => {
   return (
-    <tr style={rowHeight ? { height: `${rowHeight}px` } : undefined}>
-      <td className="border border-slate-300 p-2 bg-slate-100 text-center font-medium text-slate-500 select-none sticky left-0 z-10" style={{ width: "48px", minWidth: "48px", maxWidth: "48px" }}>
-        {r + 1}
-      </td>
+    <tr
+      className="hover:bg-surface-container-low"
+      style={rowHeight ? { height: `${rowHeight}px` } : undefined}
+    >
+      <RowHeader rowNumber={r + 1} />
       {Array.from({ length: numCols }).map((_, c) => {
         const val = rowData[c] || "";
         const cellRef = XLSX.utils.encode_cell({ r, c });
         const mergeInfo = mergesMap[`${r},${c}`];
-        
+
         let isEditable = false;
         if (mode === 'user') {
           isEditable = !isLocked && isCellInRange(cellRef, editableRange);
         } else {
-          // In admin mode, editableRange is the current range being edited for the template
           isEditable = isCellInRange(cellRef, editableRange);
         }
 
@@ -50,8 +74,7 @@ export const Row = React.memo(({
         if (mode === 'user') {
           isSelected = selectedColumn === c;
         } else {
-          // Admin drag selection 
-          isSelected = isCellInRange(cellRef, selectedRange) || selectedRange.includes(`${XLSX.utils.encode_col(c)}:${XLSX.utils.encode_col(c)}`); // Also check if full column is selected in admin
+          isSelected = isCellInRange(cellRef, selectedRange) || selectedRange.includes(`${XLSX.utils.encode_col(c)}:${XLSX.utils.encode_col(c)}`);
         }
 
         const uiStyles = computeCellUIStyles({
@@ -62,7 +85,7 @@ export const Row = React.memo(({
           isSelected,
           mergeInfo,
           colWidths,
-          selectedColor: mode === 'admin' ? "rgba(79, 70, 229, 0.15)" : undefined
+          selectedColor: mode === 'admin' ? 'rgba(37, 99, 235, 0.12)' : undefined
         });
 
         return (

@@ -7,3 +7,6 @@ data/
 *.log
 .env*
 !.env.example
+CLAUDE.md
+CODEBASE.md
+CODEBASE_MAP.md

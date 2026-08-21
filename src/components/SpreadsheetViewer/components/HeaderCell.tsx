@@ -13,10 +13,18 @@ export const HeaderCell = React.memo(({ colIndex, colWidth, isSelected, onColumn
 
   return (
     <th
-      className={`border border-slate-300 p-2.5 text-center cursor-pointer font-extrabold text-xs tracking-wider transition-colors select-none sticky top-0 z-10 ${isSelected
-        ? 'bg-blue-600 text-white border-blue-700 hover:bg-blue-700'
-        : 'bg-slate-200 text-slate-700 hover:text-indigo-700 hover:bg-indigo-50'
-        }`}
+      className={`
+        sticky top-0 z-10
+        px-3 py-2.5
+        text-center text-label-sm font-semibold uppercase tracking-wider
+        cursor-pointer select-none
+        transition-all duration-150
+        border-b-2 border-r border-l-0 border-t-0 border-r-border
+        ${isSelected
+          ? 'bg-primary text-primary-foreground border-b-primary'
+          : 'bg-surface-container-high text-on-surface hover:bg-surface-container-highest hover:text-primary'
+        }
+      `}
       style={{ width: `${colWidth}px`, minWidth: `${colWidth}px`, maxWidth: `${colWidth}px` }}
       onClick={() => onColumnClick(colIndex)}
     >

@@ -2,12 +2,28 @@ import * as React from "react";
 import { useState, useEffect } from "react";
 import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
-import { Button } from "./ui/button";
-import { Input } from "./ui/input";
-import { Label } from "./ui/label";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { toast } from "sonner";
 import { Eye, EyeOff, Lock, User, Loader2, ShieldAlert } from "lucide-react";
+
+// Stitch Design System Colors
+const STITCH = {
+  primary: "#2563eb",
+  onPrimary: "#ffffff",
+  surface: "#f8fafc",
+  onSurface: "#0f172a",
+  surfaceContainer: "#ffffff",
+  outline: "#e2e8f0",
+  background: "#faf8ff",
+  onBackground: "#191b23",
+  error: "#ef4444",
+  onError: "#ffffff",
+  primaryContainer: "#dbe1ff",
+  onPrimaryContainer: "#00174b",
+  secondary: "#565e74",
+  onSecondary: "#ffffff",
+  outlineVariant: "#c3c6d7",
+  hoverState: "#f1f5f9",
+};
 
 export function Login() {
   const [username, setUsername] = useState("");
@@ -41,8 +57,7 @@ export function Login() {
 
     try {
       const user = await api.login(username, password);
-      
-      // Save or clear remembered username
+
       if (rememberMe) {
         localStorage.setItem("rememberedUsername", username);
       } else {
@@ -82,147 +97,491 @@ export function Login() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-955 via-indigo-955 to-slate-900 py-12 px-4 sm:px-6 lg:px-8 relative overflow-hidden">
-      {/* Background Decorative Blobs */}
-      <div className="absolute top-1/4 left-1/4 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-indigo-600/20 rounded-full blur-3xl pointer-events-none" />
-      <div className="absolute bottom-1/4 right-1/4 translate-x-1/2 translate-y-1/2 w-96 h-96 bg-emerald-600/10 rounded-full blur-3xl pointer-events-none" />
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "2rem 1rem",
+        background: STITCH.background,
+        position: "relative",
+        overflow: "hidden",
+      }}
+    >
+      {/* Background decorative elements */}
+      <div
+        style={{
+          position: "absolute",
+          top: "-10%",
+          right: "-5%",
+          width: "40%",
+          height: "40%",
+          background: `radial-gradient(circle, ${STITCH.primaryContainer}40 0%, transparent 70%)`,
+          borderRadius: "50%",
+          pointerEvents: "none",
+        }}
+      />
+      <div
+        style={{
+          position: "absolute",
+          bottom: "-10%",
+          left: "-5%",
+          width: "30%",
+          height: "30%",
+          background: `radial-gradient(circle, ${STITCH.primaryContainer}30 0%, transparent 70%)`,
+          borderRadius: "50%",
+          pointerEvents: "none",
+        }}
+      />
 
-      <Card className="w-full max-w-md bg-slate-900/60 border-slate-800/80 backdrop-blur-xl shadow-2xl relative z-10 text-slate-100 overflow-hidden">
-        {/* Border accent line */}
-        <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-indigo-500 via-purple-500 to-emerald-500" />
-        
-        <CardHeader className="pt-8 pb-4 text-center">
-          <div className="flex justify-center mb-4">
-            <div className="bg-indigo-500/10 p-3.5 rounded-2xl border border-indigo-500/30 flex items-center justify-center shadow-inner">
-              <svg className="size-8 text-indigo-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-            </div>
+      {/* Login Card */}
+      <div
+        style={{
+          width: "100%",
+          maxWidth: "26rem",
+          background: STITCH.surfaceContainer,
+          borderRadius: "12px",
+          border: `1px solid ${STITCH.outline}`,
+          boxShadow: "0 1px 3px rgba(0,0,0,0.05), 0 4px 12px rgba(0,0,0,0.05)",
+          position: "relative",
+          zIndex: 10,
+          overflow: "hidden",
+        }}
+      >
+        {/* Header with Logo */}
+        <div
+          style={{
+            padding: "2rem 2rem 1.5rem",
+            textAlign: "center",
+            borderBottom: `1px solid ${STITCH.outline}`,
+          }}
+        >
+          {/* Logo */}
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "center",
+              marginBottom: "1.5rem",
+            }}
+          >
+            <img
+              src="/images/logo.png"
+              alt="Báo Giá Phúc Gia Logo"
+              style={{
+                height: "64px",
+                width: "auto",
+                objectFit: "contain",
+              }}
+              onError={(e) => {
+                // Fallback to text logo if image fails
+                e.currentTarget.style.display = "none";
+                const parent = e.currentTarget.parentElement;
+                if (parent) {
+                  const fallback = document.createElement("div");
+                  fallback.style.cssText = `
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    width: 64px;
+                    height: 64px;
+                    background: ${STITCH.primary};
+                    color: ${STITCH.onPrimary};
+                    font-size: 24px;
+                    font-weight: 900;
+                    border-radius: 8px;
+                  `;
+                  fallback.textContent = "BG";
+                  parent.appendChild(fallback);
+                }
+              }}
+            />
           </div>
-          <CardTitle className="text-2xl font-bold tracking-tight text-white">BÁO GIÁ PHÚC GIA</CardTitle>
-          <CardDescription className="text-slate-400 mt-1 text-sm">
-            Hệ thống Quản lý và Biên tập Báo giá Excel Chuyên nghiệp
-          </CardDescription>
-        </CardHeader>
-        
-        <CardContent className="px-8 pb-8 space-y-6">
+          <h1
+            style={{
+              fontSize: "1.5rem",
+              fontWeight: 700,
+              color: STITCH.onSurface,
+              margin: 0,
+              letterSpacing: "-0.025em",
+              lineHeight: 1.2,
+            }}
+          >
+            BÁO GIÁ PHÚC GIA
+          </h1>
+          <p
+            style={{
+              marginTop: "0.5rem",
+              fontSize: "0.875rem",
+              color: STITCH.secondary,
+              lineHeight: 1.5,
+            }}
+          >
+            Hệ thống Quản lý và Biên tập Báo giá Excel
+          </p>
+        </div>
+
+        {/* Content */}
+        <div style={{ padding: "1.5rem 2rem 2rem" }}>
+          {/* Error Message */}
           {errorMessage && (
-            <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/35 text-red-200 px-4 py-3 rounded-lg text-sm transition-all duration-300">
-              <ShieldAlert className="size-4 shrink-0 text-red-400" />
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "0.5rem",
+                padding: "0.75rem 1rem",
+                borderRadius: "8px",
+                marginBottom: "1.25rem",
+                fontSize: "0.875rem",
+                backgroundColor: "#fef2f2",
+                border: `1px solid #fecaca`,
+                color: STITCH.error,
+              }}
+            >
+              <ShieldAlert style={{ width: "1rem", height: "1rem", flexShrink: 0 }} />
               <span>{errorMessage}</span>
             </div>
           )}
 
-          <form className="space-y-4" onSubmit={handleSubmit}>
-            <div className="space-y-1.5">
-              <Label htmlFor="username" className="text-slate-300 text-xs font-semibold uppercase tracking-wider">Tên đăng nhập</Label>
-              <div className="relative">
-                <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-450 pointer-events-none">
-                  <User className="size-4" />
+          {/* Form */}
+          <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+            {/* Username Field */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.375rem" }}>
+              <label
+                htmlFor="username"
+                style={{
+                  fontSize: "0.75rem",
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.05em",
+                  color: STITCH.secondary,
+                }}
+              >
+                Tên đăng nhập
+              </label>
+              <div style={{ position: "relative" }}>
+                <div
+                  style={{
+                    position: "absolute",
+                    left: "0.875rem",
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    pointerEvents: "none",
+                    color: STITCH.secondary,
+                  }}
+                >
+                  <User style={{ width: "1.125rem", height: "1.125rem" }} />
                 </div>
-                <Input
+                <input
                   id="username"
                   name="username"
                   type="text"
                   required
                   disabled={isLoading}
                   placeholder="admin hoặc user"
-                  className="pl-10 h-10 border-slate-800 bg-slate-950/40 text-slate-200 placeholder:text-slate-600 focus-visible:border-indigo-500 focus-visible:ring-indigo-500/20"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
+                  style={{
+                    width: "100%",
+                    height: "2.75rem",
+                    paddingLeft: "2.75rem",
+                    paddingRight: "0.875rem",
+                    borderRadius: "8px",
+                    border: `1px solid ${STITCH.outline}`,
+                    backgroundColor: STITCH.surfaceContainer,
+                    color: STITCH.onSurface,
+                    fontSize: "0.875rem",
+                    outline: "none",
+                    transition: "border-color 150ms, box-shadow 150ms",
+                  }}
+                  onFocus={(e) => {
+                    e.target.style.borderColor = STITCH.primary;
+                    e.target.style.boxShadow = `0 0 0 3px ${STITCH.primaryContainer}`;
+                  }}
+                  onBlur={(e) => {
+                    e.target.style.borderColor = STITCH.outline;
+                    e.target.style.boxShadow = "none";
+                  }}
                 />
               </div>
             </div>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="password" className="text-slate-300 text-xs font-semibold uppercase tracking-wider">Mật khẩu</Label>
-              <div className="relative">
-                <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-450 pointer-events-none">
-                  <Lock className="size-4" />
+            {/* Password Field */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.375rem" }}>
+              <label
+                htmlFor="password"
+                style={{
+                  fontSize: "0.75rem",
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.05em",
+                  color: STITCH.secondary,
+                }}
+              >
+                Mật khẩu
+              </label>
+              <div style={{ position: "relative" }}>
+                <div
+                  style={{
+                    position: "absolute",
+                    left: "0.875rem",
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    pointerEvents: "none",
+                    color: STITCH.secondary,
+                  }}
+                >
+                  <Lock style={{ width: "1.125rem", height: "1.125rem" }} />
                 </div>
-                <Input
+                <input
                   id="password"
                   name="password"
                   type={showPassword ? "text" : "password"}
                   required
                   disabled={isLoading}
                   placeholder="••••••••"
-                  className="pl-10 pr-10 h-10 border-slate-800 bg-slate-950/40 text-slate-200 placeholder:text-slate-600 focus-visible:border-indigo-500 focus-visible:ring-indigo-500/20"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
+                  style={{
+                    width: "100%",
+                    height: "2.75rem",
+                    paddingLeft: "2.75rem",
+                    paddingRight: "2.75rem",
+                    borderRadius: "8px",
+                    border: `1px solid ${STITCH.outline}`,
+                    backgroundColor: STITCH.surfaceContainer,
+                    color: STITCH.onSurface,
+                    fontSize: "0.875rem",
+                    outline: "none",
+                    transition: "border-color 150ms, box-shadow 150ms",
+                  }}
+                  onFocus={(e) => {
+                    e.target.style.borderColor = STITCH.primary;
+                    e.target.style.boxShadow = `0 0 0 3px ${STITCH.primaryContainer}`;
+                  }}
+                  onBlur={(e) => {
+                    e.target.style.borderColor = STITCH.outline;
+                    e.target.style.boxShadow = "none";
+                  }}
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition-colors focus:outline-none cursor-pointer"
+                  style={{
+                    position: "absolute",
+                    right: "0.875rem",
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    color: STITCH.secondary,
+                    cursor: "pointer",
+                    background: "none",
+                    border: "none",
+                    padding: 0,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
                   disabled={isLoading}
                 >
-                  {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                  {showPassword ? (
+                    <EyeOff style={{ width: "1.125rem", height: "1.125rem" }} />
+                  ) : (
+                    <Eye style={{ width: "1.125rem", height: "1.125rem" }} />
+                  )}
                 </button>
               </div>
             </div>
 
-            <div className="flex items-center justify-between pt-1">
-              <label className="flex items-center gap-2 text-sm text-slate-400 cursor-pointer select-none">
+            {/* Remember Me */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.5rem",
+                  fontSize: "0.875rem",
+                  color: STITCH.secondary,
+                  cursor: "pointer",
+                }}
+              >
                 <input
                   type="checkbox"
                   checked={rememberMe}
                   disabled={isLoading}
                   onChange={(e) => setRememberMe(e.target.checked)}
-                  className="rounded border-slate-800 bg-slate-950/40 text-indigo-650 focus:ring-indigo-500/30 cursor-pointer size-4"
+                  style={{
+                    width: "1rem",
+                    height: "1rem",
+                    borderRadius: "4px",
+                    border: `1px solid ${STITCH.outline}`,
+                    backgroundColor: STITCH.surfaceContainer,
+                    cursor: "pointer",
+                    accentColor: STITCH.primary,
+                  }}
                 />
                 <span>Ghi nhớ tài khoản</span>
               </label>
             </div>
 
-            <Button 
-              type="submit" 
-              disabled={isLoading} 
-              className="w-full h-10 bg-indigo-600 hover:bg-indigo-500 text-white font-medium shadow-lg shadow-indigo-500/20 transition-all rounded-lg cursor-pointer flex items-center justify-center gap-2 mt-2"
+            {/* Submit Button */}
+            <button
+              type="submit"
+              disabled={isLoading}
+              style={{
+                width: "100%",
+                height: "2.75rem",
+                marginTop: "0.5rem",
+                backgroundColor: STITCH.primary,
+                color: STITCH.onPrimary,
+                fontWeight: 600,
+                fontSize: "0.875rem",
+                borderRadius: "8px",
+                border: "none",
+                cursor: isLoading ? "not-allowed" : "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "0.5rem",
+                transition: "background-color 150ms, transform 100ms",
+                opacity: isLoading ? 0.7 : 1,
+              }}
+              onMouseEnter={(e) => {
+                if (!isLoading) e.currentTarget.style.backgroundColor = "#1d4ed8";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = STITCH.primary;
+              }}
+              onMouseDown={(e) => {
+                if (!isLoading) e.currentTarget.style.transform = "translateY(1px)";
+              }}
+              onMouseUp={(e) => {
+                e.currentTarget.style.transform = "translateY(0)";
+              }}
             >
               {isLoading ? (
                 <>
-                  <Loader2 className="size-4 animate-spin" />
+                  <Loader2 style={{ width: "1rem", height: "1rem", animation: "spin 1s linear infinite" }} />
                   <span>Đang kết nối...</span>
                 </>
               ) : (
                 <span>Đăng nhập</span>
               )}
-            </Button>
+            </button>
           </form>
 
+          {/* Quick Login */}
           {allowQuickLogin && (
             <>
-              <div className="relative flex py-2 items-center">
-                <div className="flex-grow border-t border-slate-800/80"></div>
-                <span className="flex-shrink mx-4 text-slate-500 text-xs font-semibold tracking-wider uppercase">Đăng nhập nhanh</span>
-                <div className="flex-grow border-t border-slate-800/80"></div>
+              {/* Divider */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  margin: "1.5rem 0 1.25rem",
+                }}
+              >
+                <div style={{ flex: 1, borderTop: `1px solid ${STITCH.outline}` }} />
+                <span
+                  style={{
+                    flexShrink: 0,
+                    margin: "0 1rem",
+                    fontSize: "0.75rem",
+                    fontWeight: 600,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.05em",
+                    color: STITCH.secondary,
+                  }}
+                >
+                  Đăng nhập nhanh
+                </span>
+                <div style={{ flex: 1, borderTop: `1px solid ${STITCH.outline}` }} />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              {/* Quick Login Buttons */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
                 <button
                   type="button"
                   disabled={isLoading}
                   onClick={() => handleQuickLogin("admin")}
-                  className="flex flex-col items-center justify-center py-2 px-3 bg-slate-955/30 border border-slate-800 hover:border-indigo-500/50 hover:bg-indigo-950/20 transition-all rounded-lg group cursor-pointer"
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: "0.875rem 0.75rem",
+                    borderRadius: "8px",
+                    border: `1px solid ${STITCH.outline}`,
+                    backgroundColor: STITCH.surfaceContainer,
+                    cursor: isLoading ? "not-allowed" : "pointer",
+                    transition: "border-color 150ms, background-color 150ms",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isLoading) {
+                      e.currentTarget.style.borderColor = STITCH.primary;
+                      e.currentTarget.style.backgroundColor = STITCH.hoverState;
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.borderColor = STITCH.outline;
+                    e.currentTarget.style.backgroundColor = STITCH.surfaceContainer;
+                  }}
                 >
-                  <span className="text-xs text-indigo-400 font-semibold group-hover:text-indigo-300">Quản trị viên</span>
-                  <span className="text-[10px] text-slate-500 mt-0.5">Admin Dashboard</span>
+                  <span style={{ fontSize: "0.875rem", fontWeight: 600, color: STITCH.primary }}>
+                    Quản trị viên
+                  </span>
+                  <span style={{ fontSize: "0.75rem", marginTop: "0.25rem", color: STITCH.secondary }}>
+                    Admin Dashboard
+                  </span>
                 </button>
+
                 <button
                   type="button"
                   disabled={isLoading}
                   onClick={() => handleQuickLogin("user")}
-                  className="flex flex-col items-center justify-center py-2 px-3 bg-slate-955/30 border border-slate-800 hover:border-emerald-500/50 hover:bg-emerald-950/20 transition-all rounded-lg group cursor-pointer"
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: "0.875rem 0.75rem",
+                    borderRadius: "8px",
+                    border: `1px solid ${STITCH.outline}`,
+                    backgroundColor: STITCH.surfaceContainer,
+                    cursor: isLoading ? "not-allowed" : "pointer",
+                    transition: "border-color 150ms, background-color 150ms",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isLoading) {
+                      e.currentTarget.style.borderColor = STITCH.primary;
+                      e.currentTarget.style.backgroundColor = STITCH.hoverState;
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.borderColor = STITCH.outline;
+                    e.currentTarget.style.backgroundColor = STITCH.surfaceContainer;
+                  }}
                 >
-                  <span className="text-xs text-emerald-400 font-semibold group-hover:text-emerald-300">Nhân viên</span>
-                  <span className="text-[10px] text-slate-500 mt-0.5">User Dashboard</span>
+                  <span style={{ fontSize: "0.875rem", fontWeight: 600, color: STITCH.primary }}>
+                    Nhân viên
+                  </span>
+                  <span style={{ fontSize: "0.75rem", marginTop: "0.25rem", color: STITCH.secondary }}>
+                    User Dashboard
+                  </span>
                 </button>
               </div>
             </>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
+
+      {/* Keyframes for animation */}
+      <style>{`
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
     </div>
   );
 }

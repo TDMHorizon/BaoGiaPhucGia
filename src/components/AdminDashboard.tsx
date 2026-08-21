@@ -394,22 +394,24 @@ export function AdminDashboard() {
       <div className="bg-[#f3f2f1] flex flex-col shrink-0 border-b border-slate-300">
         <Tabs defaultValue="home" className="w-full">
           <TabsList className="h-8 bg-white border-b border-slate-300 rounded-none w-full justify-start px-2 gap-1 mb-0">
-            <TabsTrigger value="file" className="h-full rounded-none border-b-2 border-transparent data-[state=active]:border-indigo-600 data-[state=active]:text-indigo-700 data-[state=active]:shadow-none px-4 text-xs bg-transparent data-[state=active]:bg-white">Tệp</TabsTrigger>
-            <TabsTrigger value="home" className="h-full rounded-none border-b-2 border-transparent data-[state=active]:border-indigo-600 data-[state=active]:text-indigo-700 data-[state=active]:shadow-none px-4 text-xs bg-transparent data-[state=active]:bg-white">Trang chủ</TabsTrigger>
+            <TabsTrigger value="file" className="h-full rounded-none border-b-2 border-transparent data-[active]:border-indigo-600 data-[active]:text-indigo-700 data-[active]:shadow-none px-4 text-xs bg-transparent data-[active]:bg-white">Tệp</TabsTrigger>
+            <TabsTrigger value="home" className="h-full rounded-none border-b-2 border-transparent data-[active]:border-indigo-600 data-[active]:text-indigo-700 data-[active]:shadow-none px-4 text-xs bg-transparent data-[active]:bg-white">Trang chủ</TabsTrigger>
             {user?.role === "admin" && (
-              <TabsTrigger value="admin" className="h-full rounded-none border-b-2 border-transparent data-[state=active]:border-indigo-600 data-[state=active]:text-indigo-700 data-[state=active]:shadow-none px-4 text-xs bg-transparent data-[state=active]:bg-white">Hệ thống</TabsTrigger>
+              <TabsTrigger value="admin" className="h-full rounded-none border-b-2 border-transparent data-[active]:border-indigo-600 data-[active]:text-indigo-700 data-[active]:shadow-none px-4 text-xs bg-transparent data-[active]:bg-white">Hệ thống</TabsTrigger>
             )}
           </TabsList>
           
           <div className="h-24 bg-white/50 px-2 py-1 flex items-start gap-4 overflow-x-auto custom-scrollbar">
             
-            <TabsContent value="file" className="m-0 h-full flex items-start gap-2 pt-1 data-[state=inactive]:hidden">
+            <TabsContent value="file" className="m-0 h-full flex items-start gap-2 pt-1 data-[hidden]:hidden">
               <div className="flex flex-col items-center">
                 <Dialog>
-                  <DialogTrigger render={<Button variant="ghost" className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-indigo-50" />}>
+                  <DialogTrigger>
+                    <Button variant="ghost" className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-indigo-50">
                       <FolderOpen className="w-6 h-6 text-indigo-600" strokeWidth={1.5} />
                       <span className="text-[10px] font-medium leading-none">Mở dự án</span>
-                    </DialogTrigger>
+                    </Button>
+                  </DialogTrigger>
                   <DialogContent className="sm:max-w-6xl w-full max-h-[90vh] overflow-y-auto">
                     <DialogHeader>
                       <DialogTitle>Quản lý Báo Giá</DialogTitle>
@@ -454,11 +456,13 @@ export function AdminDashboard() {
                             <ul className="divide-y divide-slate-100">
                               {projects.map((p) => (
                                 <li key={p.id} className={`p-3 hover:bg-slate-50 flex justify-between items-center group ${selectedProject?.id === p.id ? "bg-indigo-50/50" : ""}`}>
-                                  <DialogClose render={<div className="flex-1 cursor-pointer" onClick={() => handleSelectProject(p.id)} />}>
-                                    <p className="font-bold text-slate-800 text-xs mb-0.5 text-left group-hover:text-indigo-600">{p.name}</p>
-                                    <div className="flex items-center gap-2 mt-1">
-                                      <StatusBadge status={p.trangThai as TrangThai} />
-                                      <span className="text-[10px] text-slate-400 font-medium">BG: {p.soBaoGia || "—"}</span>
+                                  <DialogClose asChild>
+                                    <div className="flex-1 cursor-pointer" onClick={() => handleSelectProject(p.id)}>
+                                      <p className="font-bold text-slate-800 text-xs mb-0.5 text-left group-hover:text-indigo-600">{p.name}</p>
+                                      <div className="flex items-center gap-2 mt-1">
+                                        <StatusBadge status={p.trangThai as TrangThai} />
+                                        <span className="text-[10px] text-slate-400 font-medium">BG: {p.soBaoGia || "—"}</span>
+                                      </div>
                                     </div>
                                   </DialogClose>
                                   <Button variant="ghost" size="sm" onClick={() => handleDeleteProject(p.id)} className="h-7 px-2 text-red-500 hover:bg-red-50 ml-2 shrink-0">Xóa</Button>
@@ -480,10 +484,12 @@ export function AdminDashboard() {
                   <div className="w-px h-14 bg-slate-200 mx-2" />
                   <div className="flex flex-col items-center">
                     <Dialog>
-                      <DialogTrigger render={<Button variant="ghost" className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-indigo-50" />}>
+                      <DialogTrigger>
+                        <Button variant="ghost" className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-indigo-50">
                           <FileText className="w-6 h-6 text-emerald-600" strokeWidth={1.5} />
                           <span className="text-[10px] font-medium leading-none">Templates</span>
-                        </DialogTrigger>
+                        </Button>
+                      </DialogTrigger>
                       <DialogContent className="sm:max-w-5xl w-full max-h-[90vh] overflow-y-auto">
                         <DialogHeader><DialogTitle>Thư viện Templates</DialogTitle></DialogHeader>
                         <TemplateLibrary onCloned={() => loadProjects()} />
@@ -495,7 +501,7 @@ export function AdminDashboard() {
               )}
             </TabsContent>
             
-            <TabsContent value="home" className="m-0 h-full flex items-start gap-4 pt-1 data-[state=inactive]:hidden w-full">
+            <TabsContent value="home" className="m-0 h-full flex items-start gap-4 pt-1 data-[hidden]:hidden w-full">
               {!selectedProject ? (
                 <div className="flex items-center justify-center w-full h-full">
                   <p className="text-xs text-slate-400 italic">Vui lòng chọn báo giá ở tab Tệp để mở khóa các công cụ</p>
@@ -504,10 +510,12 @@ export function AdminDashboard() {
                 <>
                   <div className="flex flex-col items-center">
                     <Dialog>
-                      <DialogTrigger render={<Button variant="ghost" className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-amber-50" />}>
+                      <DialogTrigger>
+                        <Button variant="ghost" className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-amber-50">
                           <Settings className="w-6 h-6 text-amber-600" strokeWidth={1.5} />
                           <span className="text-[10px] font-medium leading-none">Cấu hình</span>
-                        </DialogTrigger>
+                        </Button>
+                      </DialogTrigger>
                       <DialogContent className="sm:max-w-4xl w-full max-h-[90vh] overflow-y-auto bg-slate-50">
                         <DialogHeader><DialogTitle>Cấu hình & Nhật ký</DialogTitle></DialogHeader>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
@@ -627,13 +635,15 @@ export function AdminDashboard() {
             </TabsContent>
             
             {user?.role === "admin" && (
-              <TabsContent value="admin" className="m-0 h-full flex items-start gap-2 pt-1 data-[state=inactive]:hidden">
+              <TabsContent value="admin" className="m-0 h-full flex items-start gap-2 pt-1 data-[hidden]:hidden">
                 <div className="flex flex-col items-center">
                   <Dialog>
-                    <DialogTrigger render={<Button variant="ghost" className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-blue-50" />}>
+                    <DialogTrigger>
+                      <Button variant="ghost" className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-blue-50">
                         <Users className="w-6 h-6 text-blue-600" strokeWidth={1.5} />
                         <span className="text-[10px] font-medium leading-none">Tài khoản</span>
-                      </DialogTrigger>
+                      </Button>
+                    </DialogTrigger>
                     <DialogContent className="sm:max-w-5xl w-full max-h-[90vh] overflow-y-auto">
                       <DialogHeader><DialogTitle>Quản lý Tài Khoản</DialogTitle></DialogHeader>
                       <UserManagement />
