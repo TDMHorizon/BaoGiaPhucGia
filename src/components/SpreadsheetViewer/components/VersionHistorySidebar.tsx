@@ -73,15 +73,14 @@ export const VersionHistorySidebar = React.memo(({
       <button
         onClick={onToggle}
         className={`
-          fixed right-0 top-1/2 -translate-y-1/2 z-30
+          absolute right-0 top-1/2 -translate-y-1/2 z-30
           flex items-center gap-2
           px-3 py-4
           bg-surface-container-lowest border border-l-0 border-outline
           rounded-l-lg shadow-lg
           hover:bg-surface-container-high transition-all
-          ${isOpen ? 'translate-x-[280px]' : 'translate-x-0'}
+          ${isOpen ? 'translate-x-full' : 'translate-x-0'}
         `}
-        style={{ right: isOpen ? '280px' : '0' }}
       >
         <svg
           className={`w-5 h-5 text-on-surface-variant transition-transform ${isOpen ? 'rotate-180' : ''}`}
@@ -99,7 +98,7 @@ export const VersionHistorySidebar = React.memo(({
       {/* Sidebar Panel */}
       <div
         className={`
-          fixed right-0 top-0 bottom-0 z-40
+          absolute right-0 top-0 bottom-0 z-40
           w-[280px] h-full
           bg-surface-container-lowest border-l border-outline
           shadow-2xl

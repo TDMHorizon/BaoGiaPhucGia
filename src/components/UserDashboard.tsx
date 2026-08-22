@@ -361,26 +361,19 @@ export function UserDashboard() {
           </div>
         ) : (
           <div className="flex-1 bg-surface-container-lowest shadow-lg rounded-xl border border-outline flex flex-col overflow-hidden">
-            <div className="bg-surface-container-high border-b flex px-3 pt-3 gap-1 overflow-x-auto shrink-0 custom-scrollbar">
-              {workbook?.SheetNames.map(name => (
-                <button
-                  key={name}
-                  onClick={() => handleTabChange(name)}
-                  className={`px-4 py-2 text-label-lg font-semibold rounded-t-lg transition-colors border border-b-0 ${activeSheet === name ? "bg-surface-container-lowest text-primary border-outline relative translate-y-[1px]" : "bg-surface-container-high text-on-surface-variant hover:bg-surface-container-highest border-transparent"}`}
-                >
-                  {name}
-                </button>
-              ))}
-            </div>
             <SpreadsheetViewer
               workbook={workbook}
               exceljsWorkbook={exceljsWorkbook}
               sheetData={sheetData}
               activeSheet={activeSheet}
+              sheetNames={workbook?.SheetNames || []}
               mode="user"
               locked={locked}
               editableRange={selectedProject.editableRanges?.[activeSheet] || ""}
               selectedColumn={selectedColumn}
+              fileName={selectedProject.name}
+              showToolbar={false}
+              onSheetClick={handleTabChange}
               onColumnClick={(i) => setSelectedColumn(selectedColumn === i ? null : i)}
               onCellEdit={handleCellChange}
             />

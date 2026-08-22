@@ -61,7 +61,7 @@ export function SpreadsheetToolbar({
   isLoading = {},
   disabled = {},
   showButtons = {
-    preview: true,
+    preview: false,
     download: true,
     saveVersion: true,
     save: true,

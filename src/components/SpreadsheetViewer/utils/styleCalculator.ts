@@ -2,23 +2,23 @@ import React from 'react';
 import ExcelJS from "exceljs";
 import { MergeInfo, getCellExcelJSStyle } from "../../../lib/utils-excel";
 
-// Stitch Design System colors
-const STITCH_COLORS = {
-  surface: '#f8fafc',
-  surfaceContainerLowest: '#ffffff',
-  surfaceContainerLow: '#f8fafc',
-  surfaceContainer: '#f1f5f9',
-  primary: '#2563eb',
-  primaryLight: 'rgba(37, 99, 235, 0.12)',
-  primaryForeground: '#ffffff',
-  onSurface: '#0f172a',
-  onSurfaceVariant: '#475569',
-  outline: '#e2e8f0',
-  outlineVariant: '#cbd5e1',
-  editable: '#f0fdf4',
-  editableBorder: '#bbf7d0',
-  error: '#ef4444',
-  selected: 'rgba(37, 99, 235, 0.08)',
+// Design tokens - single source of truth
+const DESIGN_TOKENS = {
+  colors: {
+    surface: '#f8fafc',
+    surfaceContainerLowest: '#ffffff',
+    surfaceContainerLow: '#f8fafc',
+    primary: '#2563eb',
+    primaryLight: 'rgba(37, 99, 235, 0.12)',
+    onSurface: '#0f172a',
+    onSurfaceVariant: '#475569',
+    editable: '#f0fdf4',
+    selected: 'rgba(37, 99, 235, 0.08)',
+  },
+  sizes: {
+    defaultCellWidth: 80,
+    truncateThreshold: 120,
+  }
 } as const;
 
 interface ComputeCellStylesOptions {
@@ -40,33 +40,77 @@ export interface CellUIStyles {
   spanStyle: React.CSSProperties;
 }
 
-// Simple memoization cache for performance
-const memoCache = new Map<string, CellUIStyles>();
-const MAX_CACHE_SIZE = 1000;
+// LRU Cache implementation for better performance
+const MAX_CACHE_SIZE = 2000;
+
+class LRUCache<K, V> {
+  private cache = new Map<K, V>();
+
+  get(key: K): V | undefined {
+    const value = this.cache.get(key);
+    if (value !== undefined) {
+      // Move to end (most recently used)
+      this.cache.delete(key);
+      this.cache.set(key, value);
+    }
+    return value;
+  }
+
+  set(key: K, value: V): void {
+    if (this.cache.has(key)) {
+      this.cache.delete(key);
+    } else if (this.cache.size >= MAX_CACHE_SIZE) {
+      // Remove oldest (first) entry
+      const oldestKey = this.cache.keys().next().value;
+      if (oldestKey !== undefined) this.cache.delete(oldestKey);
+    }
+    this.cache.set(key, value);
+  }
+
+  clear(): void {
+    this.cache.clear();
+  }
+
+  get size(): number {
+    return this.cache.size;
+  }
+}
+
+// Metrics tracking (reset on cache clear to prevent overflow)
+let cacheHits = 0;
+let cacheMisses = 0;
+const MAX_METRIC_VALUE = 1000000;
 
 function getCacheKey(opts: ComputeCellStylesOptions): string {
   return `${opts.r}-${opts.c}-${opts.isEditable}-${opts.isSelected}-${opts.mergeInfo?.shouldSkip ?? 'none'}`;
 }
 
+const styleCache = new LRUCache<string, CellUIStyles>();
+
 export function computeCellUIStyles(opts: ComputeCellStylesOptions): CellUIStyles {
   const cacheKey = getCacheKey(opts);
+  const cached = styleCache.get(cacheKey);
 
-  // Check cache first
-  if (memoCache.has(cacheKey)) {
-    return memoCache.get(cacheKey)!;
+  if (cached) {
+    if (cacheHits < MAX_METRIC_VALUE) cacheHits++;
+    return cached;
   }
 
+  if (cacheMisses < MAX_METRIC_VALUE) cacheMisses++;
   const result = computeStyles(opts);
-
-  // Manage cache size
-  if (memoCache.size >= MAX_CACHE_SIZE) {
-    // Clear half the cache when full
-    const keysToDelete = Array.from(memoCache.keys()).slice(0, MAX_CACHE_SIZE / 2);
-    keysToDelete.forEach(key => memoCache.delete(key));
-  }
-
-  memoCache.set(cacheKey, result);
+  styleCache.set(cacheKey, result);
   return result;
+}
+
+// Export metrics for debugging/performance monitoring
+export function getCacheStats(): { hits: number; misses: number; size: number; hitRate: number } {
+  const total = cacheHits + cacheMisses;
+  return {
+    hits: cacheHits,
+    misses: cacheMisses,
+    size: styleCache.size,
+    hitRate: total > 0 ? cacheHits / total : 0,
+  };
 }
 
 function computeStyles(opts: ComputeCellStylesOptions): CellUIStyles {
@@ -83,36 +127,24 @@ function computeStyles(opts: ComputeCellStylesOptions): CellUIStyles {
   }
 
   const cellStyle = getCellExcelJSStyle(ejWs, r, c);
-  const cellWidth = colWidths[c] || 80;
+  const cellWidth = colWidths[c] || DESIGN_TOKENS.sizes.defaultCellWidth;
 
   // Calculate total width for merged cells
-  const totalWidth = (mergeInfo?.colSpan && mergeInfo.colSpan > 1) ? (() => {
-    let w = 0;
-    for (let offset = 0; offset < (mergeInfo.colSpan || 1); offset++) {
-      w += (colWidths[c + offset] || 80);
-    }
-    return w;
-  })() : cellWidth;
+  const totalWidth = (mergeInfo?.colSpan && mergeInfo.colSpan > 1)
+    ? Array.from({ length: mergeInfo.colSpan }, (_, i) => colWidths[c + i] || DESIGN_TOKENS.sizes.defaultCellWidth).reduce((a, b) => a + b, 0)
+    : cellWidth;
 
-  const shouldTruncate = totalWidth < 120;
+  const shouldTruncate = totalWidth < DESIGN_TOKENS.sizes.truncateThreshold;
 
   // Determine background color
   let baseBgColor = cellStyle.backgroundColor || 'transparent';
 
-  // Handle transparent/white backgrounds
   if (baseBgColor === 'transparent' || baseBgColor === '#ffffff' || baseBgColor === '#fff') {
-    if (isEditable) {
-      // Editable cells get light green background
-      baseBgColor = STITCH_COLORS.editable;
-    } else {
-      baseBgColor = 'transparent';
-    }
+    baseBgColor = isEditable ? DESIGN_TOKENS.colors.editable : 'transparent';
   }
 
-  // Apply selection color
-  const defaultSelectedColor = STITCH_COLORS.selected;
   const finalBgColor = isSelected
-    ? (selectedColor || defaultSelectedColor)
+    ? (selectedColor || DESIGN_TOKENS.colors.selected)
     : baseBgColor;
 
   // Build final TD style with Stitch tokens
@@ -130,7 +162,7 @@ function computeStyles(opts: ComputeCellStylesOptions): CellUIStyles {
     fontWeight: finalTdStyle.fontWeight,
     fontStyle: finalTdStyle.fontStyle,
     textDecoration: finalTdStyle.textDecoration,
-    color: finalTdStyle.color || STITCH_COLORS.onSurface,
+    color: finalTdStyle.color || DESIGN_TOKENS.colors.onSurface,
     fontSize: finalTdStyle.fontSize,
     writingMode: finalTdStyle.writingMode,
     textOrientation: finalTdStyle.textOrientation,
@@ -151,8 +183,10 @@ function computeStyles(opts: ComputeCellStylesOptions): CellUIStyles {
 
 // Clear cache when needed (e.g., when sheet data changes significantly)
 export function clearStyleCache(): void {
-  memoCache.clear();
+  styleCache.clear();
+  cacheHits = 0;
+  cacheMisses = 0;
 }
 
-// Export Stitch colors for use in other components
-export { STITCH_COLORS };
+// Export design tokens for use in other components
+export { DESIGN_TOKENS };

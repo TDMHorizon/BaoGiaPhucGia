@@ -682,7 +682,7 @@ export function AdminDashboard() {
                 </button>
               ))}
             </div>
-            <div 
+            <div
               className="flex-1 overflow-hidden flex flex-col relative"
               onMouseUp={handleCellMouseUp}
               onMouseLeave={() => { if (dragStart) handleCellMouseUp(); }}
@@ -692,6 +692,7 @@ export function AdminDashboard() {
                 exceljsWorkbook={exceljsWorkbook}
                 sheetData={sheetData}
                 activeSheet={activeSheet}
+                sheetNames={selectedProject.sheets || []}
                 mode="admin"
                 editableRange={ranges[activeSheet] || ""}
                 selectedRange={(() => {
@@ -703,6 +704,9 @@ export function AdminDashboard() {
                   return `${XLSX.utils.encode_cell({ r: r1, c: c1 })}:${XLSX.utils.encode_cell({ r: r2, c: c2 })}`;
                 })()}
                 previewLimit={previewLimit}
+                fileName={selectedProject.name}
+                showToolbar={true}
+                onSheetClick={handleTabChange}
                 onColumnClick={handleColumnClick}
                 onCellMouseDown={handleCellMouseDown}
                 onCellMouseEnter={handleCellMouseEnter}

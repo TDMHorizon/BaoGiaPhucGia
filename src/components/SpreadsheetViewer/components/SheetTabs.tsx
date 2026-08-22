@@ -165,13 +165,12 @@ export function SheetTabs({
               )}
             </button>
 
-            {/* Action Buttons (visible on hover or when active) */}
-            {(isActive || canRename || canDelete) && (
+            {/* Action Buttons - visible on hover, respect permissions */}
+            {(canRename || canDelete) && (
               <div
                 className={cn(
                   "flex items-center gap-0.5",
-                  "opacity-0 group-hover:opacity-100 transition-opacity",
-                  isActive && "opacity-100"
+                  "opacity-0 group-hover:opacity-100 transition-opacity"
                 )}
               >
                 {canRename && !isEditing && (

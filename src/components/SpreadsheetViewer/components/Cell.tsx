@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { cn } from '@/lib/utils';
 import { CellUIStyles } from '../utils/styleCalculator';
 
 interface CellProps {
@@ -12,11 +13,12 @@ interface CellProps {
   onCellEdit?: (r: number, c: number, newValue: string) => void;
   onMouseDown?: (r: number, c: number) => void;
   onMouseEnter?: (r: number, c: number) => void;
+  onContextMenu?: (r: number, c: number, x: number, y: number) => void;
 }
 
 export const Cell = React.memo(({
   r, c, value, uiStyles, mode, isEditable, isSelected = false,
-  onCellEdit, onMouseDown, onMouseEnter
+  onCellEdit, onMouseDown, onMouseEnter, onContextMenu
 }: CellProps) => {
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(value);
@@ -35,6 +37,11 @@ export const Cell = React.memo(({
     }
   }, [mode, isEditable, value]);
 
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    onContextMenu?.(r, c, e.clientX, e.clientY);
+  }, [r, c, onContextMenu]);
+
   const handleSave = useCallback(() => {
     if (editValue !== value && onCellEdit) {
       onCellEdit(r, c, editValue);
@@ -52,36 +59,31 @@ export const Cell = React.memo(({
     }
   }, [handleSave, value]);
 
-  // Selection border styling
-  const selectionBorder = isSelected
-    ? 'ring-2 ring-primary ring-inset'
-    : '';
+  const getCursorClass = () => {
+    if (mode === 'admin') return 'cursor-crosshair';
+    return isEditable ? 'cursor-text' : 'cursor-not-allowed';
+  };
 
-  const cursorClass = mode === 'admin'
-    ? 'cursor-crosshair'
-    : isEditable
-      ? 'cursor-text'
-      : 'cursor-not-allowed';
+  const selectionSpan = uiStyles.mergeInfo?.shouldSkip === false && 'colSpan' in uiStyles.mergeInfo
+    ? { colSpan: uiStyles.mergeInfo.colSpan, rowSpan: uiStyles.mergeInfo.rowSpan }
+    : {};
 
   return (
     <td
-      className={`
-        relative
-        border border-border
-        p-2
-        ${cursorClass}
-        ${selectionBorder}
-        ${uiStyles.shouldTruncate ? 'truncate' : ''}
-        ${isEditable && !isEditing ? 'hover:bg-primary/5' : ''}
-        transition-colors duration-100
-      `}
+      className={cn(
+        'relative border border-border p-2 transition-colors duration-100',
+        getCursorClass(),
+        isSelected && 'ring-2 ring-primary ring-inset',
+        uiStyles.shouldTruncate && 'truncate',
+        isEditable && !isEditing && 'hover:bg-primary/5'
+      )}
       style={uiStyles.finalTdStyle}
       title={value}
-      rowSpan={uiStyles.mergeInfo && 'rowSpan' in uiStyles.mergeInfo ? uiStyles.mergeInfo.rowSpan : undefined}
-      colSpan={uiStyles.mergeInfo && 'colSpan' in uiStyles.mergeInfo ? uiStyles.mergeInfo.colSpan : undefined}
-      onMouseDown={() => onMouseDown && onMouseDown(r, c)}
-      onMouseEnter={() => onMouseEnter && onMouseEnter(r, c)}
+      {...selectionSpan}
+      onMouseDown={() => onMouseDown?.(r, c)}
+      onMouseEnter={() => onMouseEnter?.(r, c)}
       onDoubleClick={handleDoubleClick}
+      onContextMenu={handleContextMenu}
     >
       {/* Selection resize handle indicator */}
       {isSelected && (
@@ -104,16 +106,12 @@ export const Cell = React.memo(({
       {isEditing ? (
         <textarea
           autoFocus
-          className="
-            absolute inset-0 w-full h-full p-1
-            bg-surface-container-lowest
-            border-2 border-primary rounded
-            shadow-md
-            focus:outline-none focus:ring-2 focus:ring-primary/20
-            text-on-surface font-sans
-            resize-none
-            z-10
-          "
+          className={cn(
+            'absolute inset-0 w-full h-full p-1',
+            'bg-surface-container-lowest border-2 border-primary rounded shadow-md',
+            'focus:outline-none focus:ring-2 focus:ring-primary/20',
+            'text-on-surface font-sans resize-none z-10'
+          )}
           style={{ minHeight: '60px' }}
           value={editValue}
           onChange={(e) => setEditValue(e.target.value)}
