@@ -56,7 +56,6 @@ export const api = {
     return request("/api/me");
   },
 
-
   async getUsers() {
     return request("/api/users");
   },
@@ -86,10 +85,13 @@ export const api = {
     return request(`/api/projects${query ? `?${query}` : ""}`);
   },
 
+<<<<<<< HEAD
   async getDeletedProjects() {
     return request("/api/projects/deleted");
   },
 
+=======
+>>>>>>> b5c205dd1b5eba611c0e83ab261673cb36b2d879
   async getPendingCount() {
     return request("/api/projects/pending-count");
   },
@@ -119,10 +121,13 @@ export const api = {
     return request(`/api/projects/${id}`, { method: "DELETE" });
   },
 
+<<<<<<< HEAD
   async restoreProject(id: string) {
     return request(`/api/projects/${id}/restore`, { method: "POST" });
   },
 
+=======
+>>>>>>> b5c205dd1b5eba611c0e83ab261673cb36b2d879
   async updateRanges(id: string, editableRanges: Record<string, string>) {
     return request(`/api/projects/${id}/ranges`, {
       method: "PUT",
