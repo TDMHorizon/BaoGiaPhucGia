@@ -11,10 +11,6 @@ import {
   ensureDataDirs,
   saveProjectFile,
   readProjectFile,
-<<<<<<< HEAD
-=======
-  deleteProjectFile,
->>>>>>> b5c205dd1b5eba611c0e83ab261673cb36b2d879
   readVersionSnapshot,
   saveTemplateFile,
   readTemplateFile,
@@ -47,16 +43,11 @@ function newId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-<<<<<<< HEAD
 function loadProject(id: string, includeDeleted = false): ProjectRow | undefined {
   const query = includeDeleted
     ? "SELECT * FROM projects WHERE id = ?"
     : "SELECT * FROM projects WHERE id = ? AND deleted_at IS NULL";
   return getDb().prepare(query).get(id) as ProjectRow | undefined;
-=======
-function loadProject(id: string): ProjectRow | undefined {
-  return getDb().prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | undefined;
->>>>>>> b5c205dd1b5eba611c0e83ab261673cb36b2d879
 }
 
 async function projectWithFile(p: ProjectRow) {
@@ -169,11 +160,7 @@ async function startServer() {
     const status = String(req.query.status || "").trim();
     const assignee = String(req.query.assignee || "").trim();
 
-<<<<<<< HEAD
     let rows = getDb().prepare("SELECT * FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC").all() as ProjectRow[];
-=======
-    let rows = getDb().prepare("SELECT * FROM projects ORDER BY updated_at DESC").all() as ProjectRow[];
->>>>>>> b5c205dd1b5eba611c0e83ab261673cb36b2d879
 
     if (user.role !== "admin" && user.role !== "manager") {
       rows = rows.filter((p) => userCanAccessProject(user, p));
@@ -198,11 +185,7 @@ async function startServer() {
 
   app.get("/api/projects/pending-count", authMiddleware, requireAdminOrManager, (_req, res) => {
     const row = getDb()
-<<<<<<< HEAD
       .prepare("SELECT COUNT(*) as c FROM projects WHERE deleted_at IS NULL AND trang_thai IN ('dang_lam', 'cho_duyet')")
-=======
-      .prepare("SELECT COUNT(*) as c FROM projects WHERE trang_thai IN ('dang_lam', 'cho_duyet')")
->>>>>>> b5c205dd1b5eba611c0e83ab261673cb36b2d879
       .get() as { c: number };
     res.json({ count: row.c });
   });
@@ -256,14 +239,11 @@ async function startServer() {
     res.json(await projectWithFile(project));
   }));
 
-<<<<<<< HEAD
   app.get("/api/projects/deleted", authMiddleware, requireAdminOrManager, (_req, res) => {
     const rows = getDb().prepare("SELECT * FROM projects WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC").all() as ProjectRow[];
     res.json(rows.map(listSummary));
   });
 
-=======
->>>>>>> b5c205dd1b5eba611c0e83ab261673cb36b2d879
   app.get("/api/projects/:id", authMiddleware, catchAsync(async (req, res) => {
     const user = req.user!;
     const project = loadProject(req.params.id);
@@ -315,7 +295,6 @@ async function startServer() {
   app.delete("/api/projects/:id", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
-<<<<<<< HEAD
     if (project.deleted_at) return res.status(400).json({ error: "Project already deleted" });
     getDb().prepare("UPDATE projects SET deleted_at = ?, updated_at = ? WHERE id = ?").run(now(), now(), project.id);
     res.json({ ok: true, deletedAt: now() });
@@ -339,20 +318,6 @@ async function startServer() {
         .run(JSON.stringify(req.body.editableRanges || {}), now(), project.id);
 
     res.json({ success: true });
-=======
-    getDb().prepare("DELETE FROM projects WHERE id = ?").run(project.id);
-    await deleteProjectFile(project.id);
-    res.json({ ok: true });
-  }));
-
-  app.put("/api/projects/:id/ranges", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
-    const project = loadProject(req.params.id);
-    if (!project) return res.status(404).json({ error: "Project not found" });
-    getDb()
-      .prepare("UPDATE projects SET editable_ranges = ?, updated_at = ? WHERE id = ?")
-      .run(JSON.stringify(req.body.editableRanges || {}), now(), project.id);
-    res.json(await projectWithFile(loadProject(project.id)!));
->>>>>>> b5c205dd1b5eba611c0e83ab261673cb36b2d879
   }));
 
   // Chỉ admin được cập nhật file gốc (cấu trúc sheet). Nhân viên không ghi đè.
@@ -437,10 +402,6 @@ async function startServer() {
 
   // Edits
   app.post("/api/projects/:id/edits", authMiddleware, (req, res) => {
-<<<<<<< HEAD
-
-=======
->>>>>>> b5c205dd1b5eba611c0e83ab261673cb36b2d879
     const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
@@ -452,15 +413,12 @@ async function startServer() {
     const { sheetName, cell, oldValue, newValue } = req.body || {};
     const id = newId();
     const timestamp = now();
-<<<<<<< HEAD
     const safeUserId = user?.id || "unknown";
     const safeUsername = user?.username || "Admin";
     const safeSheetName = sheetName || "";
     const safeCell = cell || "";
     const safeOldValue = oldValue || "";
     const safeNewValue = newValue || "";
-=======
->>>>>>> b5c205dd1b5eba611c0e83ab261673cb36b2d879
     getDb()
       .prepare(
         `INSERT INTO edits (id, project_id, user_id, username, sheet_name, cell, old_value, new_value, timestamp)

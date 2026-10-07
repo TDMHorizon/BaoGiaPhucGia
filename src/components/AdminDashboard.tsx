@@ -21,32 +21,21 @@ import { TemplateLibrary } from "./TemplateLibrary";
 import { TRANG_THAI_LABELS, type TrangThai } from "../lib/constants";
 import { printProjectAsPdf } from "../lib/printPdf";
 import { useAuth } from "../lib/auth";
-<<<<<<< HEAD
 import { AdminHeader, AdminSidebar } from "../layout/AdminLayout";
 import { AdminHome } from "./pages/AdminHome";
 
 export function AdminDashboard() {
   const { user, logout } = useAuth();
-=======
-
-export function AdminDashboard() {
-  const { user } = useAuth();
->>>>>>> b5c205dd1b5eba611c0e83ab261673cb36b2d879
   const [projects, setProjects] = useState<any[]>([]);
   const [selectedProject, setSelectedProject] = useState<any>(null);
   const [edits, setEdits] = useState<any[]>([]);
   const [ranges, setRanges] = useState<any>({});
-<<<<<<< HEAD
   const [mainTab, setMainTab] = useState("file");
-=======
-  const [mainTab, setMainTab] = useState("projects");
->>>>>>> b5c205dd1b5eba611c0e83ab261673cb36b2d879
   const [searchQ, setSearchQ] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
   const [pendingCount, setPendingCount] = useState(0);
   const [showLeftPanel, setShowLeftPanel] = useState(true);
   const [showRightPanel, setShowRightPanel] = useState(true);
-<<<<<<< HEAD
   const [showMobileNav, setShowMobileNav] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isQuotesNavExpanded, setIsQuotesNavExpanded] = useState(true);
@@ -56,8 +45,6 @@ export function AdminDashboard() {
   const [isUserDialogOpen, setIsUserDialogOpen] = useState(false);
   const [isDeletedProjectsDialogOpen, setIsDeletedProjectsDialogOpen] = useState(false);
   const [deletedProjects, setDeletedProjects] = useState<any[]>([]);
-=======
->>>>>>> b5c205dd1b5eba611c0e83ab261673cb36b2d879
 
   // For visual selector
   const [workbook, setWorkbook] = useState<XLSX.WorkBook | null>(null);
@@ -92,7 +79,6 @@ export function AdminDashboard() {
     }
   };
 
-<<<<<<< HEAD
   const loadDeletedProjects = async () => {
     try {
       setDeletedProjects(await api.getDeletedProjects());
@@ -112,8 +98,6 @@ export function AdminDashboard() {
     }
   };
 
-=======
->>>>>>> b5c205dd1b5eba611c0e83ab261673cb36b2d879
   const onDrop = async (acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
     if (!file) return;
@@ -151,7 +135,6 @@ export function AdminDashboard() {
       throw e;
     }
   };
-<<<<<<< HEAD
   const handleColumnClick = (colIndex: number) => {
     const colLetter = XLSX.utils.encode_col(colIndex);
 
@@ -168,9 +151,6 @@ export function AdminDashboard() {
     setDragEnd(null);
     appendRange(`${rowNumber}:${rowNumber}`);
   };
-=======
-
->>>>>>> b5c205dd1b5eba611c0e83ab261673cb36b2d879
   const handleSelectProject = async (id: string) => {
     setHistory([]); // Clear undo history for newly selected project
     const project = await api.getProject(id);
@@ -219,13 +199,6 @@ export function AdminDashboard() {
     }
   };
 
-<<<<<<< HEAD
-=======
-  const handleColumnClick = (colIndex: number) => {
-    const colLetter = XLSX.utils.encode_col(colIndex);
-    appendRange(`${colLetter}:${colLetter}`);
-  };
->>>>>>> b5c205dd1b5eba611c0e83ab261673cb36b2d879
 
   const handleCellMouseDown = (r: number, c: number) => {
     setDragStart({ r, c });
@@ -252,10 +225,6 @@ export function AdminDashboard() {
     appendRange(rangePart);
     setDragStart(null);
     setDragEnd(null);
-<<<<<<< HEAD
-
-=======
->>>>>>> b5c205dd1b5eba611c0e83ab261673cb36b2d879
   };
 
   const isInDragSelection = (r: number, c: number) => {
@@ -290,7 +259,6 @@ export function AdminDashboard() {
       toast.error("Không thể hoàn tác!");
     }
   };
-<<<<<<< HEAD
   const handleCellEdit = async (r: number, c: number, newValue: string) => {
     if (!workbook || !selectedProject) return;
 
@@ -342,9 +310,6 @@ export function AdminDashboard() {
     }
     
   };
-=======
-
->>>>>>> b5c205dd1b5eba611c0e83ab261673cb36b2d879
   const handleAddRow = async () => {
     if (!workbook || !selectedProject) return;
 
@@ -707,11 +672,7 @@ export function AdminDashboard() {
                                 ))}
                               </CardContent>
                             </Card>
-<<<<<<< HEAD
                             )
-=======
-                            )}
->>>>>>> b5c205dd1b5eba611c0e83ab261673cb36b2d879
                           </div>
                           <div>
                             <Card className="shadow-xs border-slate-200 bg-white h-full">
