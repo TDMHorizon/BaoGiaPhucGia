@@ -31,3 +31,39 @@ export function leaveProjectRoom(projectId: string) {
     s.emit("leave_project", projectId);
   }
 }
+
+export function identifyUser(userId: string) {
+  if (!userId) return;
+  const s = getSocket();
+  if (s.connected) {
+    s.emit("identify_user", userId);
+  } else {
+    s.once("connect", () => {
+      s.emit("identify_user", userId);
+    });
+  }
+}
+
+export function emitCellFocus(payload: {
+  projectId: string;
+  sheetName: string;
+  r: number;
+  c: number;
+  cell: string;
+  user: { id: string; username: string; color?: string };
+}) {
+  const s = getSocket();
+  s.emit("cell_focus", payload);
+}
+
+export function emitCellBlur(payload: {
+  projectId: string;
+  sheetName: string;
+  r: number;
+  c: number;
+  cell: string;
+  userId: string;
+}) {
+  const s = getSocket();
+  s.emit("cell_blur", payload);
+}

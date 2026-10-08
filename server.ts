@@ -31,11 +31,15 @@ import {
   type TrangThai,
   type EditRow,
   type VersionRow,
-  type TemplateRow
+  type TemplateRow,
+  isCellDisabled,
+  updateProjectDisabledRange
 } from "./server/db";
 import {
   authenticateUser,
   signToken,
+  verifyToken,
+  decodeTokenIgnoreExpiry,
   authMiddleware,
   requireAdmin,
   requireAdminOrManager,
@@ -146,11 +150,28 @@ async function startServer() {
   });
 
   io.on("connection", (socket) => {
+    socket.on("identify_user", (userId: string) => {
+      if (userId) socket.join(`user:${userId}`);
+    });
     socket.on("join_project", (projectId: string) => {
       if (projectId) socket.join(`project:${projectId}`);
     });
     socket.on("leave_project", (projectId: string) => {
       if (projectId) socket.leave(`project:${projectId}`);
+    });
+
+    // Realtime Collaborative Presence: Nhân viên focus/bắt đầu sửa ô (UC07)
+    socket.on("cell_focus", (data: { projectId: string; sheetName: string; r: number; c: number; cell: string; user: { id: string; username: string; color?: string } }) => {
+      if (data?.projectId) {
+        socket.to(`project:${data.projectId}`).emit("cell_focused", data);
+      }
+    });
+
+    // Realtime Collaborative Presence: Nhân viên rời ô / kết thúc sửa (UC07)
+    socket.on("cell_blur", (data: { projectId: string; sheetName: string; r: number; c: number; cell: string; userId: string }) => {
+      if (data?.projectId) {
+        socket.to(`project:${data.projectId}`).emit("cell_blurred", data);
+      }
     });
   });
 
@@ -178,6 +199,43 @@ async function startServer() {
     if (!user) return res.status(401).json({ error: "Tên đăng nhập hoặc mật khẩu không chính xác" });
     const token = signToken(user);
     res.json({ ...user, token });
+  });
+
+  // Refresh Token (UC19 - Tự động cấp lại token mới khi đổi quyền hoặc khi token hết hạn)
+  app.post("/api/auth/refresh", (req, res) => {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : (req.body?.token as string | undefined);
+    if (!token) {
+      return res.status(401).json({ error: "Missing authorization token" });
+    }
+
+    const decoded = verifyToken(token) || decodeTokenIgnoreExpiry(token);
+    if (!decoded || !decoded.id) {
+      return res.status(401).json({ error: "Token không hợp lệ", code: "INVALID_TOKEN" });
+    }
+
+    const row = getDb().prepare("SELECT * FROM users WHERE id = ?").get(decoded.id) as UserRow | undefined;
+    if (!row || !row.active) {
+      return res.status(401).json({
+        error: "Tài khoản nhân viên của bạn đã bị khoá. Vui lòng liên hệ Admin để xử lý!",
+        code: "ACCOUNT_LOCKED",
+      });
+    }
+
+    if (row.token_version !== decoded.tokenVersion) {
+      return res.status(401).json({
+        error: "Phiên làm việc đã bị thu hồi hoặc mật khẩu đã đổi. Vui lòng đăng nhập lại.",
+        code: "TOKEN_REVOKED",
+      });
+    }
+
+    const userObj = publicUser(row) as any;
+    const newToken = signToken(userObj);
+    res.json({
+      ok: true,
+      token: newToken,
+      user: userObj,
+    });
   });
 
   app.get("/api/me", authMiddleware, (req, res) => {
@@ -251,7 +309,7 @@ async function startServer() {
     }
 
     // Thu hồi ngay lập tức mọi phiên làm việc cũ khi đổi mật khẩu hoặc khóa tài khoản
-    if (password || active === false) {
+    if (password || active === false || nextActive === 0) {
       incrementUserTokenVersion(row.id);
     }
 
@@ -270,6 +328,34 @@ async function startServer() {
       });
 
       const updated = getDb().prepare("SELECT * FROM users WHERE id = ?").get(row.id) as UserRow;
+
+      // UC19 - Tình huống 3: Thông báo realtime khi tài khoản bị khóa
+      if (nextActive === 0) {
+        io.to(`user:${row.id}`).emit("account.locked", {
+          userId: row.id,
+          message: "Tài khoản nhân viên của bạn đã bị khoá. Vui lòng liên hệ Admin để xử lý!",
+        });
+        io.emit("account.locked", {
+          userId: row.id,
+          message: "Tài khoản nhân viên của bạn đã bị khoá. Vui lòng liên hệ Admin để xử lý!",
+        });
+      }
+
+      // UC19 - Tình huống 5: Thông báo realtime khi đổi vai trò (role) để client refresh token
+      if (nextRole !== row.role) {
+        io.to(`user:${row.id}`).emit("account.role_updated", {
+          userId: row.id,
+          oldRole: row.role,
+          newRole: nextRole,
+          message: `Vai trò của bạn đã được cập nhật thành ${nextRole === "manager" ? "Kế toán / Quản lý" : nextRole === "admin" ? "Quản trị viên" : "Nhân viên"}.`,
+        });
+        io.emit("account.role_updated", {
+          userId: row.id,
+          oldRole: row.role,
+          newRole: nextRole,
+        });
+      }
+
       res.json(publicUser(updated));
     } catch {
       res.status(400).json({ error: "Update failed" });
@@ -489,7 +575,26 @@ async function startServer() {
       if (body.sheets !== undefined) sheets = JSON.stringify(body.sheets);
       // Chỉ Admin mới được cập nhật thành viên qua PATCH
       if (user.role === "admin" && Array.isArray(body.memberIds)) {
-        setProjectMembers(project.id, body.memberIds);
+        const oldMembers = getProjectMembers(project.id);
+        const memberIdList = (body.memberIds as any[]).map(String);
+        const uniqueMembers = Array.from(new Set(memberIdList));
+        const removed = oldMembers.filter((m) => !uniqueMembers.includes(m));
+        setProjectMembers(project.id, uniqueMembers);
+
+        if (removed.length > 0) {
+          for (const remId of removed) {
+            io.to(`user:${remId}`).emit("project.membership_revoked", {
+              projectId: project.id,
+              userId: remId,
+              message: "Bạn không còn được phân công trong files báo giá này!",
+            });
+          }
+          io.to(`project:${project.id}`).emit("project.membership_revoked", {
+            projectId: project.id,
+            removedUserIds: removed,
+            message: "Bạn không còn được phân công trong files báo giá này!",
+          });
+        }
       }
     } else {
       if (body.ghiChu !== undefined) ghiChu = body.ghiChu;
@@ -542,7 +647,9 @@ async function startServer() {
       }
     }
 
+    const oldMembers = getProjectMembers(project.id);
     const uniqueMembers = Array.from(new Set(memberIds));
+    const removedMembers = oldMembers.filter((m) => !uniqueMembers.includes(m));
     const ts = now();
     db.transaction(() => {
       setProjectMembers(project.id, uniqueMembers);
@@ -566,6 +673,22 @@ async function startServer() {
       nguoiPhuTrachId: nextOwner,
       updatedBy: req.user!.username,
     });
+
+    // UC07 - Tình huống 3 & 7: Khi nhân viên bị gỡ khỏi phân công, đẩy thông báo realtime và thu hồi quyền
+    if (removedMembers.length > 0) {
+      for (const rId of removedMembers) {
+        io.to(`user:${rId}`).emit("project.membership_revoked", {
+          projectId: project.id,
+          userId: rId,
+          message: "Bạn không còn được phân công trong files báo giá này!",
+        });
+      }
+      io.to(`project:${project.id}`).emit("project.membership_revoked", {
+        projectId: project.id,
+        removedUserIds: removedMembers,
+        message: "Bạn không còn được phân công trong files báo giá này!",
+      });
+    }
 
     res.json({ ok: true, memberIds: uniqueMembers, nguoiPhuTrachId: nextOwner });
   }));
@@ -749,6 +872,112 @@ async function startServer() {
     res.json({ version, fileBase64 });
   }));
 
+  // Lấy cấu hình các vùng đã bị vô hiệu hóa (disabled_ranges - UC04 Tình huống 10)
+  app.get("/api/projects/:id/disabled-ranges", authMiddleware, (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+
+    let disabledRanges = {};
+    try {
+      disabledRanges = project.disabled_ranges ? JSON.parse(project.disabled_ranges) : {};
+    } catch {
+      disabledRanges = {};
+    }
+    res.json({ projectId: project.id, disabledRanges });
+  });
+
+  // Vô hiệu hóa logic ô, dòng, cột (UC04 Tình huống 10 - Cell-Range Deactivation)
+  app.post("/api/projects/:id/disable-range", authMiddleware, requireAdminOrManager, (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const { sheetName, type, target } = req.body || {};
+    if (!sheetName || !type || target === undefined || target === null) {
+      return res.status(400).json({ error: "Thiếu thông tin: sheetName, type (CELL/ROW/COLUMN) hoặc target" });
+    }
+
+    const normType = String(type).toUpperCase();
+    if (!["CELL", "ROW", "COLUMN"].includes(normType)) {
+      return res.status(400).json({ error: "Type phải là CELL, ROW hoặc COLUMN" });
+    }
+
+    try {
+      const updatedConfig = updateProjectDisabledRange(project.id, sheetName, "disable", normType as any, target);
+      const timestamp = now();
+
+      const payload = {
+        projectId: project.id,
+        sheetName,
+        type: normType,
+        target,
+        disabledRanges: updatedConfig,
+        updatedBy: user.username,
+        timestamp,
+      };
+
+      io.to(`project:${project.id}`).emit("range.disabled", payload);
+      io.to(`project:${project.id}`).emit("project:range:disabled", payload);
+
+      res.json({
+        success: true,
+        disabledRanges: updatedConfig,
+        sheetName,
+        type: normType,
+        target,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Lỗi cập nhật vô hiệu hóa vùng" });
+    }
+  });
+
+  // Khôi phục ô, dòng, cột đã bị vô hiệu hóa
+  app.post("/api/projects/:id/enable-range", authMiddleware, requireAdminOrManager, (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const { sheetName, type, target } = req.body || {};
+    if (!sheetName || !type || target === undefined || target === null) {
+      return res.status(400).json({ error: "Thiếu thông tin: sheetName, type (CELL/ROW/COLUMN) hoặc target" });
+    }
+
+    const normType = String(type).toUpperCase();
+    if (!["CELL", "ROW", "COLUMN"].includes(normType)) {
+      return res.status(400).json({ error: "Type phải là CELL, ROW hoặc COLUMN" });
+    }
+
+    try {
+      const updatedConfig = updateProjectDisabledRange(project.id, sheetName, "enable", normType as any, target);
+      const timestamp = now();
+
+      const payload = {
+        projectId: project.id,
+        sheetName,
+        type: normType,
+        target,
+        disabledRanges: updatedConfig,
+        updatedBy: user.username,
+        timestamp,
+      };
+
+      io.to(`project:${project.id}`).emit("range.enabled", payload);
+      io.to(`project:${project.id}`).emit("project:range:enabled", payload);
+
+      res.json({
+        success: true,
+        disabledRanges: updatedConfig,
+        sheetName,
+        type: normType,
+        target,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Lỗi khôi phục vùng vô hiệu hóa" });
+    }
+  });
+
   // Edits - Dùng chung Edit Service cho Admin, Manager và Employee (Chương 8, 12, 13, 15, 16, 21, 22)
   app.post("/api/projects/:id/edits", authMiddleware, (req, res) => {
     const user = req.user!;
@@ -762,6 +991,16 @@ async function startServer() {
     const { sheetName, cell, newValue } = req.body || {};
     if (!sheetName || !cell) {
       return res.status(400).json({ error: "Thiếu sheetName hoặc cell" });
+    }
+
+    // 0. Kiểm tra vô hiệu hóa ô, dòng, cột (UC04 Tình huống 10 - Logical Deletion)
+    if (isCellDisabled(sheetName, cell, project.disabled_ranges)) {
+      return res.status(403).json({
+        error: `Ô ${cell} đã bị Admin vô hiệu hóa, không thể chỉnh sửa.`,
+        code: "CELL_DISABLED",
+        cell,
+        sheetName,
+      });
     }
 
     // 1. Phân quyền cấp ô nghiêm ngặt (Default Deny - Chống bypass Postman)
@@ -864,6 +1103,18 @@ async function startServer() {
     const editsList = req.body?.edits;
     if (!Array.isArray(editsList) || editsList.length === 0) {
       return res.status(400).json({ error: "Danh sách edits không hợp lệ hoặc rỗng." });
+    }
+
+    // 0. Kiểm tra vô hiệu hóa ô, dòng, cột (UC04 Tình huống 10 - Logical Deletion)
+    for (const item of editsList) {
+      if (isCellDisabled(item.sheetName, item.cell, project.disabled_ranges)) {
+        return res.status(403).json({
+          error: `Ô ${item.cell} trên sheet "${item.sheetName}" đã bị Admin vô hiệu hóa.`,
+          code: "CELL_DISABLED",
+          cell: item.cell,
+          sheetName: item.sheetName,
+        });
+      }
     }
 
     // 1. Phân quyền từng ô trong batch (Default Deny)

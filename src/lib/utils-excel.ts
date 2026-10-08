@@ -464,3 +464,92 @@ function argbToCssHex(argbObj: any): string | undefined {
   }
   return undefined;
 }
+
+export function parseCellCoord(cell: string): { col: string; row: number } | null {
+  const match = cell.trim().toUpperCase().match(/^([A-Z]+)(\d+)$/);
+  if (!match) return null;
+  return {
+    col: match[1],
+    row: parseInt(match[2], 10),
+  };
+}
+
+export function isCellDisabled(
+  sheetName: string,
+  cell: string,
+  disabledRangesConfig: any
+): boolean {
+  if (!disabledRangesConfig) return false;
+  let config = disabledRangesConfig;
+  if (typeof disabledRangesConfig === "string") {
+    try {
+      config = JSON.parse(disabledRangesConfig);
+    } catch {
+      return false;
+    }
+  }
+
+  const sheetConfig = config?.[sheetName];
+  if (!sheetConfig) return false;
+
+  const cleanCell = cell.trim().toUpperCase();
+
+  // 1. Kiểm tra trong danh sách cells
+  if (Array.isArray(sheetConfig.cells) && sheetConfig.cells.map((c: any) => String(c).trim().toUpperCase()).includes(cleanCell)) {
+    return true;
+  }
+
+  const coord = parseCellCoord(cleanCell);
+  if (!coord) return false;
+
+  // 2. Kiểm tra trong danh sách rows
+  if (Array.isArray(sheetConfig.rows) && sheetConfig.rows.map(Number).includes(coord.row)) {
+    return true;
+  }
+
+  // 3. Kiểm tra trong danh sách columns
+  if (Array.isArray(sheetConfig.columns) && sheetConfig.columns.map((c: any) => String(c).trim().toUpperCase()).includes(coord.col)) {
+    return true;
+  }
+
+  return false;
+}
+
+export function isRowDisabled(
+  sheetName: string,
+  rowNumber: number,
+  disabledRangesConfig: any
+): boolean {
+  if (!disabledRangesConfig) return false;
+  let config = disabledRangesConfig;
+  if (typeof disabledRangesConfig === "string") {
+    try {
+      config = JSON.parse(disabledRangesConfig);
+    } catch {
+      return false;
+    }
+  }
+  const sheetConfig = config?.[sheetName];
+  if (!Array.isArray(sheetConfig?.rows)) return false;
+  return sheetConfig.rows.map(Number).includes(Number(rowNumber));
+}
+
+export function isColDisabled(
+  sheetName: string,
+  colLetter: string,
+  disabledRangesConfig: any
+): boolean {
+  if (!disabledRangesConfig) return false;
+  let config = disabledRangesConfig;
+  if (typeof disabledRangesConfig === "string") {
+    try {
+      config = JSON.parse(disabledRangesConfig);
+    } catch {
+      return false;
+    }
+  }
+  const sheetConfig = config?.[sheetName];
+  if (!Array.isArray(sheetConfig?.columns)) return false;
+  return sheetConfig.columns.map((c: any) => String(c).trim().toUpperCase()).includes(colLetter.trim().toUpperCase());
+}
+

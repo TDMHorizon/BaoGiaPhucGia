@@ -3,7 +3,9 @@ import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
 import { HeaderCell } from './components/HeaderCell';
 import { Row } from './components/Row';
+import { ActiveEditor } from './components/Cell';
 import { useExcelData } from './hooks/useExcelData';
+import { isColDisabled } from '../../lib/utils-excel';
 
 export interface SpreadsheetViewerProps {
   workbook: XLSX.WorkBook | null;
@@ -16,9 +18,13 @@ export interface SpreadsheetViewerProps {
   selectedRange?: string;
   selectedColumn?: number | null;
   previewLimit?: number;
+  disabledRanges?: any;
+  activeEditors?: Record<string, ActiveEditor>;
   onColumnClick?: (colIndex: number) => void;
   onRowClick?: (rowIndex: number) => void;
   onCellEdit?: (r: number, c: number, newValue: string) => void;
+  onCellFocus?: (r: number, c: number, cell: string) => void;
+  onCellBlur?: (r: number, c: number, cell: string) => void;
   onCellMouseDown?: (r: number, c: number) => void;
   onCellMouseEnter?: (r: number, c: number) => void;
 }
@@ -34,9 +40,13 @@ export function SpreadsheetViewer({
                                     selectedRange = "",
                                     selectedColumn = null,
                                     previewLimit = -1,
+                                    disabledRanges,
+                                    activeEditors,
                                     onColumnClick,
                                     onRowClick,
                                     onCellEdit,
+                                    onCellFocus,
+                                    onCellBlur,
                                     onCellMouseDown,
                                     onCellMouseEnter
                                   }: SpreadsheetViewerProps) {
@@ -57,15 +67,20 @@ export function SpreadsheetViewer({
           <thead>
           <tr className="shadow-3xs">
             <th className="border border-slate-300 p-2 bg-slate-200 w-12 text-slate-500 font-bold text-xs text-center select-none sticky top-0 left-0 z-20" style={{ width: "48px", minWidth: "48px", maxWidth: "48px" }}>#</th>
-            {Array.from({ length: numCols }).map((_, i) => (
-                <HeaderCell
-                    key={i}
-                    colIndex={i}
-                    colWidth={colWidths[i] || 80}
-                    isSelected={mode === 'user' ? selectedColumn === i : selectedRange.includes(`${XLSX.utils.encode_col(i)}:${XLSX.utils.encode_col(i)}`)}
-                    onColumnClick={(idx) => onColumnClick && onColumnClick(idx)}
-                />
-            ))}
+            {Array.from({ length: numCols }).map((_, i) => {
+                const colLetter = XLSX.utils.encode_col(i);
+                const isColDisabledByAdmin = isColDisabled(activeSheet, colLetter, disabledRanges);
+                return (
+                  <HeaderCell
+                      key={i}
+                      colIndex={i}
+                      colWidth={colWidths[i] || 80}
+                      isSelected={mode === 'user' ? selectedColumn === i : selectedRange.includes(`${colLetter}:${colLetter}`)}
+                      isDisabled={isColDisabledByAdmin}
+                      onColumnClick={(idx) => onColumnClick && onColumnClick(idx)}
+                  />
+                );
+            })}
           </tr>
           </thead>
           <tbody>
@@ -84,7 +99,12 @@ export function SpreadsheetViewer({
                   isLocked={locked}
                   selectedColumn={selectedColumn}
                   selectedRange={selectedRange}
+                  activeSheet={activeSheet}
+                  disabledRanges={disabledRanges}
+                  activeEditors={activeEditors}
                   onCellEdit={onCellEdit}
+                  onCellFocus={onCellFocus}
+                  onCellBlur={onCellBlur}
                   onMouseDown={onCellMouseDown}
                   onMouseEnter={onCellMouseEnter}
                   onRowClick={onRowClick}

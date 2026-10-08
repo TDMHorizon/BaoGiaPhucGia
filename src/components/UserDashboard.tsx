@@ -5,8 +5,9 @@ import { api } from "../lib/api";
 import { parseExcel, getSheetData, applyEditsToWorkbook, downloadBase64File, generateExcelBase64 } from "../lib/excel";
 import { isCellInRange } from "../lib/utils-excel";
 import { loadExcelJSWorkbook, updateMergedCellInExcelJS, workbookToBase64 } from "../lib/exceljs-helper";
-import { getSocket, joinProjectRoom, leaveProjectRoom } from "../lib/socket";
+import { getSocket, joinProjectRoom, leaveProjectRoom, emitCellFocus, emitCellBlur } from "../lib/socket";
 import { SpreadsheetViewer } from "./SpreadsheetViewer";
+import { ActiveEditor } from "./SpreadsheetViewer/components/Cell";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
@@ -50,6 +51,9 @@ export function UserDashboard() {
   const [cellRevisions, setCellRevisions] = useState<Record<string, number>>({});
   const [conflictInfo, setConflictInfo] = useState<ConflictInfo | null>(null);
   const [selectedColumn, setSelectedColumn] = useState<number | null>(null);
+  const [disabledRanges, setDisabledRanges] = useState<any>({});
+  const [activeEditors, setActiveEditors] = useState<Record<string, ActiveEditor>>({});
+  const [focusedCell, setFocusedCell] = useState<{ sheetName: string; r: number; c: number; cell: string } | null>(null);
 
   const [searchQ, setSearchQ] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
@@ -95,6 +99,7 @@ export function UserDashboard() {
       const updatedWb = applyEditsToWorkbook(wb, projectEdits);
 
       setSelectedProject(project);
+      setDisabledRanges(project.disabledRanges || {});
       setEdits(projectEdits);
       setWorkbook(updatedWb);
 
@@ -121,9 +126,10 @@ export function UserDashboard() {
     }
   };
 
-  // Realtime Socket.IO sync
+  // Realtime Socket.IO sync (UC07, UC19)
   useEffect(() => {
     if (!selectedProject?.id) return;
+    joinProjectRoom(selectedProject.id);
     const s = getSocket();
 
     const handleCellUpdated = (payload: any) => {
@@ -160,7 +166,91 @@ export function UserDashboard() {
       }
 
       if (payload.userId !== user?.id) {
-        toast.info(`${payload.updatedBy} vừa cập nhật ô ${payload.cell} (${payload.sheetName})`);
+        // Dọn dẹp indicator sửa ô của peer
+        setActiveEditors((prev) => {
+          const next = { ...prev };
+          delete next[`${payload.sheetName}!${payload.cell}`];
+          delete next[payload.cell];
+          return next;
+        });
+
+        // UC07 - Tình huống 6: Khi người sửa sau chưa kịp sửa mà ô đã đổi giá trị của người trước
+        if (focusedCell?.sheetName === payload.sheetName && focusedCell?.cell === payload.cell) {
+          toast.warning(
+            `⚠️ Dữ liệu ô ${payload.cell} bạn đang chuẩn bị sửa vừa được ${payload.updatedBy} cập nhật giá trị mới: "${payload.newValue}"!`,
+            { duration: 8000 }
+          );
+        } else {
+          // UC07 - Tình huống 5: Ô khác vừa được người khác cập nhật xong
+          toast.info(`Người dùng ${payload.updatedBy} vừa cập nhật ô ${payload.cell} (${payload.sheetName}): "${payload.newValue}"`, {
+            duration: 5000,
+          });
+        }
+      }
+    };
+
+    // UC07 - Tình huống 5: Hiển thị realtime ô nhân viên khác đang sửa
+    const handleCellFocused = (payload: any) => {
+      if (payload?.projectId !== selectedProject.id) return;
+      if (payload?.user?.id === user?.id) return;
+      const keyFull = `${payload.sheetName}!${payload.cell}`;
+      const keyShort = payload.cell;
+      setActiveEditors((prev) => ({
+        ...prev,
+        [keyFull]: {
+          userId: payload.user.id,
+          username: payload.user.username,
+          color: payload.user.color || "#6366f1",
+        },
+        ...(payload.sheetName === activeSheet
+          ? {
+              [keyShort]: {
+                userId: payload.user.id,
+                username: payload.user.username,
+                color: payload.user.color || "#6366f1",
+              },
+            }
+          : {}),
+      }));
+    };
+
+    const handleCellBlurred = (payload: any) => {
+      if (payload?.projectId !== selectedProject.id) return;
+      const keyFull = `${payload.sheetName}!${payload.cell}`;
+      const keyShort = payload.cell;
+      setActiveEditors((prev) => {
+        const next = { ...prev };
+        delete next[keyFull];
+        delete next[keyShort];
+        return next;
+      });
+    };
+
+    // UC07 - Tình huống 3 & 7: Khi nhân viên bị xóa phân công hoặc thu hồi quyền
+    const handleMembershipRevoked = (payload: any) => {
+      if (
+        payload?.projectId === selectedProject.id &&
+        (payload?.userId === user?.id || payload?.removedUserIds?.includes(user?.id))
+      ) {
+        toast.error(payload.message || "Bạn không còn được phân công trong files báo giá này! Đang quay về trang tổng quan...", {
+          duration: 7000,
+        });
+        setSelectedProject(null);
+        setWorkbook(null);
+        setExceljsWorkbook(null);
+        loadProjects();
+      }
+    };
+
+    // UC19 - Tình huống 3: Khi tài khoản bị Admin khóa
+    const handleAccountLocked = (payload: any) => {
+      if (payload?.userId === user?.id) {
+        toast.error(payload.message || "Tài khoản nhân viên của bạn đã bị khoá. Vui lòng liên hệ Admin để xử lý!", {
+          duration: 8000,
+        });
+        setSelectedProject(null);
+        setWorkbook(null);
+        setExceljsWorkbook(null);
       }
     };
 
@@ -178,17 +268,96 @@ export function UserDashboard() {
       }
     };
 
+    // UC04 - Tình huống 10: Admin vô hiệu hóa logic ô, dòng, cột
+    const handleRangeDisabled = (payload: any) => {
+      if (payload?.projectId !== selectedProject.id) return;
+      const newConfig = payload.disabledRanges || {};
+      setDisabledRanges(newConfig);
+      setSelectedProject((prev: any) => (prev ? { ...prev, disabledRanges: newConfig } : null));
+
+      if (focusedCell && focusedCell.sheetName === payload.sheetName) {
+        const { cell, r } = focusedCell;
+        const coord = XLSX.utils.decode_cell(cell);
+        const colLetter = XLSX.utils.encode_col(coord.c);
+        let hit = false;
+        if (payload.type === "CELL" && String(payload.target).trim().toUpperCase() === cell.trim().toUpperCase()) hit = true;
+        if (payload.type === "ROW" && Number(payload.target) === (r + 1)) hit = true;
+        if (payload.type === "COLUMN" && String(payload.target).trim().toUpperCase() === colLetter.trim().toUpperCase()) hit = true;
+
+        if (hit) {
+          toast.error(`Ô ${cell} vừa được Admin vô hiệu hóa. Bạn không thể tiếp tục chỉnh sửa ô này! Vui lòng chuyển sang những ô khác theo phân công.`, {
+            duration: 8000,
+          });
+          setFocusedCell(null);
+        } else {
+          toast.info(`Admin vừa vô hiệu hóa ${payload.type === 'ROW' ? 'dòng ' + payload.target : payload.type === 'COLUMN' ? 'cột ' + payload.target : 'ô ' + payload.target} trên sheet "${payload.sheetName}".`);
+        }
+      } else {
+        toast.info(`Admin vừa vô hiệu hóa ${payload.type === 'ROW' ? 'dòng ' + payload.target : payload.type === 'COLUMN' ? 'cột ' + payload.target : 'ô ' + payload.target} trên sheet "${payload.sheetName}".`);
+      }
+    };
+
+    const handleRangeEnabled = (payload: any) => {
+      if (payload?.projectId !== selectedProject.id) return;
+      const newConfig = payload.disabledRanges || {};
+      setDisabledRanges(newConfig);
+      setSelectedProject((prev: any) => (prev ? { ...prev, disabledRanges: newConfig } : null));
+      toast.info(`Admin vừa khôi phục ${payload.type === 'ROW' ? 'dòng ' + payload.target : payload.type === 'COLUMN' ? 'cột ' + payload.target : 'ô ' + payload.target} trên sheet "${payload.sheetName}".`);
+    };
+
     s.on("cell.updated", handleCellUpdated);
+    s.on("cell_focused", handleCellFocused);
+    s.on("cell_blurred", handleCellBlurred);
+    s.on("project.membership_revoked", handleMembershipRevoked);
+    s.on("account.locked", handleAccountLocked);
     s.on("ranges.updated", handleRangesUpdated);
     s.on("status.updated", handleStatusUpdated);
+    s.on("range.disabled", handleRangeDisabled);
+    s.on("project:range:disabled", handleRangeDisabled);
+    s.on("range.enabled", handleRangeEnabled);
+    s.on("project:range:enabled", handleRangeEnabled);
 
     return () => {
       s.off("cell.updated", handleCellUpdated);
+      s.off("cell_focused", handleCellFocused);
+      s.off("cell_blurred", handleCellBlurred);
+      s.off("project.membership_revoked", handleMembershipRevoked);
+      s.off("account.locked", handleAccountLocked);
       s.off("ranges.updated", handleRangesUpdated);
       s.off("status.updated", handleStatusUpdated);
+      s.off("range.disabled", handleRangeDisabled);
+      s.off("project:range:disabled", handleRangeDisabled);
+      s.off("range.enabled", handleRangeEnabled);
+      s.off("project:range:enabled", handleRangeEnabled);
       leaveProjectRoom(selectedProject.id);
     };
-  }, [selectedProject?.id, activeSheet, workbook, exceljsWorkbook, user?.id]);
+  }, [selectedProject?.id, activeSheet, workbook, exceljsWorkbook, user?.id, focusedCell]);
+
+  const handleCellFocus = (r: number, c: number, cellRef: string) => {
+    if (!selectedProject || !user) return;
+    setFocusedCell({ sheetName: activeSheet, r, c, cell: cellRef });
+    emitCellFocus({
+      projectId: selectedProject.id,
+      sheetName: activeSheet,
+      r,
+      c,
+      cell: cellRef,
+      user: { id: user.id, username: user.username, color: "#6366f1" },
+    });
+  };
+
+  const handleCellBlur = (r: number, c: number, cellRef: string) => {
+    if (!selectedProject || !user) return;
+    setFocusedCell(null);
+    emitCellBlur({
+      projectId: selectedProject.id,
+      sheetName: activeSheet,
+      r,
+      c,
+      cell: cellRef,
+      userId: user.id,
+    });
+  };
 
   const handleTabChange = (sheetName: string, wb = workbook) => {
     if (!wb) return;
@@ -282,6 +451,36 @@ export function UserDashboard() {
         });
 
         toast.error(`Xung đột đồng thời: Ô ${cellRef} vừa được ${serverUser} lưu giá trị khác. Vui lòng chọn cách hợp nhất!`);
+      } else if (
+        error.data?.code === "CELL_DISABLED" ||
+        (error.status === 403 && (error.message?.includes("vô hiệu hóa") || error.message?.includes("vô hiệu hoá")))
+      ) {
+        // UC04 - Tình huống 10: Backend từ chối vì ô đã bị Admin vô hiệu hóa
+        const revertedData = [...sheetData];
+        if (revertedData[r]) {
+          revertedData[r] = [...revertedData[r]];
+          revertedData[r][c] = oldValue;
+          setSheetData(revertedData);
+        }
+        toast.error(`Ô ${cellRef} vừa được Admin vô hiệu hóa. Bạn không thể tiếp tục chỉnh sửa ô này! Vui lòng chuyển sang những ô khác theo phân công.`, { duration: 8000 });
+      } else if (
+        error.status === 401 ||
+        error.data?.code === "ACCOUNT_LOCKED" ||
+        (error.message?.includes("khoá") && error.message?.includes("tài khoản")) ||
+        (error.message?.includes("khóa") && error.message?.includes("tài khoản"))
+      ) {
+        toast.error("Tài khoản nhân viên của bạn đã bị khoá. Vui lòng liên hệ Admin để xử lý!", { duration: 8000 });
+        setSelectedProject(null);
+        setWorkbook(null);
+        setExceljsWorkbook(null);
+      } else if (error.status === 403 && (error.message?.includes("phân công") || error.message?.includes("quyền"))) {
+        toast.error(error.message || "Bạn không còn được phân công hoặc không có quyền sửa trong báo giá này!", { duration: 7000 });
+        if (error.message?.includes("phân công")) {
+          setSelectedProject(null);
+          setWorkbook(null);
+          setExceljsWorkbook(null);
+          loadProjects();
+        }
       } else {
         const revertedData = [...sheetData];
         if (revertedData[r]) {
@@ -415,9 +614,54 @@ export function UserDashboard() {
     try {
       if (exceljsWorkbook) {
         try {
+          if (disabledRanges && typeof disabledRanges === "object") {
+            for (const [sName, cfg] of Object.entries(disabledRanges as any)) {
+              const ws = exceljsWorkbook.getWorksheet(sName);
+              if (!ws) continue;
+              const config = cfg as any;
+              const disabledFill: any = {
+                type: 'pattern',
+                pattern: 'solid',
+                fgColor: { argb: 'FF64748B' } // Slate 500
+              };
+              if (Array.isArray(config.rows)) {
+                for (const rNum of config.rows) {
+                  try {
+                    const row = ws.getRow(Number(rNum));
+                    if (row) {
+                      row.eachCell({ includeEmpty: true }, (cell) => {
+                        cell.fill = disabledFill;
+                      });
+                    }
+                  } catch {}
+                }
+              }
+              if (Array.isArray(config.columns)) {
+                for (const colLetter of config.columns) {
+                  try {
+                    const col = ws.getColumn(String(colLetter));
+                    if (col) {
+                      col.eachCell({ includeEmpty: true }, (cell) => {
+                        cell.fill = disabledFill;
+                      });
+                    }
+                  } catch {}
+                }
+              }
+              if (Array.isArray(config.cells)) {
+                for (const cellRef of config.cells) {
+                  try {
+                    const c = ws.getCell(String(cellRef));
+                    if (c) c.fill = disabledFill;
+                  } catch {}
+                }
+              }
+            }
+          }
+
           const base64 = await workbookToBase64(exceljsWorkbook);
           downloadBase64File(base64, selectedProject.name?.replace(/\.xlsx$/i, "") || "baogia");
-          toast.success("Đã tải Excel (đã áp dụng các ô bạn điền). Bản gốc trên hệ thống không đổi.");
+          toast.success("Đã tải Excel (đã áp dụng các ô bạn điền và vùng khóa). Bản gốc trên hệ thống không đổi.");
           return;
         } catch (ejErr) {
           console.warn("ExcelJS export failed, falling back to XLSX engine:", ejErr);
@@ -609,10 +853,14 @@ export function UserDashboard() {
               activeSheet={activeSheet}
               mode="user"
               locked={locked}
-                editableRange={getEditableRange(selectedProject, activeSheet)}
+              editableRange={getEditableRange(selectedProject, activeSheet)}
               selectedColumn={selectedColumn}
+              disabledRanges={disabledRanges}
+              activeEditors={activeEditors}
               onColumnClick={(i) => setSelectedColumn(selectedColumn === i ? null : i)}
               onCellEdit={handleCellChange}
+              onCellFocus={handleCellFocus}
+              onCellBlur={handleCellBlur}
             />
             {locked && (
               <div className="bg-amber-50 border-t border-amber-200 px-4 py-2 shrink-0 flex items-center justify-center text-amber-700 text-xs font-bold gap-2">
