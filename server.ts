@@ -5,7 +5,7 @@ import { validate } from "./server/middlewares/validate";
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
-import { initDb, getDb, projectToJson, getProjectMembers, setProjectMembers, userCanAccessProject, isProjectLocked, publicUser, type ProjectRow, type UserRow, type TrangThai, type EditRow, type VersionRow, type TemplateRow } from "./server/db";
+import { initDb, getDb, projectToJson, getProjectMembers, getProjectsWithMembers, setProjectMembers, userCanAccessProject, isProjectLocked, publicUser, type ProjectRow, type UserRow, type TrangThai, type EditRow, type VersionRow, type TemplateRow } from "./server/db";
 import { authenticateUser, signToken, authMiddleware, requireAdmin, requireAdminOrManager, hashPassword } from "./server/auth";
 import {
   ensureDataDirs,
@@ -15,6 +15,7 @@ import {
   saveTemplateFile,
   readTemplateFile,
   deleteTemplateFile,
+  deleteProjectFile,
 } from "./server/files";
 
 /** Bản gốc không bị ghi đè. User chỉ điền ô được phép rồi tải Excel gửi khách. */
@@ -45,9 +46,25 @@ function newId() {
 
 function loadProject(id: string, includeDeleted = false): ProjectRow | undefined {
   const query = includeDeleted
-    ? "SELECT * FROM projects WHERE id = ?"
-    : "SELECT * FROM projects WHERE id = ? AND deleted_at IS NULL";
+    ? "SELECT * FROM projects WHERE id = ? AND isDelete = 1"
+    : "SELECT * FROM projects WHERE id = ? AND isDelete = 0";
   return getDb().prepare(query).get(id) as ProjectRow | undefined;
+}
+
+async function purgeExpiredDeletedProjects() {
+  const expiredProjects = getDb()
+    .prepare(
+      `SELECT id FROM projects
+       WHERE isDelete = 1
+         AND deleted_at IS NOT NULL
+         AND datetime(deleted_at) <= datetime('now', '-30 days')`
+    )
+    .all() as { id: string }[];
+
+  for (const project of expiredProjects) {
+    await deleteProjectFile(project.id);
+    getDb().prepare("DELETE FROM projects WHERE id = ? AND isDelete = 1").run(project.id);
+  }
 }
 
 async function projectWithFile(p: ProjectRow) {
@@ -57,14 +74,19 @@ async function projectWithFile(p: ProjectRow) {
   return { ...json, fileBase64 };
 }
 
-function listSummary(p: ProjectRow) {
-  const members = getProjectMembers(p.id);
+function listSummary(p: ProjectRow, membersByProjectId?: Map<string, string[]>) {
+  const members = membersByProjectId ? membersByProjectId.get(p.id) || [] : getProjectMembers(p.id);
   return projectToJson(p, members);
 }
 
 async function startServer() {
   ensureDataDirs();
   initDb();
+  await purgeExpiredDeletedProjects();
+  const purgeInterval = setInterval(() => {
+    purgeExpiredDeletedProjects().catch((error) => console.error("Failed to purge expired projects", error));
+  }, 24 * 60 * 60 * 1000);
+  purgeInterval.unref();
 
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
@@ -124,14 +146,18 @@ async function startServer() {
     }
   });
 
-  app.patch("/api/users/:id", authMiddleware, requireAdmin, (req, res) => {
+  app.patch("/api/users/:id", authMiddleware, (req, res) => {
+    const requester = req.user!;
+    if (requester.role !== "admin" && requester.id !== req.params.id) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const row = getDb().prepare("SELECT * FROM users WHERE id = ?").get(req.params.id) as UserRow | undefined;
     if (!row) return res.status(404).json({ error: "User not found" });
 
     const { username, password, role, active } = req.body || {};
     const nextUsername = username?.trim() || row.username;
-    const nextRole = role === "admin" || role === "manager" || role === "user" ? role : row.role;
-    const nextActive = typeof active === "boolean" ? (active ? 1 : 0) : row.active;
+    const nextRole = requester.role === "admin" && (role === "admin" || role === "manager" || role === "user") ? role : row.role;
+    const nextActive = requester.role === "admin" && typeof active === "boolean" ? (active ? 1 : 0) : row.active;
     const nextHash = password ? hashPassword(password) : row.password_hash;
 
     try {
@@ -160,17 +186,24 @@ async function startServer() {
     const status = String(req.query.status || "").trim();
     const assignee = String(req.query.assignee || "").trim();
 
-    let rows = getDb().prepare("SELECT * FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC").all() as ProjectRow[];
+    const { projects: rawProjects, membersByProjectId } = getProjectsWithMembers();
+
+    let rows = Array.from(
+      new Map(rawProjects.map((p) => [p.id, p])).values()
+    );
 
     if (user.role !== "admin" && user.role !== "manager") {
-      rows = rows.filter((p) => userCanAccessProject(user, p));
+      rows = rows.filter((p) => {
+        if (p.nguoi_phu_trach_id === user.id) return true;
+        return (membersByProjectId.get(p.id) || []).includes(user.id);
+      });
     }
 
     if (status) rows = rows.filter((p) => p.trang_thai === status);
     if (assignee) {
       rows = rows.filter((p) => {
         if (p.nguoi_phu_trach_id === assignee) return true;
-        return getProjectMembers(p.id).includes(assignee);
+        return (membersByProjectId.get(p.id) || []).includes(assignee);
       });
     }
     if (q) {
@@ -180,14 +213,40 @@ async function startServer() {
       });
     }
 
-    res.json(rows.map(listSummary));
+    res.json(rows.map((p) => listSummary(p, membersByProjectId)));
   });
 
   app.get("/api/projects/pending-count", authMiddleware, requireAdminOrManager, (_req, res) => {
     const row = getDb()
-      .prepare("SELECT COUNT(*) as c FROM projects WHERE deleted_at IS NULL AND trang_thai IN ('dang_lam', 'cho_duyet')")
+      .prepare("SELECT COUNT(*) as c FROM projects WHERE isDelete = 0 AND trang_thai IN ('dang_lam', 'cho_duyet')")
       .get() as { c: number };
     res.json({ count: row.c });
+  });
+
+  app.get("/api/projects/me", authMiddleware, (req, res) => {
+    const user = req.user!;
+    const q = String(req.query.q || "").trim().toLowerCase();
+    const status = String(req.query.status || "").trim();
+
+    const { projects, membersByProjectId } = getProjectsWithMembers();
+
+    const uniqueProjects = Array.from(
+      new Map(projects.map((p) => [p.id, p])).values()
+    );
+
+    const rows = uniqueProjects.filter((project) => {
+      const isAssigned = project.nguoi_phu_trach_id === user.id
+        || (membersByProjectId.get(project.id) || []).includes(user.id);
+
+      if (!isAssigned) return false;
+      if (status && project.trang_thai !== status) return false;
+      if (!q) return true;
+
+      const haystack = `${project.name} ${project.so_bao_gia} ${project.ten_khach_hang} ${project.ghi_chu}`.toLowerCase();
+      return haystack.includes(q);
+    });
+
+    res.json(rows.map((project) => listSummary(project, membersByProjectId)));
   });
 
   app.post("/api/projects", authMiddleware, catchAsync(async (req, res) => {
@@ -240,9 +299,15 @@ async function startServer() {
   }));
 
   app.get("/api/projects/deleted", authMiddleware, requireAdminOrManager, (_req, res) => {
-    const rows = getDb().prepare("SELECT * FROM projects WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC").all() as ProjectRow[];
-    res.json(rows.map(listSummary));
+    const { projects: rows, membersByProjectId } = getProjectsWithMembers(true);
+    res.json(rows.map((p) => listSummary(p, membersByProjectId)));
   });
+
+  app.get("/api/projects/deleted/:id", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
+    const project = loadProject(req.params.id, true);
+    if (!project) return res.status(404).json({ error: "Deleted project not found" });
+    res.json(await projectWithFile(project));
+  }));
 
   app.get("/api/projects/:id", authMiddleware, catchAsync(async (req, res) => {
     const user = req.user!;
@@ -295,17 +360,18 @@ async function startServer() {
   app.delete("/api/projects/:id", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
-    if (project.deleted_at) return res.status(400).json({ error: "Project already deleted" });
-    getDb().prepare("UPDATE projects SET deleted_at = ?, updated_at = ? WHERE id = ?").run(now(), now(), project.id);
-    res.json({ ok: true, deletedAt: now() });
+    const deletedAt = now();
+    getDb().prepare("UPDATE projects SET isDelete = 1, deleted_at = ?, updated_at = ? WHERE id = ?").run(deletedAt, deletedAt, project.id);
+    const permanentlyDeletedAt = new Date(Date.parse(deletedAt) + 30 * 24 * 60 * 60 * 1000).toISOString();
+    res.json({ ok: true, isDelete: true, deletedAt, permanentlyDeletedAt });
   }));
 
   app.post("/api/projects/:id/restore", authMiddleware, requireAdminOrManager, (req, res) => {
     const project = loadProject(req.params.id, true);
     if (!project) return res.status(404).json({ error: "Project not found" });
-    if (!project.deleted_at) return res.status(400).json({ error: "Project is not deleted" });
+    if (!project.isDelete) return res.status(400).json({ error: "Project is not deleted" });
     const restoredAt = now();
-    getDb().prepare("UPDATE projects SET deleted_at = NULL, updated_at = ? WHERE id = ?").run(restoredAt, project.id);
+    getDb().prepare("UPDATE projects SET isDelete = 0, deleted_at = NULL, updated_at = ? WHERE id = ?").run(restoredAt, project.id);
     res.json(listSummary(loadProject(project.id)!));
   });
 

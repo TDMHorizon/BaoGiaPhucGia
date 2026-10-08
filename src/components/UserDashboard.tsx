@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
 import { parseExcel, getSheetData, applyEditsToWorkbook, downloadBase64File } from "../lib/excel";
@@ -19,6 +20,7 @@ import { isLockedStatus, TRANG_THAI_LABELS, type TrangThai } from "../lib/consta
 import { printProjectAsPdf } from "../lib/printPdf";
 import { UserLayout } from "../layout/UserLayout";
 import { UserHome } from "./pages/UserHome";
+import { ROUTES } from "../router";
 
 function getEditableRange(project: any, sheetName: string): string {
   if (!project?.editableRanges) return "";
@@ -35,6 +37,7 @@ function getEditableRange(project: any, sheetName: string): string {
 
 export function UserDashboard() {
   const { user, logout } = useAuth();
+  const navigate = useNavigate();
   const [projects, setProjects] = useState<any[]>([]);
   const [selectedProject, setSelectedProject] = useState<any>(null);
   const [workbook, setWorkbook] = useState<XLSX.WorkBook | null>(null);
@@ -60,10 +63,19 @@ export function UserDashboard() {
     loadProjects();
   }, [searchQ, filterStatus]);
 
+
   const loadProjects = async () => {
     try {
-      const data = await api.getProjects({ q: searchQ || undefined, status: filterStatus || undefined });
-      setProjects(data);
+      const data = await api.getProjectByUserId();
+
+      const query = searchQ.trim().toLowerCase();
+      const filteredData = data.filter((project: any) => {
+        if (filterStatus && project.trangThai !== filterStatus) return false;
+        if (!query) return true;
+        return `${project.name} ${project.soBaoGia || ""} ${project.tenKhachHang || ""} ${project.ghiChu || ""}`.toLowerCase().includes(query);
+      });
+
+      setProjects(filteredData);
     } catch (e: any) {
       toast.error(e.message || "Không tải được danh sách");
     }
@@ -249,6 +261,7 @@ export function UserDashboard() {
       onTabChange={setActiveTab}
       onMobileOpenChange={setShowMobileNav}
       onToggleNavigation={() => { if (window.innerWidth >= 768) setIsSidebarCollapsed(prev => !prev); else setShowMobileNav(true); }}
+      onProfile={() => navigate(ROUTES.profile)}
       onLogout={logout}
     >
     {activeTab === "dashboard" ? (
