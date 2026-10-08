@@ -450,6 +450,17 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    id: 6,
+    name: "indexes_optimization: edits timestamp/user, cell_values project",
+    up: () => {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_edits_project_timestamp ON edits(project_id, timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_edits_project_user ON edits(project_id, user_id);
+        CREATE INDEX IF NOT EXISTS idx_cell_values_project ON project_cell_values(project_id);
+      `);
+    },
+  },
 ];
 
 function runMigrations() {
@@ -557,6 +568,7 @@ export function projectToJson(p: ProjectRow, memberIds: string[] = [], stats?: P
     memberIds,
     trangThai: normalizeTrangThai(p.trang_thai),
     ghiChu: p.ghi_chu,
+    version: p.version ?? 1,
     /** Tăng khi dữ liệu làm việc đổi; client gửi lại dưới tên expectedRevision. */
     projectRevision: p.project_revision,
     /** Số phiên bản báo giá (snapshot) mới nhất. 0 nếu chưa chốt lần nào. */
@@ -739,3 +751,26 @@ export function setProjectMemberPermissions(
     }
   })();
 }
+
+export function countActiveAdmins(): number {
+  const row = getDb().prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin' AND active = 1").get() as { c: number };
+  return row ? row.c : 0;
+}
+
+export function userHasProjectOrEditReferences(userId: string): { hasReferences: boolean; reason?: string } {
+  const database = getDb();
+  const ownedProject = database.prepare("SELECT name FROM projects WHERE nguoi_phu_trach_id = ? AND deleted_at IS NULL LIMIT 1").get(userId) as { name: string } | undefined;
+  if (ownedProject) {
+    return { hasReferences: true, reason: `Đang là người phụ trách báo giá "${ownedProject.name}"` };
+  }
+  const memberProject = database.prepare("SELECT p.name FROM project_members pm JOIN projects p ON pm.project_id = p.id WHERE pm.user_id = ? AND p.deleted_at IS NULL LIMIT 1").get(userId) as { name: string } | undefined;
+  if (memberProject) {
+    return { hasReferences: true, reason: `Đang được phân công vào báo giá "${memberProject.name}"` };
+  }
+  const editRecord = database.prepare("SELECT id FROM edits WHERE user_id = ? LIMIT 1").get(userId) as { id: string } | undefined;
+  if (editRecord) {
+    return { hasReferences: true, reason: `Có dữ liệu lịch sử chỉnh sửa ô trong hệ thống` };
+  }
+  return { hasReferences: false };
+}
+

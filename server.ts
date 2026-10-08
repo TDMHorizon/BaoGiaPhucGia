@@ -11,6 +11,7 @@ import {
   initDb,
   getDb,
   projectToJson,
+  editToJson,
   getProjectMembers,
   setProjectMembers,
   userCanAccessProject,
@@ -22,6 +23,8 @@ import {
   getAllCellValuesForProject,
   getProjectMemberPermissions,
   setProjectMemberPermissions,
+  countActiveAdmins,
+  userHasProjectOrEditReferences,
   type ProjectRow,
   type UserRow,
   type TrangThai,
@@ -46,7 +49,9 @@ import {
   saveTemplateFile,
   readTemplateFile,
   deleteTemplateFile,
+  toDataUrl,
 } from "./server/files";
+import * as XLSX from "xlsx";
 
 /** Bản gốc không bị ghi đè. User chỉ điền ô được phép rồi tải Excel gửi khách. */
 const USER_TRANSITIONS: Record<string, TrangThai[]> = {
@@ -72,6 +77,19 @@ function now() {
 
 function newId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function makeBlankWorkbookBase64(): string {
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([
+    ["BẢNG BÁO GIÁ ĐO ĐẠC KHẢO SÁT TRẮC ĐỊA PHÚC GIA", "", "", "", ""],
+    ["STT", "Nội dung công việc", "ĐVT", "Khối lượng", "Ghi chú"],
+    ["1", "Khảo sát trắc địa", "Điểm", "0", ""],
+    ["2", "Đo vẽ bình đồ địa hình", "Ha", "0", ""],
+  ]);
+  XLSX.utils.book_append_sheet(wb, ws, "BaoGia");
+  const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+  return toDataUrl(buf);
 }
 
 function loadProject(id: string, includeDeleted = false): ProjectRow | undefined {
@@ -189,10 +207,19 @@ async function startServer() {
     const { username, password, role, active, fullName, email } = req.body || {};
     const nextUsername = username?.trim() || row.username;
     const nextRole = role === "admin" || role === "manager" || role === "user" ? role : row.role;
-    const nextActive = typeof active === "boolean" ? (active ? 1 : 0) : row.active;
+    const nextActive = typeof active === "boolean"
+      ? (active ? 1 : 0)
+      : (typeof active === "number" ? (active === 1 ? 1 : 0) : row.active);
     const nextHash = password ? hashPassword(password) : row.password_hash;
     const nextFullName = fullName !== undefined ? fullName : (row.full_name || null);
     const nextEmail = email !== undefined ? email : (row.email || null);
+
+    // Kiểm tra cấm khóa hoặc hạ quyền Admin duy nhất còn hoạt động
+    if (row.role === "admin" && row.active === 1 && (nextRole !== "admin" || nextActive === 0)) {
+      if (countActiveAdmins() <= 1) {
+        return res.status(400).json({ error: "Không thể khóa tài khoản hoặc hạ quyền của Quản trị viên (Admin) duy nhất còn hoạt động." });
+      }
+    }
 
     // Thu hồi ngay lập tức mọi phiên làm việc cũ khi đổi mật khẩu hoặc khóa tài khoản
     if (password || active === false) {
@@ -223,7 +250,22 @@ async function startServer() {
   app.delete("/api/users/:id", authMiddleware, requireAdmin, (req, res) => {
     const user = req.user!;
     if (user.id === req.params.id) return res.status(400).json({ error: "Cannot delete yourself" });
-    const target = getDb().prepare("SELECT username FROM users WHERE id = ?").get(req.params.id) as UserRow | undefined;
+    const target = getDb().prepare("SELECT * FROM users WHERE id = ?").get(req.params.id) as UserRow | undefined;
+    if (!target) return res.status(404).json({ error: "User not found" });
+
+    // Kiểm tra không xóa admin cuối cùng
+    if (target.role === "admin" && target.active === 1 && countActiveAdmins() <= 1) {
+      return res.status(400).json({ error: "Không thể xóa Quản trị viên (Admin) duy nhất còn hoạt động trong hệ thống." });
+    }
+
+    // Kiểm tra ràng buộc tham chiếu trước khi xóa
+    const refCheck = userHasProjectOrEditReferences(target.id);
+    if (refCheck.hasReferences) {
+      return res.status(400).json({
+        error: `Không thể xóa tài khoản: ${refCheck.reason}. Vui lòng chuyển giao dự án hoặc khóa tài khoản (active=0) thay vì xóa vĩnh viễn.`
+      });
+    }
+
     const result = getDb().prepare("DELETE FROM users WHERE id = ?").run(req.params.id);
     if (!result.changes) return res.status(404).json({ error: "User not found" });
 
@@ -233,7 +275,7 @@ async function startServer() {
       action: "USER_DELETED",
       resource: "users",
       resourceId: req.params.id,
-      detail: { deletedUsername: target?.username }
+      detail: { deletedUsername: target.username }
     });
 
     res.json({ ok: true });
@@ -283,7 +325,7 @@ async function startServer() {
     res.json({ count: row.c });
   });
 
-  app.post("/api/projects", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
+  app.post("/api/projects", authMiddleware, catchAsync(async (req, res) => {
     const user = req.user!;
     const {
       name,
@@ -295,38 +337,45 @@ async function startServer() {
       nguoiPhuTrachId,
       memberIds,
       ghiChu,
-      trangThai,
+      mode,
     } = req.body || {};
 
-    if (!name || !fileBase64) return res.status(400).json({ error: "Missing name or file" });
+    let actualFile = fileBase64;
+    let actualSheets = sheets;
+
+    if (!actualFile && (mode === "blank" || !actualFile)) {
+      actualFile = makeBlankWorkbookBase64();
+      actualSheets = ["BaoGia"];
+    }
+
+    if (!name || !actualFile) return res.status(400).json({ error: "Missing name or file" });
 
     const id = newId();
     const ts = now();
     const ownerId = (user.role === "admin" || user.role === "manager") ? nguoiPhuTrachId || null : user.id;
-    const members: string[] = Array.isArray(memberIds) ? memberIds : [];
+    const members: string[] = (user.role === "admin" && Array.isArray(memberIds)) ? memberIds : [];
 
     getDb()
       .prepare(
         `INSERT INTO projects
-        (id, name, sheets, editable_ranges, so_bao_gia, ten_khach_hang, nguoi_phu_trach_id, trang_thai, ghi_chu, version, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
+        (id, name, sheets, editable_ranges, so_bao_gia, ten_khach_hang, nguoi_phu_trach_id, trang_thai, ghi_chu, version, project_revision, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'nhap', ?, 1, 0, ?, ?)`
       )
       .run(
         id,
         name,
-        JSON.stringify(sheets || []),
+        JSON.stringify(actualSheets || []),
         JSON.stringify(editableRanges || {}),
         soBaoGia || "",
         tenKhachHang || "",
         ownerId,
-        trangThai || "nhap",
         ghiChu || "",
         ts,
         ts
       );
 
     if (members.length) setProjectMembers(id, members);
-    await saveProjectFile(id, fileBase64);
+    await saveProjectFile(id, actualFile);
 
     const project = loadProject(id)!;
     res.json(await projectWithFile(project));
@@ -370,7 +419,10 @@ async function startServer() {
       if (body.ghiChu !== undefined) ghiChu = body.ghiChu;
       if (body.editableRanges !== undefined) editableRanges = JSON.stringify(body.editableRanges);
       if (body.sheets !== undefined) sheets = JSON.stringify(body.sheets);
-      if (Array.isArray(body.memberIds)) setProjectMembers(project.id, body.memberIds);
+      // Chỉ Admin mới được cập nhật thành viên qua PATCH
+      if (user.role === "admin" && Array.isArray(body.memberIds)) {
+        setProjectMembers(project.id, body.memberIds);
+      }
     } else {
       if (body.ghiChu !== undefined) ghiChu = body.ghiChu;
     }
@@ -388,6 +440,66 @@ async function startServer() {
     });
 
     res.json(await projectWithFile(loadProject(project.id)!));
+  }));
+
+  // Phân công thành viên chuyên biệt (Admin-only - UC07)
+  app.put("/api/projects/:id/members", authMiddleware, requireAdmin, catchAsync(async (req, res) => {
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const { memberIds, nguoiPhuTrachId } = req.body || {};
+    if (!Array.isArray(memberIds)) {
+      return res.status(400).json({ error: "memberIds phải là một danh sách mảng" });
+    }
+
+    // Kiểm tra tất cả user được gán phải tồn tại và đang active
+    const db = getDb();
+    for (const mId of memberIds) {
+      const u = db.prepare("SELECT active FROM users WHERE id = ?").get(mId) as { active: number } | undefined;
+      if (!u || !u.active) {
+        return res.status(400).json({ error: `Người dùng ${mId} không tồn tại hoặc đã bị khóa.` });
+      }
+    }
+
+    let nextOwner = project.nguoi_phu_trach_id;
+    if (nguoiPhuTrachId !== undefined) {
+      if (nguoiPhuTrachId) {
+        const u = db.prepare("SELECT active FROM users WHERE id = ?").get(nguoiPhuTrachId) as { active: number } | undefined;
+        if (!u || !u.active) {
+          return res.status(400).json({ error: "Người phụ trách không hợp lệ hoặc đã bị khóa." });
+        }
+        nextOwner = nguoiPhuTrachId;
+      } else {
+        nextOwner = null;
+      }
+    }
+
+    const uniqueMembers = Array.from(new Set(memberIds));
+    const ts = now();
+    db.transaction(() => {
+      setProjectMembers(project.id, uniqueMembers);
+      if (nextOwner !== project.nguoi_phu_trach_id) {
+        db.prepare("UPDATE projects SET nguoi_phu_trach_id = ?, updated_at = ? WHERE id = ?").run(nextOwner, ts, project.id);
+      }
+    })();
+
+    recordAuditLog({
+      userId: req.user!.id,
+      username: req.user!.username,
+      action: "PROJECT_MEMBERS_ASSIGNED",
+      resource: "projects",
+      resourceId: project.id,
+      detail: { memberIds: uniqueMembers, nguoiPhuTrachId: nextOwner },
+    });
+
+    io.to(`project:${project.id}`).emit("members.updated", {
+      projectId: project.id,
+      memberIds: uniqueMembers,
+      nguoiPhuTrachId: nextOwner,
+      updatedBy: req.user!.username,
+    });
+
+    res.json({ ok: true, memberIds: uniqueMembers, nguoiPhuTrachId: nextOwner });
   }));
 
   app.delete("/api/projects/:id", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
@@ -411,11 +523,18 @@ async function startServer() {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
 
+    const updatedRanges = req.body.editableRanges || {};
     getDb()
         .prepare("UPDATE projects SET editable_ranges = ?, updated_at = ? WHERE id = ?")
-        .run(JSON.stringify(req.body.editableRanges || {}), now(), project.id);
+        .run(JSON.stringify(updatedRanges), now(), project.id);
 
-    res.json({ success: true });
+    io.to(`project:${project.id}`).emit("ranges.updated", {
+      projectId: project.id,
+      editableRanges: updatedRanges,
+      updatedBy: req.user!.username,
+    });
+
+    res.json({ success: true, editableRanges: updatedRanges });
   }));
 
   // Chỉ admin/manager được cập nhật file gốc (cấu trúc sheet). Nhân viên không ghi đè.
@@ -505,6 +624,26 @@ async function startServer() {
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
     res.json(getAllCellValuesForProject(project.id));
   });
+
+  // Alias theo chuẩn đặc tả (Chương 7 & Docs Tối ưu)
+  app.get("/api/projects/:id/cell-states", authMiddleware, (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+    res.json(getAllCellValuesForProject(project.id));
+  });
+
+  // Tách tải file riêng (Tránh overfetch Base64 trong metadata)
+  app.get("/api/projects/:id/file", authMiddleware, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+    const fileBase64 = await readProjectFile(project.id);
+    if (!fileBase64) return res.status(404).json({ error: "File báo giá không tồn tại" });
+    res.json({ id: project.id, fileBase64 });
+  }));
 
   // Versions
   app.get("/api/projects/:id/versions", authMiddleware, (req, res) => {
@@ -643,31 +782,155 @@ async function startServer() {
     });
   });
 
+  // Batch Edits (Lưu hàng loạt ô trong 1 transaction duy nhất - chống N+1 request)
+  app.post("/api/projects/:id/edits/batch", authMiddleware, (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+    if (user.role !== "admin" && user.role !== "manager" && isProjectLocked(project.trang_thai)) {
+      return res.status(403).json({ error: "Báo giá đã bị khóa, không thể chỉnh sửa." });
+    }
+
+    const editsList = req.body?.edits;
+    if (!Array.isArray(editsList) || editsList.length === 0) {
+      return res.status(400).json({ error: "Danh sách edits không hợp lệ hoặc rỗng." });
+    }
+
+    // 1. Phân quyền từng ô trong batch (Default Deny)
+    for (const item of editsList) {
+      const { sheetName, cell } = item;
+      if (!sheetName || !cell) {
+        return res.status(400).json({ error: "Mỗi mục phải có sheetName và cell" });
+      }
+      const permCheck = checkCellPermission(user, project, sheetName, cell);
+      if (!permCheck.allowed) {
+        return res.status(403).json({ error: permCheck.reason || `Bạn không có quyền sửa ô ${cell} trên sheet "${sheetName}".` });
+      }
+    }
+
+    // 2. Kiểm tra OCC cho từng ô nếu có expectedRevision
+    for (const item of editsList) {
+      const { sheetName, cell, expectedRevision } = item;
+      if (expectedRevision !== undefined && expectedRevision !== null) {
+        const currentCell = getCellValue(project.id, sheetName, cell);
+        const currentRevision = currentCell ? currentCell.revision : 0;
+        if (Number(expectedRevision) !== currentRevision) {
+          return res.status(409).json({
+            error: `Xung đột dữ liệu tại ô ${cell}: vừa được cập nhật bởi ${currentCell?.updated_by || "người khác"}.`,
+            conflict: true,
+            cell,
+            sheetName,
+            latestValue: currentCell ? currentCell.value : "",
+            latestRevision: currentRevision,
+            updatedBy: currentCell ? currentCell.updated_by : "",
+          });
+        }
+      }
+    }
+
+    // 3. Thực thi Transaction nguyên tử trong SQLite WAL
+    const timestamp = now();
+    const results: any[] = [];
+    let nextSeq = 1;
+
+    getDb().transaction(() => {
+      const maxSeqRow = getDb().prepare("SELECT COALESCE(MAX(sequence), 0) AS m FROM edits WHERE project_id = ?").get(project.id) as { m: number };
+      nextSeq = maxSeqRow.m;
+
+      const insertEdit = getDb().prepare(
+        `INSERT INTO edits (id, project_id, user_id, username, sheet_name, cell, old_value, new_value, sequence, timestamp)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      const upsertCell = getDb().prepare(
+        `INSERT INTO project_cell_values (project_id, sheet_name, cell, value, revision, updated_by, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(project_id, sheet_name, cell) DO UPDATE SET
+           value = excluded.value,
+           revision = excluded.revision,
+           updated_by = excluded.updated_by,
+           updated_at = excluded.updated_at`
+      );
+
+      for (const item of editsList) {
+        nextSeq++;
+        const editId = newId();
+        const currentCell = getCellValue(project.id, item.sheetName, item.cell);
+        const currentRevision = currentCell ? currentCell.revision : 0;
+        const nextRev = currentRevision + 1;
+        const val = item.newValue !== undefined && item.newValue !== null ? String(item.newValue) : "";
+        const oldVal = currentCell ? currentCell.value : (item.oldValue ? String(item.oldValue) : "");
+
+        insertEdit.run(editId, project.id, user.id, user.username, item.sheetName, item.cell, oldVal, val, nextSeq, timestamp);
+        upsertCell.run(project.id, item.sheetName, item.cell, val, nextRev, user.username, timestamp);
+
+        results.push({
+          id: editId,
+          projectId: project.id,
+          userId: user.id,
+          username: user.username,
+          sheetName: item.sheetName,
+          cell: item.cell,
+          oldValue: oldVal,
+          newValue: val,
+          revision: nextRev,
+          sequence: nextSeq,
+          timestamp,
+        });
+      }
+
+      getDb().prepare("UPDATE projects SET project_revision = project_revision + ?, updated_at = ? WHERE id = ?").run(editsList.length, timestamp, project.id);
+    })();
+
+    // 4. Realtime Broadcast tới Room Project sau khi COMMIT thành công
+    io.to(`project:${project.id}`).emit("cells.batch_updated", {
+      projectId: project.id,
+      edits: results,
+      updatedBy: user.username,
+      userId: user.id,
+      timestamp,
+    });
+
+    res.json({ ok: true, count: results.length, edits: results });
+  });
+
   app.get("/api/projects/:id/edits", authMiddleware, (req, res) => {
     const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
 
+    const pageParam = req.query.page ? Number(req.query.page) : undefined;
+    const limitParam = req.query.limit ? Number(req.query.limit) : 50;
+
+    if (pageParam !== undefined) {
+      const page = Math.max(1, pageParam);
+      const limit = Math.max(1, Math.min(200, limitParam));
+      const offset = (page - 1) * limit;
+
+      const totalRow = getDb().prepare("SELECT COUNT(*) as c FROM edits WHERE project_id = ?").get(project.id) as { c: number };
+      const total = totalRow.c;
+      const totalPages = Math.ceil(total / limit);
+
+      const rows = getDb()
+        .prepare("SELECT * FROM edits WHERE project_id = ? ORDER BY sequence DESC, timestamp DESC LIMIT ? OFFSET ?")
+        .all(project.id, limit, offset) as EditRow[];
+
+      return res.json({
+        items: rows.map(editToJson),
+        total,
+        page,
+        limit,
+        totalPages,
+      });
+    }
+
     // Trả về toàn bộ edits của dự án theo thứ tự chấp nhận sequence ASC, timestamp ASC
     const rows = getDb()
       .prepare("SELECT * FROM edits WHERE project_id = ? ORDER BY sequence ASC, timestamp ASC")
       .all(project.id) as EditRow[];
 
-    res.json(
-      rows.map((e) => ({
-        id: e.id,
-        projectId: e.project_id,
-        userId: e.user_id,
-        username: e.username,
-        sheetName: e.sheet_name,
-        cell: e.cell,
-        oldValue: e.old_value,
-        newValue: e.new_value,
-        sequence: e.sequence,
-        timestamp: e.timestamp,
-      }))
-    );
+    res.json(rows.map(editToJson));
   });
 
   // Templates

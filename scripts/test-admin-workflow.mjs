@@ -169,7 +169,7 @@ async function main() {
       },
     });
   } catch (e) {
-    if (String(e.message).includes("403") && String(e.message).includes("locked")) locked = true;
+    if (String(e.message).includes("403") && (String(e.message).includes("locked") || String(e.message).includes("khóa"))) locked = true;
     else throw e;
   }
   assert(locked, "edit blocked when da_gui");

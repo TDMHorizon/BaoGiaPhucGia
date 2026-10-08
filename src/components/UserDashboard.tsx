@@ -20,6 +20,7 @@ import { isLockedStatus, TRANG_THAI_LABELS, type TrangThai } from "../lib/consta
 import { printProjectAsPdf } from "../lib/printPdf";
 import { UserLayout } from "../layout/UserLayout";
 import { UserHome } from "./pages/UserHome";
+import { VisualConflictResolverModal, type ConflictInfo } from "./VisualConflictResolverModal";
 
 function getEditableRange(project: any, sheetName: string): string {
   if (!project?.editableRanges) return "";
@@ -44,6 +45,7 @@ export function UserDashboard() {
   const [activeSheet, setActiveSheet] = useState<string>("");
   const [edits, setEdits] = useState<any[]>([]);
   const [cellRevisions, setCellRevisions] = useState<Record<string, number>>({});
+  const [conflictInfo, setConflictInfo] = useState<ConflictInfo | null>(null);
   const [selectedColumn, setSelectedColumn] = useState<number | null>(null);
 
   const [searchQ, setSearchQ] = useState("");
@@ -239,11 +241,87 @@ export function UserDashboard() {
 
       toast.success(newValue === "" ? `Đã xoá ô ${cellRef}` : `Đã lưu ô ${cellRef}`);
     } catch (error: any) {
-      if (error.message?.includes("Xung đột") || error.message?.includes("Conflict")) {
-        toast.error(`Xung đột dữ liệu: Ô ${cellRef} vừa được cập nhật bởi người khác. Dữ liệu mới nhất đã được đồng bộ!`);
+      if (error.status === 409 || error.data?.conflict || error.message?.includes("Xung đột") || error.message?.includes("Conflict")) {
+        const conflictData = error.data || {};
+        const serverVal = conflictData.latestValue !== undefined ? String(conflictData.latestValue) : "";
+        const serverRev = typeof conflictData.latestRevision === "number" ? conflictData.latestRevision : (expectedRevision + 1);
+        const serverUser = conflictData.updatedBy || "người khác";
+
+        // Hoàn nguyên ô trên bảng tính về giá trị mới nhất của server
+        const revertedData = [...sheetData];
+        if (revertedData[r]) {
+          revertedData[r] = [...revertedData[r]];
+          revertedData[r][c] = serverVal;
+          setSheetData(revertedData);
+        }
+
+        // Cập nhật lại revision của ô từ server
+        setCellRevisions((prev) => ({ ...prev, [`${activeSheet}!${cellRef}`]: serverRev }));
+
+        // Bật Modal Giải Quyết Xung Đột Trực Quan 3 Cột (Chương 13 & 14)
+        setConflictInfo({
+          cell: cellRef,
+          sheetName: activeSheet,
+          serverValue: serverVal,
+          serverRevision: serverRev,
+          serverUpdatedBy: serverUser,
+          clientValue: newValue,
+          oldValue,
+        });
+
+        toast.error(`Xung đột đồng thời: Ô ${cellRef} vừa được ${serverUser} lưu giá trị khác. Vui lòng chọn cách hợp nhất!`);
       } else {
+        const revertedData = [...sheetData];
+        if (revertedData[r]) {
+          revertedData[r] = [...revertedData[r]];
+          revertedData[r][c] = oldValue;
+          setSheetData(revertedData);
+        }
         toast.error(error.message || "Lưu thất bại");
       }
+    }
+  };
+
+  const handleResolveConflict = async (chosenValue: string, expectedRevision: number) => {
+    if (!conflictInfo || !selectedProject || !workbook) return;
+    const { cell, sheetName, oldValue } = conflictInfo;
+    const coords = XLSX.utils.decode_cell(cell);
+
+    const newData = [...sheetData];
+    if (!newData[coords.r]) newData[coords.r] = [];
+    else newData[coords.r] = [...newData[coords.r]];
+    newData[coords.r][coords.c] = chosenValue;
+    setSheetData(newData);
+
+    try {
+      const editData = {
+        userId: user?.id,
+        username: user?.username,
+        sheetName,
+        cell,
+        oldValue: oldValue || "",
+        newValue: chosenValue,
+      };
+      const savedEdit = await api.saveEdit(selectedProject.id, editData, expectedRevision);
+      setEdits((prev) => [...prev, savedEdit]);
+      setCellRevisions((prev) => ({ ...prev, [`${sheetName}!${cell}`]: savedEdit.revision }));
+      applyEditsToWorkbook(workbook, [savedEdit]);
+
+      if (exceljsWorkbook) {
+        try {
+          const ejWs = exceljsWorkbook.getWorksheet(sheetName);
+          if (ejWs) {
+            updateMergedCellInExcelJS(ejWs, cell, chosenValue);
+          }
+        } catch (ejErr) {
+          console.warn("ExcelJS update cell skipped:", ejErr);
+        }
+      }
+      toast.success(`Đã hợp nhất và lưu giá trị ô ${cell}: "${chosenValue}"`);
+    } catch (err: any) {
+      toast.error(err.message || "Không thể lưu giá trị đã giải quyết xung đột.");
+    } finally {
+      setConflictInfo(null);
     }
   };
 
@@ -293,18 +371,28 @@ export function UserDashboard() {
 
     if (replacedCount > 0) {
       setSheetData(newData);
-      for (const edit of newEdits) {
-        const savedEdit = await api.saveEdit(selectedProject.id, edit);
-        setEdits(prev => [...prev, savedEdit]);
-        applyEditsToWorkbook(workbook, [savedEdit]);
+      try {
+        // Tối ưu N+1 requests: Gửi toàn bộ thay thế trong 1 Batch atomic transaction
+        const savedEdits = await api.saveBatchEdits(selectedProject.id, newEdits);
+        setEdits((prev) => [...prev, ...savedEdits]);
+        applyEditsToWorkbook(workbook, savedEdits);
 
-        const ejWs = exceljsWorkbook.getWorksheet(edit.sheetName);
-        if (ejWs) {
-          updateMergedCellInExcelJS(ejWs, edit.cell, edit.newValue);
+        if (exceljsWorkbook) {
+          for (const edit of newEdits) {
+            try {
+              const ejWs = exceljsWorkbook.getWorksheet(edit.sheetName);
+              if (ejWs) {
+                updateMergedCellInExcelJS(ejWs, edit.cell, edit.newValue);
+              }
+            } catch (ejErr) {
+              // ignore
+            }
+          }
         }
+        toast.success(`Đã thay thế hàng loạt ${replacedCount} vị trí (lưu nguyên tử trong 1 Batch).`);
+      } catch (err: any) {
+        toast.error(err.message || "Lưu hàng loạt thất bại.");
       }
-
-      toast.success(`Đã thay thế ${replacedCount} vị trí.`);
     } else {
       toast.info("Không tìm thấy trong vùng được phép sửa.");
     }
@@ -351,7 +439,8 @@ export function UserDashboard() {
         onSelectProject={handleSelectProject}
         onOpenProjects={() => setActiveTab("file")}
       />
-    ) : <div className="flex h-full flex-col">
+    ) : (
+      <div className="flex h-full flex-col">
       {/* Top Ribbon */}
       <div className="bg-[#f3f2f1] flex flex-col shrink-0 border-b border-slate-300">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
@@ -523,7 +612,14 @@ export function UserDashboard() {
           </div>
         )}
       </div>
-    </div>}
+    </div>
+    )}
+      <VisualConflictResolverModal
+        isOpen={!!conflictInfo}
+        onClose={() => setConflictInfo(null)}
+        conflict={conflictInfo}
+        onResolve={handleResolveConflict}
+      />
     </UserLayout>
   );
 };

@@ -26,13 +26,17 @@ async function request(url: string, options: RequestInit = {}) {
   }
   if (!res.ok) {
     let message = "Request failed";
+    let data: any = null;
     try {
-      const data = await res.json();
-      message = data.error || message;
+      data = await res.json();
+      message = data?.error || message;
     } catch {
       /* ignore */
     }
-    throw new Error(message);
+    const err: any = new Error(message);
+    err.status = res.status;
+    err.data = data;
+    throw err;
   }
   if (res.status === 204) return null;
   return res.json();
@@ -158,8 +162,37 @@ export const api = {
     });
   },
 
+  async saveBatchEdits(id: string, edits: any[]) {
+    return request(`/api/projects/${id}/edits/batch`, {
+      method: "POST",
+      body: JSON.stringify({ edits }),
+    });
+  },
+
   async getCellValues(id: string) {
     return request(`/api/projects/${id}/cell-values`);
+  },
+
+  async getCellStates(id: string) {
+    return request(`/api/projects/${id}/cell-states`);
+  },
+
+  async getProjectFile(id: string) {
+    return request(`/api/projects/${id}/file`);
+  },
+
+  async updateProjectMembers(id: string, payload: { memberIds: string[]; nguoiPhuTrachId?: string | null }) {
+    return request(`/api/projects/${id}/members`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async createBlankProject(name: string, meta?: Record<string, unknown>) {
+    return request("/api/projects", {
+      method: "POST",
+      body: JSON.stringify({ name, mode: "blank", sheets: ["BaoGia"], ...meta }),
+    });
   },
 
   async getMemberPermissions(id: string) {
@@ -177,8 +210,12 @@ export const api = {
     return request(`/api/audit-logs?limit=${limit}`);
   },
 
-  async getEdits(id: string) {
-    return request(`/api/projects/${id}/edits`);
+  async getEdits(id: string, page?: number, limit?: number) {
+    const qs = new URLSearchParams();
+    if (page !== undefined) qs.set("page", String(page));
+    if (limit !== undefined) qs.set("limit", String(limit));
+    const q = qs.toString();
+    return request(`/api/projects/${id}/edits${q ? `?${q}` : ""}`);
   },
 
   async getTemplates() {

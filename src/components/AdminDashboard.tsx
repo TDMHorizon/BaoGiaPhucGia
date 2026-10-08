@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { FolderOpen, Settings, Users, FileText, Undo, Plus, Minus, Search, Filter, RotateCcw } from "lucide-react";
+import { FolderOpen, Settings, Users, FileText, Undo, Plus, Minus, Search, Filter, RotateCcw, FileSpreadsheet } from "lucide-react";
 import { api } from "../lib/api";
 import { fileToBase64, parseExcel, getSheetData, applyEditsToWorkbook, downloadBase64File, generateExcelBase64 } from "../lib/excel";
 import { SpreadsheetViewer } from "./SpreadsheetViewer";
@@ -25,6 +25,7 @@ import { printProjectAsPdf } from "../lib/printPdf";
 import { useAuth } from "../lib/auth";
 import { AdminHeader, AdminSidebar } from "../layout/AdminLayout";
 import { AdminHome } from "./pages/AdminHome";
+import { VisualConflictResolverModal, type ConflictInfo } from "./VisualConflictResolverModal";
 
 export function AdminDashboard() {
   const { user, logout } = useAuth();
@@ -32,6 +33,7 @@ export function AdminDashboard() {
   const [selectedProject, setSelectedProject] = useState<any>(null);
   const [edits, setEdits] = useState<any[]>([]);
   const [cellRevisions, setCellRevisions] = useState<Record<string, number>>({});
+  const [conflictInfo, setConflictInfo] = useState<ConflictInfo | null>(null);
   const [ranges, setRanges] = useState<any>({});
   const [mainTab, setMainTab] = useState("file");
   const [searchQ, setSearchQ] = useState("");
@@ -116,6 +118,22 @@ export function AdminDashboard() {
       }
     } catch (error: any) {
       toast.error(error?.message || "Không thể tải file Excel lên");
+    }
+  };
+
+  const handleCreateBlankProject = async () => {
+    const name = window.prompt("Nhập tên báo giá trắng mới (UC01):", "BaoGia_Moi.xlsx");
+    if (!name || !name.trim()) return;
+    try {
+      const created = await api.createBlankProject(name.trim());
+      toast.success(`Đã tạo báo giá trắng "${created.name}" (version 1, trạng thái nháp)`);
+      await loadProjects();
+      if (created?.id) {
+        await handleSelectProject(created.id);
+        setIsProjectDialogOpen(false);
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Không thể tạo báo giá trắng");
     }
   };
 
@@ -442,53 +460,130 @@ export function AdminDashboard() {
   const handleCellEdit = async (r: number, c: number, newValue: string) => {
     if (!workbook || !selectedProject) return;
 
-    pushToHistory(selectedProject.fileBase64);
-
     const cellRef = XLSX.utils.encode_cell({ r, c });
     const sheetName = activeSheet;
+    const oldValue = sheetData[r]?.[c] || "";
+    if (oldValue === newValue) return;
+
+    const expectedRevision = cellRevisions[`${sheetName}!${cellRef}`] || 0;
 
     const newEdit = {
       sheetName,
       cell: cellRef,
-      oldValue: sheetData[r][c] || "",
+      oldValue,
       newValue: newValue || "",
       username: user?.username || "Admin",
       timestamp: new Date().toISOString()
     };
 
+    // Cập nhật giao diện tức thời (Optimistic UI)
+    const newSheetData = [...sheetData];
+    if (!newSheetData[r]) newSheetData[r] = [];
+    else newSheetData[r] = [...newSheetData[r]];
+    newSheetData[r][c] = newValue;
+    setSheetData(newSheetData);
+
     try {
-      const newSheetData = [...sheetData];
-      if (!newSheetData[r]) newSheetData[r] = [];
-      newSheetData[r][c] = newValue;
-      setSheetData(newSheetData);
+      // UC04: Lưu giá trị ô vào SQLite edits + project_cell_states (KHÔNG ghi đè lại toàn bộ master Excel!)
+      const savedEdit = await api.saveEdit(selectedProject.id, newEdit, expectedRevision);
+      setEdits((prev) => [...prev, savedEdit]);
+      setCellRevisions((prev) => ({ ...prev, [`${sheetName}!${cellRef}`]: savedEdit.revision }));
 
-
-      await api.saveEdit(selectedProject.id, newEdit);
-      const editsToApply = [...edits, newEdit];
-      setEdits(editsToApply);
-
-
-      const { wb, ejWb } = await updateWorkbookStateAndExcelJS(selectedProject.fileBase64, [newEdit]);
-      const buffer = await ejWb.xlsx.writeBuffer();
-
-
-      let binary = '';
-      const bytes = new Uint8Array(buffer as ArrayBuffer);
-      for (let i = 0; i < bytes.byteLength; i++) {
-        binary += String.fromCharCode(bytes[i]);
+      // Cập nhật bộ nhớ bảng tính (in-memory) để hiển thị và xuất file
+      applyEditsToWorkbook(workbook, [savedEdit]);
+      if (exceljsWorkbook) {
+        try {
+          const ws = exceljsWorkbook.getWorksheet(sheetName);
+          if (ws) {
+            updateMergedCellInExcelJS(ws, cellRef, newValue);
+          }
+        } catch (ejErr) {
+          console.warn("ExcelJS update cell skipped:", ejErr);
+        }
       }
-      const base64String = window.btoa(binary);
 
-      
-      await api.updateProjectFile(selectedProject.id, base64String, wb.SheetNames);
-      setSelectedProject({ ...selectedProject, fileBase64: base64String });
-
-      toast.success(`Đã cập nhật ô ${cellRef}`);
+      toast.success(newValue === "" ? `Đã xoá ô ${cellRef}` : `Đã lưu ô ${cellRef}`);
     } catch (e: any) {
-      console.error(e);
-      toast.error("Lỗi khi lưu dữ liệu! Vui lòng nhấn F12 để xem chi tiết.");
+      if (e.status === 409 || e.data?.conflict || e.message?.includes("Xung đột") || e.message?.includes("Conflict")) {
+        const conflictData = e.data || {};
+        const serverVal = conflictData.latestValue !== undefined ? String(conflictData.latestValue) : "";
+        const serverRev = typeof conflictData.latestRevision === "number" ? conflictData.latestRevision : (expectedRevision + 1);
+        const serverUser = conflictData.updatedBy || "người khác";
+
+        // Hoàn nguyên ô trên UI về giá trị mới nhất của server
+        const revertedData = [...sheetData];
+        if (revertedData[r]) {
+          revertedData[r] = [...revertedData[r]];
+          revertedData[r][c] = serverVal;
+          setSheetData(revertedData);
+        }
+
+        setCellRevisions((prev) => ({ ...prev, [`${sheetName}!${cellRef}`]: serverRev }));
+
+        // Bật Modal Giải Quyết Xung Đột Trực Quan (Chương 13 & 14)
+        setConflictInfo({
+          cell: cellRef,
+          sheetName,
+          serverValue: serverVal,
+          serverRevision: serverRev,
+          serverUpdatedBy: serverUser,
+          clientValue: newValue,
+          oldValue,
+        });
+
+        toast.error(`Xung đột: Ô ${cellRef} vừa được ${serverUser} lưu giá trị khác. Vui lòng chọn cách hợp nhất!`);
+      } else {
+        const revertedData = [...sheetData];
+        if (revertedData[r]) {
+          revertedData[r] = [...revertedData[r]];
+          revertedData[r][c] = oldValue;
+          setSheetData(revertedData);
+        }
+        toast.error(e.message || "Lỗi khi lưu dữ liệu!");
+      }
     }
-    
+  };
+
+  const handleResolveConflict = async (chosenValue: string, expectedRevision: number) => {
+    if (!conflictInfo || !selectedProject || !workbook) return;
+    const { cell, sheetName, oldValue } = conflictInfo;
+    const coords = XLSX.utils.decode_cell(cell);
+
+    const newData = [...sheetData];
+    if (!newData[coords.r]) newData[coords.r] = [];
+    else newData[coords.r] = [...newData[coords.r]];
+    newData[coords.r][coords.c] = chosenValue;
+    setSheetData(newData);
+
+    try {
+      const editData = {
+        sheetName,
+        cell,
+        oldValue: oldValue || "",
+        newValue: chosenValue,
+        username: user?.username || "Admin",
+      };
+      const savedEdit = await api.saveEdit(selectedProject.id, editData, expectedRevision);
+      setEdits((prev) => [...prev, savedEdit]);
+      setCellRevisions((prev) => ({ ...prev, [`${sheetName}!${cell}`]: savedEdit.revision }));
+      applyEditsToWorkbook(workbook, [savedEdit]);
+
+      if (exceljsWorkbook) {
+        try {
+          const ejWs = exceljsWorkbook.getWorksheet(sheetName);
+          if (ejWs) {
+            updateMergedCellInExcelJS(ejWs, cell, chosenValue);
+          }
+        } catch (ejErr) {
+          console.warn("ExcelJS update cell skipped:", ejErr);
+        }
+      }
+      toast.success(`Đã hợp nhất và lưu giá trị ô ${cell}: "${chosenValue}"`);
+    } catch (err: any) {
+      toast.error(err.message || "Không thể lưu giá trị đã giải quyết xung đột.");
+    } finally {
+      setConflictInfo(null);
+    }
   };
   const handleAddRow = async () => {
     if (!workbook || !selectedProject) return;
@@ -769,6 +864,15 @@ export function AdminDashboard() {
                                   {isDragActive ? "Thả file..." : "Kéo thả file Excel vào đây"}
                                 </span>
                               </div>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={handleCreateBlankProject}
+                                className="w-full mt-3 text-xs font-semibold flex items-center justify-center gap-1.5 border-dashed border-slate-300 text-slate-700 hover:bg-slate-50"
+                              >
+                                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                                Tạo Báo Giá Trắng Mới (UC01)
+                              </Button>
                             </CardContent>
                           </Card>
                         </div>
@@ -1107,6 +1211,12 @@ export function AdminDashboard() {
         )}
          </main>
       </div>
+      <VisualConflictResolverModal
+        isOpen={!!conflictInfo}
+        onClose={() => setConflictInfo(null)}
+        conflict={conflictInfo}
+        onResolve={handleResolveConflict}
+      />
     </div>
   );
 };
