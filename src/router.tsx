@@ -12,6 +12,8 @@ export const ROUTES = {
   accountManagement: "/admin/accounts",
   profile: "/admin/profile",
   deletedProjects: "/admin/deleted-projects",
+  userProjects: "/user/projects",
+
 } as const;
 
 function LoadingScreen() {
@@ -72,7 +74,11 @@ export const router = createBrowserRouter([
     path: ROUTES.deletedProjects,
     Component: DeletedProjectsRoute,
   },
-  
+  // {
+  //   path: ROUTES.userProjects,
+  //   Component: UserProjectsRoute,
+  // },
+
   {
     path: "*",
     element: <Navigate to={ROUTES.home} replace />,

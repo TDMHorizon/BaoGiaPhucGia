@@ -180,15 +180,26 @@ export function initDb() {
 }
 
 function seedUsers() {
-  const count = db.prepare("SELECT COUNT(*) as c FROM users").get() as { c: number };
-  if (count.c > 0) return;
-
   const now = new Date().toISOString();
-  const insert = db.prepare(
-    "INSERT INTO users (id, username, password_hash, role, active, created_at) VALUES (?, ?, ?, ?, 1, ?)"
-  );
-  insert.run("admin1", "admin", bcrypt.hashSync("password", 10), "admin", now);
-  insert.run("user1", "user", bcrypt.hashSync("password", 10), "user", now);
+  const defaultPassHash = bcrypt.hashSync("password", 10);
+
+  const adminRow = db.prepare("SELECT * FROM users WHERE LOWER(username) = 'admin'").get() as UserRow | undefined;
+  if (!adminRow) {
+    db.prepare(
+      "INSERT INTO users (id, username, password_hash, role, active, created_at) VALUES (?, 'admin', ?, 'admin', 1, ?)"
+    ).run("admin1", defaultPassHash, now);
+  } else if (!adminRow.active) {
+    db.prepare("UPDATE users SET active = 1 WHERE id = ?").run(adminRow.id);
+  }
+
+  const userRow = db.prepare("SELECT * FROM users WHERE LOWER(username) = 'user'").get() as UserRow | undefined;
+  if (!userRow) {
+    db.prepare(
+      "INSERT INTO users (id, username, password_hash, role, active, created_at) VALUES (?, 'user', ?, 'user', 1, ?)"
+    ).run("user1", defaultPassHash, now);
+  } else if (!userRow.active) {
+    db.prepare("UPDATE users SET active = 1 WHERE id = ?").run(userRow.id);
+  }
 }
 
 export function publicUser(u: UserRow) {

@@ -223,6 +223,7 @@ async function startServer() {
     res.json({ count: row.c });
   });
 
+
   app.get("/api/projects/me", authMiddleware, (req, res) => {
     const user = req.user!;
     const q = String(req.query.q || "").trim().toLowerCase();
@@ -380,16 +381,23 @@ async function startServer() {
     if (!project) return res.status(404).json({ error: "Project not found" });
 
     getDb()
-        .prepare("UPDATE projects SET editable_ranges = ?, updated_at = ? WHERE id = ?")
-        .run(JSON.stringify(req.body.editableRanges || {}), now(), project.id);
+      .prepare("UPDATE projects SET editable_ranges = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(req.body.editableRanges || {}), now(), project.id);
 
     res.json({ success: true });
   }));
 
-  // Chỉ admin được cập nhật file gốc (cấu trúc sheet). Nhân viên không ghi đè.
-  app.put("/api/projects/:id/file", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
+  // Cập nhật file dự án (Admin, Manager hoặc Nhân viên được phân công)
+  app.put("/api/projects/:id/file", authMiddleware, catchAsync(async (req, res) => {
+    const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
+    if (user.role !== "admin" && user.role !== "manager" && !userCanAccessProject(user, project)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    if (user.role !== "admin" && user.role !== "manager" && isProjectLocked(project.trang_thai)) {
+      return res.status(403).json({ error: "Project is locked" });
+    }
 
     const { fileBase64, sheets } = req.body || {};
     if (!fileBase64) return res.status(400).json({ error: "Missing file" });
@@ -626,7 +634,7 @@ async function startServer() {
     });
   }
 
-  
+
   // Global Error Handler
   app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
     console.error(err);
@@ -645,7 +653,7 @@ async function startServer() {
     console.error('UNCAUGHT EXCEPTION! Shutting down...', err);
     process.exit(1);
   });
-  
+
   process.on('unhandledRejection', (err) => {
     console.error('UNHANDLED REJECTION! Shutting down...', err);
     process.exit(1);

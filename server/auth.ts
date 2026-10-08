@@ -22,7 +22,8 @@ export function verifyToken(token: string): AuthUser | null {
 
 export function authenticateUser(username: string, password: string): AuthUser | null {
   const db = getDb();
-  const row = db.prepare("SELECT * FROM users WHERE username = ?").get(username) as UserRow | undefined;
+  const trimmed = (username || "").trim();
+  const row = db.prepare("SELECT * FROM users WHERE LOWER(username) = LOWER(?)").get(trimmed) as UserRow | undefined;
   if (!row || !row.active) return null;
   if (!bcrypt.compareSync(password, row.password_hash)) return null;
   return { id: row.id, username: row.username, role: row.role };
