@@ -15,7 +15,7 @@ export type UserRow = {
   created_at: string;
 };
 
-export type ProjectRow = {
+export type  ProjectRow = {
   id: string;
   name: string;
   sheets: string;
@@ -29,6 +29,7 @@ export type ProjectRow = {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  isDelete: number;
 };
 
 export type EditRow = {
@@ -71,7 +72,9 @@ export function initDb() {
   ensureDataDirs();
   const dbPath = path.join(process.cwd(), "data", "baogia.db");
   db = new Database(dbPath);
+  db.pragma("busy_timeout = 10000");
   db.pragma("journal_mode = WAL");
+  db.pragma("synchronous = NORMAL");
   db.pragma("foreign_keys = ON");
 
   const hasUsers = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").get();
@@ -116,6 +119,7 @@ export function initDb() {
       trang_thai TEXT NOT NULL DEFAULT 'nhap',
       ghi_chu TEXT NOT NULL DEFAULT '',
       version INTEGER NOT NULL DEFAULT 1,
+      isDelete BOOLEAN NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       deleted_at TEXT,
@@ -166,6 +170,10 @@ export function initDb() {
   if (!projectColumns.some((column) => column.name === "deleted_at")) {
     db.exec("ALTER TABLE projects ADD COLUMN deleted_at TEXT");
   }
+  if (!projectColumns.some((column) => column.name === "isDelete")) {
+    db.exec("ALTER TABLE projects ADD COLUMN isDelete INTEGER NOT NULL DEFAULT 0");
+  }
+  db.exec("UPDATE projects SET isDelete = CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END");
 
   seedUsers();
   return db;
@@ -203,6 +211,7 @@ export function projectToJson(p: ProjectRow, memberIds: string[] = []) {
     createdAt: p.created_at,
     updatedAt: p.updated_at,
     deletedAt: p.deleted_at,
+    isDelete: p.isDelete === 1,
   };
 }
 
@@ -211,6 +220,37 @@ export function getProjectMembers(projectId: string): string[] {
     .prepare("SELECT user_id FROM project_members WHERE project_id = ?")
     .all(projectId) as { user_id: string }[];
   return rows.map((r) => r.user_id);
+}
+
+export function getProjectsWithMembers(includeDeleted = false): {
+  projects: ProjectRow[];
+  membersByProjectId: Map<string, string[]>;
+} {
+  const deletedClause = includeDeleted ? "p.isDelete = 1" : "p.isDelete = 0";
+  const rows = db
+    .prepare(
+      `SELECT p.*, pm.user_id AS member_user_id
+       FROM projects p
+       LEFT JOIN project_members pm ON pm.project_id = p.id
+      WHERE ${deletedClause}
+      ORDER BY ${includeDeleted ? "p.deleted_at" : "p.updated_at"} DESC`
+    )
+    .all() as (ProjectRow & { member_user_id: string | null })[];
+
+  const projects: ProjectRow[] = [];
+  const membersByProjectId = new Map<string, string[]>();
+
+  for (const row of rows) {
+    const { member_user_id, ...project } = row;
+    projects.push(project);
+    if (member_user_id) {
+      const members = membersByProjectId.get(project.id) || [];
+      members.push(member_user_id);
+      membersByProjectId.set(project.id, members);
+    }
+  }
+
+  return { projects, membersByProjectId };
 }
 
 export function setProjectMembers(projectId: string, memberIds: string[]) {
