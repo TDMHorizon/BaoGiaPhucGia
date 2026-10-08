@@ -89,8 +89,16 @@ export const api = {
     return request(`/api/projects${query ? `?${query}` : ""}`);
   },
 
+  async getProjectByUserId() {
+    return request("/api/projects/me");
+  },
+
   async getDeletedProjects() {
     return request("/api/projects/deleted");
+  },
+
+  async getDeletedProject(id: string) {
+    return request(`/api/projects/deleted/${encodeURIComponent(id)}`);
   },
 
   async getPendingCount() {
@@ -237,7 +245,6 @@ export const api = {
       body: JSON.stringify(payload || {}),
     });
   },
-
   async deleteTemplate(id: string) {
     return request(`/api/templates/${id}`, { method: "DELETE" });
   },

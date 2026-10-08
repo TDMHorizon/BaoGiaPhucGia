@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { FolderOpen, Settings, Users, FileText, Undo, Plus, Minus, Search, Filter, RotateCcw, FileSpreadsheet } from "lucide-react";
 import { api } from "../lib/api";
 import { fileToBase64, parseExcel, getSheetData, applyEditsToWorkbook, downloadBase64File, generateExcelBase64 } from "../lib/excel";
@@ -26,9 +27,11 @@ import { useAuth } from "../lib/auth";
 import { AdminHeader, AdminSidebar } from "../layout/AdminLayout";
 import { AdminHome } from "./pages/AdminHome";
 import { VisualConflictResolverModal, type ConflictInfo } from "./VisualConflictResolverModal";
+import { ROUTES } from "../router";
 
 export function AdminDashboard() {
   const { user, logout } = useAuth();
+  const navigate = useNavigate();
   const [projects, setProjects] = useState<any[]>([]);
   const [selectedProject, setSelectedProject] = useState<any>(null);
   const [edits, setEdits] = useState<any[]>([]);
@@ -47,7 +50,6 @@ export function AdminDashboard() {
   const [isAccountsNavExpanded, setIsAccountsNavExpanded] = useState(true);
   const [isProjectDialogOpen, setIsProjectDialogOpen] = useState(false);
   const [isTemplateDialogOpen, setIsTemplateDialogOpen] = useState(false);
-  const [isUserDialogOpen, setIsUserDialogOpen] = useState(false);
   const [isDeletedProjectsDialogOpen, setIsDeletedProjectsDialogOpen] = useState(false);
   const [deletedProjects, setDeletedProjects] = useState<any[]>([]);
 
@@ -793,8 +795,8 @@ export function AdminDashboard() {
         onAccountsExpandedChange={() => setIsAccountsNavExpanded(prev => !prev)}
         onProjectDialogOpen={() => setIsProjectDialogOpen(true)}
         onTemplateDialogOpen={() => setIsTemplateDialogOpen(true)}
-        onUserDialogOpen={() => setIsUserDialogOpen(true)}
-        onDeletedProjectsOpen={() => { setIsDeletedProjectsDialogOpen(true); loadDeletedProjects(); }}
+        onAccountManagement={() => navigate(ROUTES.accountManagement)}
+        onDeletedProjectsOpen={() => navigate(ROUTES.deletedProjects)}
         onLogout={logout}
       />
 
@@ -802,6 +804,8 @@ export function AdminDashboard() {
         <AdminHeader
           selectedProject={selectedProject}
           username={user?.username}
+          canManageAccounts={user?.role === "admin"}
+          onAccountManagement={() => navigate(ROUTES.profile)}
           onLogout={logout}
           onToggleNavigation={() => { if (window.innerWidth >= 768) setIsSidebarCollapsed(prev => !prev); else setShowMobileNav(true); }}
         />
@@ -1068,16 +1072,10 @@ export function AdminDashboard() {
             {user?.role === "admin" && (
               <TabsContent value="admin" className="m-0 h-full flex items-start gap-2 pt-1 data-[state=inactive]:hidden">
                 <div className="flex flex-col items-center">
-                  <Dialog open={isUserDialogOpen} onOpenChange={setIsUserDialogOpen}>
-                    <DialogTrigger render={<Button variant="ghost" className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-blue-50" />}>
-                        <Users className="w-6 h-6 text-blue-600" strokeWidth={1.5} />
-                        <span className="text-[10px] font-medium leading-none">Tài khoản</span>
-                      </DialogTrigger>
-                    <DialogContent className="sm:max-w-5xl w-full max-h-[90vh] overflow-y-auto">
-                      <DialogHeader><DialogTitle>Quản lý Tài Khoản</DialogTitle></DialogHeader>
-                      <UserManagement />
-                    </DialogContent>
-                  </Dialog>
+                  <Button variant="ghost" onClick={() => navigate(ROUTES.accountManagement)} className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-blue-50">
+                    <Users className="w-6 h-6 text-blue-600" strokeWidth={1.5} />
+                    <span className="text-[10px] font-medium leading-none">Tài khoản</span>
+                  </Button>
                   <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Tài khoản</div>
                 </div>
 
