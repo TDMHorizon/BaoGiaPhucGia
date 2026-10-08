@@ -50,7 +50,7 @@ import {
   saveTemplateFile,
   readTemplateFile,
   deleteTemplateFile,
-  deleteProjectFile,
+  deleteProjectFiles,
   toDataUrl,
 } from "./server/files";
 import * as XLSX from "xlsx";
@@ -112,7 +112,7 @@ async function purgeExpiredDeletedProjects() {
     .all() as { id: string }[];
 
   for (const project of expiredProjects) {
-    await deleteProjectFile(project.id);
+    await deleteProjectFiles(project.id);
     getDb().prepare("DELETE FROM projects WHERE id = ? AND isDelete = 1").run(project.id);
   }
 }
@@ -232,6 +232,7 @@ async function startServer() {
     if (!row) return res.status(404).json({ error: "User not found" });
 
     const { username, password, role, active, fullName, email } = req.body || {};
+    const nextUsername = username?.trim() || row.username;
     const nextRole = requester.role === "admin" && (role === "admin" || role === "manager" || role === "user") ? role : row.role;
     const nextActive = requester.role === "admin"
       ? (typeof active === "boolean"

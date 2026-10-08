@@ -39,14 +39,14 @@ const PAGE_SIZE = 8;
 export const roleLabels: Record<UserRole | "all", string> = {
   all: "Tất cả vai trò",
   admin: "Quản trị viên",
-  manager: "Quản lý",
+  manager: "Kế toán / Quản lý",
   user: "Nhân viên",
 };
 
 export const roleDescriptions: Record<UserRole, string> = {
   admin: "Toàn quyền hệ thống, quản lý tài khoản & cài đặt",
-  manager: "Quản lý báo giá, xem duyệt & kho file đã xóa",
-  user: "Xem và cập nhật các bảng báo giá được giao",
+  manager: "Kế toán trưởng / Quản lý tài chính: xem báo giá toàn công ty & kho file đã xóa",
+  user: "Nhân viên kỹ thuật: xem và nhập khối lượng các báo giá được giao",
 };
 
 export function roleBadgeClass(role: UserRole) {
