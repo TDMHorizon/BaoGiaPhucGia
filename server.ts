@@ -3,15 +3,46 @@ import { catchAsync } from "./server/utils/catchAsync";
 import { z } from "zod";
 import { validate } from "./server/middlewares/validate";
 import express from "express";
+import { createServer as createHttpServer } from "http";
+import { Server as SocketIOServer } from "socket.io";
 import { createServer as createViteServer } from "vite";
 import path from "path";
-import { initDb, getDb, projectToJson, getProjectMembers, setProjectMembers, userCanAccessProject, isProjectLocked, publicUser, type ProjectRow, type UserRow, type TrangThai, type EditRow, type VersionRow, type TemplateRow } from "./server/db";
-import { authenticateUser, signToken, authMiddleware, requireAdmin, requireAdminOrManager, hashPassword } from "./server/auth";
+import {
+  initDb,
+  getDb,
+  projectToJson,
+  getProjectMembers,
+  setProjectMembers,
+  userCanAccessProject,
+  isProjectLocked,
+  publicUser,
+  incrementUserTokenVersion,
+  recordAuditLog,
+  getCellValue,
+  getAllCellValuesForProject,
+  getProjectMemberPermissions,
+  setProjectMemberPermissions,
+  type ProjectRow,
+  type UserRow,
+  type TrangThai,
+  type EditRow,
+  type VersionRow,
+  type TemplateRow
+} from "./server/db";
+import {
+  authenticateUser,
+  signToken,
+  authMiddleware,
+  requireAdmin,
+  requireAdminOrManager,
+  hashPassword,
+  checkCellPermission
+} from "./server/auth";
 import {
   ensureDataDirs,
   saveProjectFile,
   readProjectFile,
-  deleteProjectFile,
+  deleteProjectFiles,
   readVersionSnapshot,
   saveTemplateFile,
   readTemplateFile,
@@ -65,6 +96,21 @@ async function startServer() {
   initDb();
 
   const app = express();
+  const httpServer = createHttpServer(app);
+  const io = new SocketIOServer(httpServer, {
+    cors: { origin: "*" },
+    maxHttpBufferSize: 1e8,
+  });
+
+  io.on("connection", (socket) => {
+    socket.on("join_project", (projectId: string) => {
+      if (projectId) socket.join(`project:${projectId}`);
+    });
+    socket.on("leave_project", (projectId: string) => {
+      if (projectId) socket.leave(`project:${projectId}`);
+    });
+  });
+
   const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json({ limit: "50mb" }));
@@ -83,8 +129,10 @@ async function startServer() {
   // Auth
   app.post("/api/login", (req, res) => {
     const { username, password } = req.body || {};
-    const user = authenticateUser(username, password);
-    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+    const ip = req.ip || req.socket.remoteAddress;
+    const userAgent = req.headers["user-agent"];
+    const user = authenticateUser(username, password, { ip, userAgent });
+    if (!user) return res.status(401).json({ error: "Tên đăng nhập hoặc mật khẩu không chính xác" });
     const token = signToken(user);
     res.json({ ...user, token });
   });
@@ -107,14 +155,24 @@ async function startServer() {
   });
 
   app.post("/api/users", authMiddleware, requireAdmin, (req, res) => {
-    const { username, password, role } = req.body || {};
+    const { username, password, role, fullName, email } = req.body || {};
     if (!username || !password) return res.status(400).json({ error: "Missing fields" });
     const r = role === "admin" ? "admin" : role === "manager" ? "manager" : "user";
     const id = newId();
     try {
       getDb()
-        .prepare("INSERT INTO users (id, username, password_hash, role, active, created_at) VALUES (?, ?, ?, ?, 1, ?)")
-        .run(id, username.trim(), hashPassword(password), r, now());
+        .prepare("INSERT INTO users (id, username, password_hash, role, active, token_version, full_name, email, created_at) VALUES (?, ?, ?, ?, 1, 1, ?, ?, ?)")
+        .run(id, username.trim(), hashPassword(password), r, fullName?.trim() || null, email?.trim() || null, now());
+      
+      recordAuditLog({
+        userId: req.user!.id,
+        username: req.user!.username,
+        action: "USER_CREATED",
+        resource: "users",
+        resourceId: id,
+        detail: { createdUsername: username.trim(), role: r }
+      });
+
       const row = getDb().prepare("SELECT * FROM users WHERE id = ?").get(id) as UserRow;
       res.json(publicUser(row));
     } catch {
@@ -126,16 +184,33 @@ async function startServer() {
     const row = getDb().prepare("SELECT * FROM users WHERE id = ?").get(req.params.id) as UserRow | undefined;
     if (!row) return res.status(404).json({ error: "User not found" });
 
-    const { username, password, role, active } = req.body || {};
+    const { username, password, role, active, fullName, email } = req.body || {};
     const nextUsername = username?.trim() || row.username;
     const nextRole = role === "admin" || role === "manager" || role === "user" ? role : row.role;
     const nextActive = typeof active === "boolean" ? (active ? 1 : 0) : row.active;
     const nextHash = password ? hashPassword(password) : row.password_hash;
+    const nextFullName = fullName !== undefined ? fullName : (row.full_name || null);
+    const nextEmail = email !== undefined ? email : (row.email || null);
+
+    // Thu hồi ngay lập tức mọi phiên làm việc cũ khi đổi mật khẩu hoặc khóa tài khoản
+    if (password || active === false) {
+      incrementUserTokenVersion(row.id);
+    }
 
     try {
       getDb()
-        .prepare("UPDATE users SET username = ?, password_hash = ?, role = ?, active = ? WHERE id = ?")
-        .run(nextUsername, nextHash, nextRole, nextActive, row.id);
+        .prepare("UPDATE users SET username = ?, password_hash = ?, role = ?, active = ?, full_name = ?, email = ? WHERE id = ?")
+        .run(nextUsername, nextHash, nextRole, nextActive, nextFullName, nextEmail, row.id);
+
+      recordAuditLog({
+        userId: req.user!.id,
+        username: req.user!.username,
+        action: "USER_UPDATED",
+        resource: "users",
+        resourceId: row.id,
+        detail: { nextRole, nextActive, passwordChanged: !!password }
+      });
+
       const updated = getDb().prepare("SELECT * FROM users WHERE id = ?").get(row.id) as UserRow;
       res.json(publicUser(updated));
     } catch {
@@ -146,9 +221,27 @@ async function startServer() {
   app.delete("/api/users/:id", authMiddleware, requireAdmin, (req, res) => {
     const user = req.user!;
     if (user.id === req.params.id) return res.status(400).json({ error: "Cannot delete yourself" });
+    const target = getDb().prepare("SELECT username FROM users WHERE id = ?").get(req.params.id) as UserRow | undefined;
     const result = getDb().prepare("DELETE FROM users WHERE id = ?").run(req.params.id);
     if (!result.changes) return res.status(404).json({ error: "User not found" });
+
+    recordAuditLog({
+      userId: user.id,
+      username: user.username,
+      action: "USER_DELETED",
+      resource: "users",
+      resourceId: req.params.id,
+      detail: { deletedUsername: target?.username }
+    });
+
     res.json({ ok: true });
+  });
+
+  // Audit Logs (admin)
+  app.get("/api/audit-logs", authMiddleware, requireAdmin, (req, res) => {
+    const limit = Math.min(Number(req.query.limit || 100), 500);
+    const rows = getDb().prepare("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ?").all(limit);
+    res.json(rows);
   });
 
   // Projects list
@@ -188,7 +281,7 @@ async function startServer() {
     res.json({ count: row.c });
   });
 
-  app.post("/api/projects", authMiddleware, catchAsync(async (req, res) => {
+  app.post("/api/projects", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
     const user = req.user!;
     const {
       name,
@@ -282,6 +375,11 @@ async function startServer() {
       )
       .run(name, soBaoGia, tenKhachHang, nguoiPhuTrachId, ghiChu, editableRanges, sheets, now(), project.id);
 
+    io.to(`project:${project.id}`).emit("project.updated", {
+      projectId: project.id,
+      updatedBy: user.username,
+    });
+
     res.json(await projectWithFile(loadProject(project.id)!));
   }));
 
@@ -289,20 +387,43 @@ async function startServer() {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
     getDb().prepare("DELETE FROM projects WHERE id = ?").run(project.id);
-    await deleteProjectFile(project.id);
+    await deleteProjectFiles(project.id);
+
+    recordAuditLog({
+      userId: req.user!.id,
+      username: req.user!.username,
+      action: "PROJECT_DELETED",
+      resource: "projects",
+      resourceId: project.id,
+      detail: { projectName: project.name }
+    });
+
+    io.to(`project:${project.id}`).emit("project.deleted", {
+      projectId: project.id,
+      deletedBy: req.user!.username,
+    });
+
     res.json({ ok: true });
   }));
 
   app.put("/api/projects/:id/ranges", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
+    const ranges = req.body.editableRanges || {};
     getDb()
       .prepare("UPDATE projects SET editable_ranges = ?, updated_at = ? WHERE id = ?")
-      .run(JSON.stringify(req.body.editableRanges || {}), now(), project.id);
+      .run(JSON.stringify(ranges), now(), project.id);
+
+    io.to(`project:${project.id}`).emit("ranges.updated", {
+      projectId: project.id,
+      editableRanges: ranges,
+      updatedBy: req.user!.username,
+    });
+
     res.json(await projectWithFile(loadProject(project.id)!));
   }));
 
-  // Chỉ admin được cập nhật file gốc (cấu trúc sheet). Nhân viên không ghi đè.
+  // Chỉ admin/manager được cập nhật file gốc (cấu trúc sheet). Nhân viên không ghi đè.
   app.put("/api/projects/:id/file", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
@@ -310,14 +431,19 @@ async function startServer() {
     const { fileBase64, sheets } = req.body || {};
     if (!fileBase64) return res.status(400).json({ error: "Missing file" });
 
-    saveProjectFile(project.id, fileBase64);
+    await saveProjectFile(project.id, fileBase64);
     if (sheets) {
       getDb()
-        .prepare("UPDATE projects SET sheets = ?, updated_at = ? WHERE id = ?")
+        .prepare("UPDATE projects SET sheets = ?, project_revision = project_revision + 1, updated_at = ? WHERE id = ?")
         .run(JSON.stringify(sheets), now(), project.id);
     } else {
-      getDb().prepare("UPDATE projects SET updated_at = ? WHERE id = ?").run(now(), project.id);
+      getDb().prepare("UPDATE projects SET project_revision = project_revision + 1, updated_at = ? WHERE id = ?").run(now(), project.id);
     }
+
+    io.to(`project:${project.id}`).emit("structure.updated", {
+      projectId: project.id,
+      updatedBy: req.user!.username,
+    });
 
     res.json(await projectWithFile(loadProject(project.id)!));
   }));
@@ -339,13 +465,51 @@ async function startServer() {
       return res.status(400).json({ error: "Invalid status transition" });
     }
 
-    // Bản gốc trên server không đổi. Chỉ cập nhật trạng thái theo dõi.
     getDb()
       .prepare("UPDATE projects SET trang_thai = ?, updated_at = ? WHERE id = ?")
       .run(nextStatus, now(), project.id);
 
+    io.to(`project:${project.id}`).emit("status.updated", {
+      projectId: project.id,
+      status: nextStatus,
+      updatedBy: user.username,
+    });
+
     res.json(await projectWithFile(loadProject(project.id)!));
   }));
+
+  // Member permissions (Chương 11 - Phân quyền từng nhân viên theo sheet)
+  app.get("/api/projects/:id/member-permissions", authMiddleware, (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+    res.json(getProjectMemberPermissions(project.id));
+  });
+
+  app.put("/api/projects/:id/member-permissions", authMiddleware, requireAdminOrManager, (req, res) => {
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    const permissions = Array.isArray(req.body.permissions) ? req.body.permissions : [];
+    setProjectMemberPermissions(project.id, permissions);
+
+    io.to(`project:${project.id}`).emit("member_permissions.updated", {
+      projectId: project.id,
+      permissions,
+      updatedBy: req.user!.username,
+    });
+
+    res.json({ ok: true, permissions });
+  });
+
+  // Current Cell Values (Chương 7 - State chung của toàn Project)
+  app.get("/api/projects/:id/cell-values", authMiddleware, (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+    res.json(getAllCellValuesForProject(project.id));
+  });
 
   // Versions
   app.get("/api/projects/:id/versions", authMiddleware, (req, res) => {
@@ -382,27 +546,92 @@ async function startServer() {
     res.json({ version, fileBase64 });
   }));
 
-  // Edits
+  // Edits - Dùng chung Edit Service cho Admin, Manager và Employee (Chương 8, 12, 13, 15, 16, 21, 22)
   app.post("/api/projects/:id/edits", authMiddleware, (req, res) => {
     const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
     if (user.role !== "admin" && user.role !== "manager" && isProjectLocked(project.trang_thai)) {
-      return res.status(403).json({ error: "Project is locked" });
+      return res.status(403).json({ error: "Báo giá đã bị khóa, không thể chỉnh sửa." });
     }
 
-    const { sheetName, cell, oldValue, newValue } = req.body || {};
+    const { sheetName, cell, newValue } = req.body || {};
+    if (!sheetName || !cell) {
+      return res.status(400).json({ error: "Thiếu sheetName hoặc cell" });
+    }
+
+    // 1. Phân quyền cấp ô nghiêm ngặt (Default Deny - Chống bypass Postman)
+    const permCheck = checkCellPermission(user, project, sheetName, cell);
+    if (!permCheck.allowed) {
+      return res.status(403).json({ error: permCheck.reason || "Bạn không có quyền chỉnh sửa ô này." });
+    }
+
+    // 2. Cell-level Optimistic Concurrency Control (Chương 12 & 13)
+    const currentCell = getCellValue(project.id, sheetName, cell);
+    const currentRevision = currentCell ? currentCell.revision : 0;
+    const expectedRev = req.body.expectedRevision;
+    if (expectedRev !== undefined && expectedRev !== null && Number(expectedRev) !== currentRevision) {
+      return res.status(409).json({
+        error: `Xung đột dữ liệu: Ô ${cell} vừa được cập nhật bởi ${currentCell?.updated_by || "người khác"}.`,
+        conflict: true,
+        cell,
+        sheetName,
+        latestValue: currentCell ? currentCell.value : "",
+        latestRevision: currentRevision,
+        updatedBy: currentCell ? currentCell.updated_by : "",
+      });
+    }
+
+    // 3. Thực thi Transaction nguyên tử trong SQLite WAL (Chương 15 & 16)
+    const nextRev = currentRevision + 1;
     const id = newId();
     const timestamp = now();
-    getDb()
-      .prepare(
-        `INSERT INTO edits (id, project_id, user_id, username, sheet_name, cell, old_value, new_value, timestamp)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(id, project.id, user.id, user.username, sheetName, cell, oldValue ?? "", newValue ?? "", timestamp);
+    const val = newValue !== undefined && newValue !== null ? String(newValue) : "";
+    const oldValue = currentCell ? currentCell.value : (req.body.oldValue ?? "");
 
-    getDb().prepare("UPDATE projects SET updated_at = ? WHERE id = ?").run(timestamp, project.id);
+    let nextSeq = 1;
+    getDb().transaction(() => {
+      const maxSeqRow = getDb().prepare("SELECT COALESCE(MAX(sequence), 0) AS m FROM edits WHERE project_id = ?").get(project.id) as { m: number };
+      nextSeq = maxSeqRow.m + 1;
+
+      // Lưu lịch sử chỉnh sửa (Audit Trail)
+      getDb()
+        .prepare(
+          `INSERT INTO edits (id, project_id, user_id, username, sheet_name, cell, old_value, new_value, sequence, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(id, project.id, user.id, user.username, sheetName, cell, oldValue, val, nextSeq, timestamp);
+
+      // Lưu/Cập nhật trạng thái ô hiện tại (Current Cell State)
+      getDb()
+        .prepare(
+          `INSERT INTO project_cell_values (project_id, sheet_name, cell, value, revision, updated_by, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(project_id, sheet_name, cell) DO UPDATE SET
+             value = excluded.value,
+             revision = excluded.revision,
+             updated_by = excluded.updated_by,
+             updated_at = excluded.updated_at`
+        )
+        .run(project.id, sheetName, cell, val, nextRev, user.username, timestamp);
+
+      getDb().prepare("UPDATE projects SET project_revision = project_revision + 1, updated_at = ? WHERE id = ?").run(timestamp, project.id);
+    })();
+
+    // 4. Realtime Broadcast tới Room Project sau khi COMMIT thành công (Chương 21 & 22)
+    io.to(`project:${project.id}`).emit("cell.updated", {
+      projectId: project.id,
+      sheetName,
+      cell,
+      oldValue,
+      newValue: val,
+      revision: nextRev,
+      sequence: nextSeq,
+      updatedBy: user.username,
+      userId: user.id,
+      timestamp,
+    });
 
     res.json({
       id,
@@ -412,7 +641,9 @@ async function startServer() {
       sheetName,
       cell,
       oldValue,
-      newValue,
+      newValue: val,
+      revision: nextRev,
+      sequence: nextSeq,
       timestamp,
     });
   });
@@ -423,16 +654,10 @@ async function startServer() {
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
 
-    let rows: EditRow[] = [];
-    if (user.role === "admin" || user.role === "manager") {
-      rows = getDb()
-        .prepare("SELECT * FROM edits WHERE project_id = ? ORDER BY timestamp DESC")
-        .all(project.id) as EditRow[];
-    } else {
-      rows = getDb()
-        .prepare("SELECT * FROM edits WHERE project_id = ? AND user_id = ? ORDER BY timestamp DESC")
-        .all(project.id, user.id) as EditRow[];
-    }
+    // Trả về toàn bộ edits của dự án theo thứ tự chấp nhận sequence ASC, timestamp ASC
+    const rows = getDb()
+      .prepare("SELECT * FROM edits WHERE project_id = ? ORDER BY sequence ASC, timestamp ASC")
+      .all(project.id) as EditRow[];
 
     res.json(
       rows.map((e) => ({
@@ -444,6 +669,7 @@ async function startServer() {
         cell: e.cell,
         oldValue: e.old_value,
         newValue: e.new_value,
+        sequence: e.sequence,
         timestamp: e.timestamp,
       }))
     );
@@ -480,7 +706,7 @@ async function startServer() {
     });
   }));
 
-  app.post("/api/templates/:id/clone", authMiddleware, catchAsync(async (req, res) => {
+  app.post("/api/templates/:id/clone", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
     const user = req.user!;
     const template = getDb().prepare("SELECT * FROM templates WHERE id = ?").get(req.params.id) as TemplateRow | undefined;
     if (!template) return res.status(404).json({ error: "Template not found" });
@@ -561,7 +787,7 @@ async function startServer() {
     process.exit(1);
   });
 
-  app.listen(PORT, "0.0.0.0", () => {
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }

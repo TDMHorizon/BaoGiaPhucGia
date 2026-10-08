@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
-import { FolderOpen, Settings, Users, FileText, Undo, Plus, Minus, Search, MousePointerClick, Filter } from "lucide-react";
+import { FolderOpen, Settings, Users, FileText, Undo, Plus, Minus, Search, MousePointerClick, Filter, Upload, Download, Printer, Shield } from "lucide-react";
 import { api } from "../lib/api";
-import { fileToBase64, parseExcel, getSheetData, applyEditsToWorkbook } from "../lib/excel";
+import { fileToBase64, parseExcel, getSheetData, applyEditsToWorkbook, downloadBase64File, generateExcelBase64 } from "../lib/excel";
 import { SpreadsheetViewer } from "./SpreadsheetViewer";
-import { insertRowWithExcelJS, deleteRowWithExcelJS, insertColWithExcelJS, deleteColWithExcelJS, loadExcelJSWorkbook, updateMergedCellInExcelJS } from "../lib/exceljs-helper";
+import { insertRowWithExcelJS, deleteRowWithExcelJS, insertColWithExcelJS, deleteColWithExcelJS, loadExcelJSWorkbook, updateMergedCellInExcelJS, workbookToBase64 } from "../lib/exceljs-helper";
+import { getSocket, joinProjectRoom, leaveProjectRoom } from "../lib/socket";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
@@ -17,6 +18,7 @@ import { ProjectMetaForm } from "./ProjectMetaForm";
 import { StatusWorkflow } from "./StatusWorkflow";
 import { StatusBadge } from "./StatusBadge";
 import { UserManagement } from "./UserManagement";
+import { AuditLogsModal } from "./AuditLogsModal";
 import { TemplateLibrary } from "./TemplateLibrary";
 import { TRANG_THAI_LABELS, type TrangThai } from "../lib/constants";
 import { printProjectAsPdf } from "../lib/printPdf";
@@ -27,6 +29,7 @@ export function AdminDashboard() {
   const [projects, setProjects] = useState<any[]>([]);
   const [selectedProject, setSelectedProject] = useState<any>(null);
   const [edits, setEdits] = useState<any[]>([]);
+  const [cellRevisions, setCellRevisions] = useState<Record<string, number>>({});
   const [ranges, setRanges] = useState<any>({});
   const [mainTab, setMainTab] = useState("projects");
   const [searchQ, setSearchQ] = useState("");
@@ -75,11 +78,14 @@ export function AdminDashboard() {
       const base64 = await fileToBase64(file);
       const workbook = await parseExcel(base64);
       const sheets = workbook.SheetNames;
-      await api.createProject(file.name, base64, sheets);
-      toast.success("Project created successfully");
-      loadProjects();
-    } catch (error) {
-      toast.error("Failed to upload file");
+      const created = await api.createProject(file.name, base64, sheets);
+      toast.success(`Đã tải lên & tạo dự án "${file.name}"`);
+      await loadProjects();
+      if (created?.id) {
+        await handleSelectProject(created.id);
+      }
+    } catch (error: any) {
+      toast.error(error?.message || "Không thể tải file Excel lên");
     }
   };
 
@@ -115,6 +121,21 @@ export function AdminDashboard() {
     setEdits(projectEdits);
 
     try {
+      const cellValuesMap = await api.getCellValues(id);
+      const revs: Record<string, number> = {};
+      for (const [sheet, cells] of Object.entries(cellValuesMap as any)) {
+        for (const [c, info] of Object.entries(cells as any)) {
+          revs[`${sheet}!${c}`] = (info as any).revision;
+        }
+      }
+      setCellRevisions(revs);
+    } catch (e) {
+      console.warn("Không tải được cell revisions:", e);
+    }
+
+    joinProjectRoom(id);
+
+    try {
       const { wb } = await updateWorkbookStateAndExcelJS(project.fileBase64, projectEdits);
       if (wb.SheetNames.length > 0) {
         setActiveSheet(wb.SheetNames[0]);
@@ -137,6 +158,76 @@ export function AdminDashboard() {
       toast.error(e.message || "Xóa thất bại");
     }
   };
+
+  // Realtime Socket.IO sync for Admin/Manager
+  useEffect(() => {
+    if (!selectedProject?.id) return;
+    const s = getSocket();
+
+    const handleCellUpdated = (payload: any) => {
+      if (payload.projectId !== selectedProject.id) return;
+      setCellRevisions((prev) => ({
+        ...prev,
+        [`${payload.sheetName}!${payload.cell}`]: payload.revision,
+      }));
+
+      setEdits((prev) => [...prev, payload]);
+
+      if (workbook) {
+        applyEditsToWorkbook(workbook, [payload]);
+      }
+
+      if (exceljsWorkbook) {
+        try {
+          const ws = exceljsWorkbook.getWorksheet(payload.sheetName);
+          if (ws) updateMergedCellInExcelJS(ws, payload.cell, payload.newValue);
+        } catch {
+          /* ignore */
+        }
+      }
+
+      if (payload.sheetName === activeSheet) {
+        const parsed = XLSX.utils.decode_cell(payload.cell);
+        setSheetData((prev) => {
+          const copy = [...prev];
+          if (!copy[parsed.r]) copy[parsed.r] = [];
+          else copy[parsed.r] = [...copy[parsed.r]];
+          copy[parsed.r][parsed.c] = payload.newValue;
+          return copy;
+        });
+      }
+
+      if (payload.userId !== user?.id) {
+        toast.info(`${payload.updatedBy} vừa cập nhật ô ${payload.cell} (${payload.sheetName})`);
+      }
+    };
+
+    const handleRangesUpdated = (payload: any) => {
+      if (payload.projectId === selectedProject.id) {
+        setSelectedProject((prev: any) => (prev ? { ...prev, editableRanges: payload.editableRanges } : null));
+        setRanges(payload.editableRanges || {});
+        toast.info("Phạm vi quyền sửa của báo giá vừa được cập nhật.");
+      }
+    };
+
+    const handleStatusUpdated = (payload: any) => {
+      if (payload.projectId === selectedProject.id) {
+        setSelectedProject((prev: any) => (prev ? { ...prev, trangThai: payload.status } : null));
+        toast.info(`Trạng thái báo giá đã chuyển sang: ${TRANG_THAI_LABELS[payload.status as TrangThai] || payload.status}`);
+      }
+    };
+
+    s.on("cell.updated", handleCellUpdated);
+    s.on("ranges.updated", handleRangesUpdated);
+    s.on("status.updated", handleStatusUpdated);
+
+    return () => {
+      s.off("cell.updated", handleCellUpdated);
+      s.off("ranges.updated", handleRangesUpdated);
+      s.off("status.updated", handleStatusUpdated);
+      leaveProjectRoom(selectedProject.id);
+    };
+  }, [selectedProject?.id, activeSheet, workbook, exceljsWorkbook, user?.id]);
 
   const handleTabChange = (sheetName: string) => {
     if (!workbook) return;
@@ -178,12 +269,85 @@ export function AdminDashboard() {
     const r2 = Math.max(dragStart.r, dragEnd.r);
     const c1 = Math.min(dragStart.c, dragEnd.c);
     const c2 = Math.max(dragStart.c, dragEnd.c);
-    const start = XLSX.utils.encode_cell({ r: r1, c: c1 });
-    const end = XLSX.utils.encode_cell({ r: r2, c: c2 });
-    const rangePart = start === end ? start : `${start}:${end}`;
-    appendRange(rangePart);
+
+    // Kéo rê chọn từ 2 ô trở lên để phân quyền cho nhân viên
+    if (r1 !== r2 || c1 !== c2) {
+      const start = XLSX.utils.encode_cell({ r: r1, c: c1 });
+      const end = XLSX.utils.encode_cell({ r: r2, c: c2 });
+      const rangePart = `${start}:${end}`;
+      appendRange(rangePart);
+    }
     setDragStart(null);
     setDragEnd(null);
+  };
+
+  const handleCellChange = async (r: number, c: number, newValue: string) => {
+    if (!selectedProject || !workbook) return;
+    const cellRef = XLSX.utils.encode_cell({ r, c });
+
+    const ws = workbook.Sheets[activeSheet];
+    const cellObj = ws ? ws[cellRef] : null;
+    const oldValue = cellObj && cellObj.v !== undefined && cellObj.v !== null ? String(cellObj.v) : "";
+    if (oldValue === newValue) return;
+
+    if (selectedProject.fileBase64) {
+      pushToHistory(selectedProject.fileBase64);
+    }
+
+    const newData = [...sheetData];
+    if (!newData[r]) newData[r] = [];
+    else newData[r] = [...newData[r]];
+    newData[r][c] = newValue;
+    setSheetData(newData);
+
+    const cellKey = `${activeSheet}!${cellRef}`;
+    const expectedRevision = cellRevisions[cellKey] ?? 0;
+
+    try {
+      const editData = {
+        userId: user?.id,
+        username: user?.username,
+        sheetName: activeSheet,
+        cell: cellRef,
+        oldValue,
+        newValue,
+        expectedRevision,
+      };
+      const savedEdit = await api.saveEdit(selectedProject.id, editData);
+      setEdits((prev) => [...prev, savedEdit]);
+      setCellRevisions((prev) => ({ ...prev, [cellKey]: (expectedRevision + 1) }));
+
+      applyEditsToWorkbook(workbook, [savedEdit]);
+
+      if (exceljsWorkbook) {
+        try {
+          const ejWs = exceljsWorkbook.getWorksheet(activeSheet);
+          if (ejWs) {
+            updateMergedCellInExcelJS(ejWs, cellRef, newValue);
+          }
+        } catch (ejErr) {
+          console.warn("ExcelJS update cell skipped:", ejErr);
+        }
+      }
+
+      toast.success(newValue === "" ? `Đã xoá nội dung ô ${cellRef}` : `Đã lưu ô ${cellRef}`);
+    } catch (error: any) {
+      if (error.message?.includes("409") || error.status === 409) {
+        toast.error(`Xung đột (409 Conflict): Ô ${cellRef} vừa được cập nhật bởi phiên khác! Vui lòng tải lại.`);
+        try {
+          const cellValuesMap = await api.getCellValues(selectedProject.id);
+          const revs: Record<string, number> = {};
+          for (const [sheet, cells] of Object.entries(cellValuesMap as any)) {
+            for (const [c, info] of Object.entries(cells as any)) {
+              revs[`${sheet}!${c}`] = (info as any).revision;
+            }
+          }
+          setCellRevisions(revs);
+        } catch {}
+      } else {
+        toast.error(error.message || "Lưu thất bại");
+      }
+    }
   };
 
   const isInDragSelection = (r: number, c: number) => {
@@ -380,6 +544,28 @@ export function AdminDashboard() {
     }
   };
 
+  const handleExportExcel = async () => {
+    if (!selectedProject || !workbook) return;
+    try {
+      if (exceljsWorkbook) {
+        try {
+          const base64 = await workbookToBase64(exceljsWorkbook);
+          downloadBase64File(base64, selectedProject.name?.replace(/\.xlsx$/i, "") || "baogia");
+          toast.success("Đã xuất tệp Excel (đã áp dụng các ô điền).");
+          return;
+        } catch (ejErr) {
+          console.warn("ExcelJS export failed, falling back to XLSX engine:", ejErr);
+        }
+      }
+      const base64 = generateExcelBase64(workbook);
+      downloadBase64File(base64, selectedProject.name?.replace(/\.xlsx$/i, "") || "baogia");
+      toast.success("Đã xuất tệp Excel (đã áp dụng các ô điền).");
+    } catch (e: any) {
+      console.error(e);
+      toast.error(e?.message || "Không thể xuất tệp Excel!");
+    }
+  };
+
   const centerColSpan = (() => {
     const leftOpen = showLeftPanel;
     const rightOpen = showRightPanel && selectedProject;
@@ -405,6 +591,25 @@ export function AdminDashboard() {
             
             <TabsContent value="file" className="m-0 h-full flex items-start gap-2 pt-1 data-[state=inactive]:hidden">
               <div className="flex flex-col items-center">
+                <label className="cursor-pointer">
+                  <input
+                    type="file"
+                    accept=".xlsx"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (file) onDrop([file]);
+                      e.target.value = "";
+                    }}
+                  />
+                  <div className="h-14 w-20 flex flex-col items-center justify-center gap-1 rounded-sm hover:bg-indigo-50 border border-transparent hover:border-indigo-100 transition-colors">
+                    <Upload className="w-6 h-6 text-indigo-600" strokeWidth={1.5} />
+                    <span className="text-[10px] font-medium leading-none text-center">Tải Excel lên</span>
+                  </div>
+                </label>
+              </div>
+
+              <div className="flex flex-col items-center">
                 <Dialog>
                   <DialogTrigger render={<Button variant="ghost" className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-indigo-50" />}>
                       <FolderOpen className="w-6 h-6 text-indigo-600" strokeWidth={1.5} />
@@ -414,29 +619,30 @@ export function AdminDashboard() {
                     <DialogHeader>
                       <DialogTitle>Quản lý Báo Giá</DialogTitle>
                     </DialogHeader>
-                    {/* The project list and upload component goes here - reusing the old layout for now to keep state working */}
+                    {/* The project list and upload component */}
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 mt-2">
-                      {user?.role !== "admin" && (
-                        <div className="lg:col-span-4 space-y-4">
-                          <Card className="shadow-xs border-slate-200 bg-white">
-                            <CardHeader className="pb-3 border-b bg-slate-50/50">
-                              <CardTitle className="text-xs font-bold text-slate-800">Tải Lên File Excel (.xlsx)</CardTitle>
-                            </CardHeader>
-                            <CardContent className="pt-3 px-3 pb-3">
-                              <div {...getRootProps()} className={`border-2 border-dashed p-4 text-center cursor-pointer rounded-xl transition-all duration-200 ${isDragActive ? "border-blue-500 bg-blue-50/70" : "border-slate-200"}`}>
-                                <input {...getInputProps()} />
-                                <div className="mx-auto w-8 h-8 rounded-full bg-white flex items-center justify-center border shadow-2xs mb-2">
-                                  <Plus className="h-4.5 w-4.5 text-indigo-600" />
-                                </div>
-                                <span className="text-xs font-bold text-slate-700 block mb-0.5">
-                                  {isDragActive ? "Thả file..." : "Kéo thả file Excel vào đây"}
-                                </span>
+                      <div className="lg:col-span-4 space-y-4">
+                        <Card className="shadow-xs border-slate-200 bg-white">
+                          <CardHeader className="pb-3 border-b bg-slate-50/50">
+                            <CardTitle className="text-xs font-bold text-slate-800">Tải Lên File Excel (.xlsx)</CardTitle>
+                          </CardHeader>
+                          <CardContent className="pt-3 px-3 pb-3">
+                            <div {...getRootProps()} className={`border-2 border-dashed p-4 text-center cursor-pointer rounded-xl transition-all duration-200 ${isDragActive ? "border-blue-500 bg-blue-50/70" : "border-slate-200 hover:border-indigo-400 hover:bg-indigo-50/30"}`}>
+                              <input {...getInputProps()} />
+                              <div className="mx-auto w-8 h-8 rounded-full bg-white flex items-center justify-center border shadow-2xs mb-2">
+                                <Plus className="h-4.5 w-4.5 text-indigo-600" />
                               </div>
-                            </CardContent>
-                          </Card>
-                        </div>
-                      )}
-                      <div className={user?.role === "admin" ? "lg:col-span-12" : "lg:col-span-8"}>
+                              <span className="text-xs font-bold text-slate-700 block mb-0.5">
+                                {isDragActive ? "Thả file vào đây..." : "Kéo thả file Excel vào đây"}
+                              </span>
+                              <span className="text-[10px] text-slate-400 block mt-1">
+                                Hoặc bấm để chọn file từ máy tính
+                              </span>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      </div>
+                      <div className="lg:col-span-8">
                         <Card className="shadow-xs border-slate-200 bg-white h-full flex flex-col">
                           <CardHeader className="py-2.5 px-3 border-b bg-slate-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                             <CardTitle className="text-xs font-bold text-slate-800 shrink-0">Danh sách dự án ({projects.length})</CardTitle>
@@ -475,21 +681,36 @@ export function AdminDashboard() {
                 <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Tệp tin</div>
               </div>
               
-              {user?.role !== "admin" && (
+              <div className="w-px h-14 bg-slate-200 mx-2" />
+              <div className="flex flex-col items-center">
+                <Dialog>
+                  <DialogTrigger render={<Button variant="ghost" className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-indigo-50" />}>
+                      <FileText className="w-6 h-6 text-emerald-600" strokeWidth={1.5} />
+                      <span className="text-[10px] font-medium leading-none">Templates</span>
+                    </DialogTrigger>
+                  <DialogContent className="sm:max-w-5xl w-full max-h-[90vh] overflow-y-auto">
+                    <DialogHeader><DialogTitle>Thư viện Templates</DialogTitle></DialogHeader>
+                    <TemplateLibrary onCloned={() => loadProjects()} />
+                  </DialogContent>
+                </Dialog>
+                <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Mẫu</div>
+              </div>
+
+              {selectedProject && (
                 <>
                   <div className="w-px h-14 bg-slate-200 mx-2" />
                   <div className="flex flex-col items-center">
-                    <Dialog>
-                      <DialogTrigger render={<Button variant="ghost" className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-indigo-50" />}>
-                          <FileText className="w-6 h-6 text-emerald-600" strokeWidth={1.5} />
-                          <span className="text-[10px] font-medium leading-none">Templates</span>
-                        </DialogTrigger>
-                      <DialogContent className="sm:max-w-5xl w-full max-h-[90vh] overflow-y-auto">
-                        <DialogHeader><DialogTitle>Thư viện Templates</DialogTitle></DialogHeader>
-                        <TemplateLibrary onCloned={() => loadProjects()} />
-                      </DialogContent>
-                    </Dialog>
-                    <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Mẫu</div>
+                    <div className="flex items-center gap-1 h-14">
+                      <Button variant="ghost" onClick={handleExportExcel} className="h-14 w-16 flex flex-col gap-1 rounded-sm hover:bg-emerald-50">
+                        <Download className="w-6 h-6 text-emerald-600" strokeWidth={1.5} />
+                        <span className="text-[10px] font-medium leading-none">Tải Excel</span>
+                      </Button>
+                      <Button variant="ghost" onClick={() => { if (!printProjectAsPdf(selectedProject, sheetData, activeSheet)) toast.error("Trình duyệt chặn cửa sổ in PDF"); }} className="h-14 w-16 flex flex-col gap-1 rounded-sm hover:bg-rose-50">
+                        <Printer className="w-6 h-6 text-rose-600" strokeWidth={1.5} />
+                        <span className="text-[10px] font-medium leading-none">Xuất PDF</span>
+                      </Button>
+                    </div>
+                    <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Xuất file</div>
                   </div>
                 </>
               )}
@@ -512,18 +733,13 @@ export function AdminDashboard() {
                         <DialogHeader><DialogTitle>Cấu hình & Nhật ký</DialogTitle></DialogHeader>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
                           <div className="space-y-4">
-                            {user?.role !== "admin" && (
                             <ProjectMetaForm project={selectedProject} onUpdated={(p) => { setSelectedProject(p); loadProjects(); }} onDeleted={() => { setSelectedProject(null); loadProjects(); }} />
-                            )}
-                            {user?.role !== "admin" && (
                             <Card className="shadow-xs border-slate-200 bg-white">
                               <CardHeader className="py-2.5 px-3 border-b bg-slate-50/50"><CardTitle className="text-xs font-bold text-slate-800 uppercase tracking-wider">Trạng thái xử lý</CardTitle></CardHeader>
                               <CardContent className="p-3">
                                 <StatusWorkflow project={selectedProject} role={user?.role} onUpdated={(p) => { setSelectedProject(p); loadProjects(); }} />
                               </CardContent>
                             </Card>
-                            )}
-                            {user?.role !== "admin" && (
                             <Card className="shadow-xs border-slate-200 bg-white">
                               <CardHeader className="py-2.5 px-3 border-b bg-slate-50/50 flex flex-row items-center justify-between">
                                 <CardTitle className="text-xs font-bold text-slate-800 uppercase tracking-wider">Vùng ô mở quyền sửa</CardTitle>
@@ -538,7 +754,6 @@ export function AdminDashboard() {
                                 ))}
                               </CardContent>
                             </Card>
-                            )}
                           </div>
                           <div>
                             <Card className="shadow-xs border-slate-200 bg-white h-full">
@@ -571,11 +786,9 @@ export function AdminDashboard() {
                     <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Cài đặt & Logs</div>
                   </div>
                   
-                  {user?.role !== "admin" && (
-                    <>
-                      <div className="w-px h-14 bg-slate-200 mx-2" />
-                      <div className="flex flex-col items-center">
-                        <div className="flex h-14 items-center gap-1">
+                  <div className="w-px h-14 bg-slate-200 mx-2" />
+                  <div className="flex flex-col items-center">
+                    <div className="flex h-14 items-center gap-1">
                           <div className="flex flex-col gap-1 border-r border-slate-200 pr-2 mr-1">
                             <div className="flex items-center gap-1">
                               <Input type="number" min="1" placeholder="Dòng..." value={rowInsertIndex} onChange={(e) => setRowInsertIndex(e.target.value)} className="w-16 h-6 text-[10px] py-0 bg-white" />
@@ -596,8 +809,6 @@ export function AdminDashboard() {
                         </div>
                         <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Chỉnh sửa</div>
                       </div>
-                    </>
-                  )}
                   
                   <div className="w-px h-14 bg-slate-200 mx-2" />
                   <div className="flex flex-col items-center">
@@ -639,7 +850,14 @@ export function AdminDashboard() {
                       <UserManagement />
                     </DialogContent>
                   </Dialog>
-                  <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Bảo mật</div>
+                  <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Tài khoản</div>
+                </div>
+
+                <div className="w-px h-14 bg-slate-200 mx-1" />
+
+                <div className="flex flex-col items-center">
+                  <AuditLogsModal />
+                  <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Nhật ký</div>
                 </div>
               </TabsContent>
             )}
@@ -694,13 +912,17 @@ export function AdminDashboard() {
                 })()}
                 previewLimit={previewLimit}
                 onColumnClick={handleColumnClick}
+                onCellEdit={handleCellChange}
                 onCellMouseDown={handleCellMouseDown}
                 onCellMouseEnter={handleCellMouseEnter}
               />
             </div>
             <div className="bg-slate-50 border-t px-4 py-1.5 shrink-0 flex justify-between items-center text-[11px] text-slate-500 font-medium">
               <span>Đang hiển thị {previewLimit === -1 ? sheetData.length : Math.min(previewLimit, sheetData.length)} / {sheetData.length} dòng.</span>
-              <span>Click chữ cái cột để bật/tắt quyền sửa.</span>
+              <span className="flex items-center gap-3">
+                <span className="text-indigo-700 font-semibold">💡 Nhấp đúp (Double-click) vào ô để sửa hoặc xoá nội dung</span>
+                <span>• Click chữ cái cột hoặc kéo rê chuột để phân quyền cho nhân viên</span>
+              </span>
             </div>
           </div>
         )}

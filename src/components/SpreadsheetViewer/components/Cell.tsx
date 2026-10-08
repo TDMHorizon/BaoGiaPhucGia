@@ -25,7 +25,7 @@ export const Cell = React.memo(({ r, c, value, uiStyles, mode, isEditable, onCel
   if (uiStyles.shouldSkip) return null;
 
   const handleDoubleClick = () => {
-    if (mode === 'user' && isEditable) {
+    if (isEditable) {
       setIsEditing(true);
       setEditValue(value);
     }
@@ -39,11 +39,9 @@ export const Cell = React.memo(({ r, c, value, uiStyles, mode, isEditable, onCel
   };
 
   const className = `border border-slate-300 p-2 ${
-    mode === 'admin' 
-      ? 'cursor-crosshair' 
-      : isEditable 
-        ? "cursor-text hover:outline hover:outline-2 hover:outline-indigo-500 hover:-outline-offset-2" 
-        : "cursor-not-allowed"
+    isEditable 
+      ? "cursor-text hover:outline hover:outline-2 hover:outline-indigo-500 hover:-outline-offset-2" 
+      : "cursor-not-allowed"
   } ${uiStyles.shouldTruncate ? 'truncate' : ''}`;
 
   return (

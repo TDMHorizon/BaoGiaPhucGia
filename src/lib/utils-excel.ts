@@ -133,10 +133,10 @@ export function getRowHeight(ejWs: any, ws: XLSX.WorkSheet | undefined, r: numbe
 }
 
 export function isCellInRange(cellRef: string, rangeStr: string): boolean {
-  if (!rangeStr) return true; // Empty means all allowed
+  if (!rangeStr || !rangeStr.trim()) return false; // Default Deny
   try {
     const ranges = rangeStr.split(',').map(r => r.trim()).filter(Boolean);
-    if (ranges.length === 0) return true;
+    if (ranges.length === 0) return false;
 
     const cell = XLSX.utils.decode_cell(cellRef);
 

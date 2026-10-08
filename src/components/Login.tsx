@@ -60,8 +60,8 @@ export function Login() {
     }
   };
 
-  const handleQuickLogin = async (role: "admin" | "user") => {
-    const defaultUser = role === "admin" ? "admin" : "user";
+  const handleQuickLogin = async (role: "admin" | "manager" | "user") => {
+    const defaultUser = role === "admin" ? "admin" : role === "manager" ? "manager" : "user";
     const defaultPass = "password";
 
     setUsername(defaultUser);
@@ -72,9 +72,10 @@ export function Login() {
     try {
       const user = await api.login(defaultUser, defaultPass);
       login(user);
-      toast.success(`Đăng nhập nhanh thành công với quyền ${role === "admin" ? "Quản trị" : "Nhân viên"}!`);
-    } catch (error) {
-      setErrorMessage("Không thể thực hiện đăng nhập nhanh. Vui lòng thử lại.");
+      const roleLabel = role === "admin" ? "Quản trị" : role === "manager" ? "Quản lý" : "Nhân viên";
+      toast.success(`Đăng nhập nhanh thành công với quyền ${roleLabel}!`);
+    } catch (error: any) {
+      setErrorMessage(error.message || "Không thể thực hiện đăng nhập nhanh. Vui lòng thử lại.");
       toast.error("Đăng nhập nhanh thất bại!");
     } finally {
       setIsLoading(false);
@@ -199,24 +200,33 @@ export function Login() {
                 <div className="flex-grow border-t border-slate-800/80"></div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-2">
                 <button
                   type="button"
                   disabled={isLoading}
                   onClick={() => handleQuickLogin("admin")}
-                  className="flex flex-col items-center justify-center py-2 px-3 bg-slate-955/30 border border-slate-800 hover:border-indigo-500/50 hover:bg-indigo-950/20 transition-all rounded-lg group cursor-pointer"
+                  className="flex flex-col items-center justify-center py-2 px-2 bg-slate-950/40 border border-slate-800 hover:border-indigo-500/50 hover:bg-indigo-950/20 transition-all rounded-lg group cursor-pointer"
                 >
-                  <span className="text-xs text-indigo-400 font-semibold group-hover:text-indigo-300">Quản trị viên</span>
-                  <span className="text-[10px] text-slate-500 mt-0.5">Admin Dashboard</span>
+                  <span className="text-xs text-indigo-400 font-semibold group-hover:text-indigo-300">Quản trị</span>
+                  <span className="text-[9px] text-slate-500 mt-0.5">Admin</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isLoading}
+                  onClick={() => handleQuickLogin("manager")}
+                  className="flex flex-col items-center justify-center py-2 px-2 bg-slate-950/40 border border-slate-800 hover:border-amber-500/50 hover:bg-amber-950/20 transition-all rounded-lg group cursor-pointer"
+                >
+                  <span className="text-xs text-amber-400 font-semibold group-hover:text-amber-300">Quản lý</span>
+                  <span className="text-[9px] text-slate-500 mt-0.5">Manager</span>
                 </button>
                 <button
                   type="button"
                   disabled={isLoading}
                   onClick={() => handleQuickLogin("user")}
-                  className="flex flex-col items-center justify-center py-2 px-3 bg-slate-955/30 border border-slate-800 hover:border-emerald-500/50 hover:bg-emerald-950/20 transition-all rounded-lg group cursor-pointer"
+                  className="flex flex-col items-center justify-center py-2 px-2 bg-slate-950/40 border border-slate-800 hover:border-emerald-500/50 hover:bg-emerald-950/20 transition-all rounded-lg group cursor-pointer"
                 >
                   <span className="text-xs text-emerald-400 font-semibold group-hover:text-emerald-300">Nhân viên</span>
-                  <span className="text-[10px] text-slate-500 mt-0.5">User Dashboard</span>
+                  <span className="text-[9px] text-slate-500 mt-0.5">Staff</span>
                 </button>
               </div>
             </>

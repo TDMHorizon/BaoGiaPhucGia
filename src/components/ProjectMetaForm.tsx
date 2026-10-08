@@ -4,6 +4,7 @@ import { Label } from "./ui/label";
 import { Button } from "./ui/button";
 import { api } from "../lib/api";
 import { toast } from "sonner";
+import { MemberPermissionsModal } from "./MemberPermissionsModal";
 
 type Props = {
   project: any;
@@ -103,7 +104,16 @@ export function ProjectMetaForm({ project, onUpdated, onDeleted }: Props) {
           <Input value={ghiChu} onChange={(e) => setGhiChu(e.target.value)} className="h-8 text-xs" />
         </div>
         <div className="space-y-1 md:col-span-2">
-          <Label className="text-xs">Thành viên được gán</Label>
+          <div className="flex items-center justify-between">
+            <Label className="text-xs">Thành viên được gán</Label>
+            {memberIds.length > 0 && (
+              <MemberPermissionsModal
+                projectId={project.id}
+                sheets={project.sheets || []}
+                members={users.filter((u) => memberIds.includes(u.id))}
+              />
+            )}
+          </div>
           <div className="flex flex-wrap gap-2">
             {users.map((u) => (
               <label key={u.id} className="flex items-center gap-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md px-2 py-1 cursor-pointer">

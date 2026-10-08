@@ -23,3 +23,75 @@ Hệ thống quản lý báo giá và tạo form nhập liệu Excel nội bộ.
    ```
 
 Dự án sẽ tự động chạy song song Backend (API) và Frontend tại địa chỉ http://localhost:3000.
+
+ADMIN / MANAGER
+       │
+       ▼
+Tạo / Upload file Excel
+       │
+       ▼
+Tạo Project Báo Giá
+       │
+       ├── số báo giá
+       ├── khách hàng
+       ├── người phụ trách
+       ├── thành viên
+       ├── ghi chú
+       │
+       ▼
+Admin / Manager chỉ định
+những ô / cột được phép sửa
+       │
+       ▼
+editableRanges
+       │
+       ▼
+Giao Project cho nhân viên
+       │
+       ▼
+nhap = Mới giao
+       │
+       ▼
+Nhân viên bắt đầu
+       │
+       ▼
+dang_lam
+       │
+       ▼
+Nhân viên sửa các ô được phép
+       │
+       ├───────────────┐
+       │               │
+       ▼               ▼
+Hiển thị mới       INSERT edits
+trên browser       vào database
+                       │
+                       ├── ai sửa
+                       ├── sheet nào
+                       ├── ô nào
+                       ├── giá trị cũ
+                       ├── giá trị mới
+                       └── thời gian
+       │
+       │
+       ▼
+File Excel gốc trên server
+VẪN KHÔNG THAY ĐỔI
+       │
+       ▼
+Nhân viên hoàn thành
+       │
+       ▼
+File gốc + Edit Log
+       │
+       ▼
+Sinh Workbook hoàn chỉnh
+       │
+       ▼
+Download Excel
+       │
+       ▼
+Gửi khách
+       │
+       ▼
+da_gui

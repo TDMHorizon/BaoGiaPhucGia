@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
-import { parseExcel, getSheetData, applyEditsToWorkbook, downloadBase64File } from "../lib/excel";
+import { parseExcel, getSheetData, applyEditsToWorkbook, downloadBase64File, generateExcelBase64 } from "../lib/excel";
 import { isCellInRange } from "../lib/utils-excel";
 import { loadExcelJSWorkbook, updateMergedCellInExcelJS, workbookToBase64 } from "../lib/exceljs-helper";
+import { getSocket, joinProjectRoom, leaveProjectRoom } from "../lib/socket";
 import { SpreadsheetViewer } from "./SpreadsheetViewer";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -27,6 +28,7 @@ export function UserDashboard() {
   const [sheetData, setSheetData] = useState<any[][]>([]);
   const [activeSheet, setActiveSheet] = useState<string>("");
   const [edits, setEdits] = useState<any[]>([]);
+  const [cellRevisions, setCellRevisions] = useState<Record<string, number>>({});
   const [selectedColumn, setSelectedColumn] = useState<number | null>(null);
 
   const [searchQ, setSearchQ] = useState("");
@@ -75,10 +77,94 @@ export function UserDashboard() {
       console.error("Lỗi khi tải ExcelJS trong select project:", e);
     }
 
+    try {
+      const cellValuesMap = await api.getCellValues(id);
+      const revs: Record<string, number> = {};
+      for (const [sheet, cells] of Object.entries(cellValuesMap as any)) {
+        for (const [c, info] of Object.entries(cells as any)) {
+          revs[`${sheet}!${c}`] = (info as any).revision;
+        }
+      }
+      setCellRevisions(revs);
+    } catch (e) {
+      console.warn("Không tải được cell revisions:", e);
+    }
+
+    joinProjectRoom(id);
+
     if (updatedWb.SheetNames.length > 0) {
       handleTabChange(updatedWb.SheetNames[0], updatedWb);
     }
   };
+
+  // Realtime Socket.IO sync
+  useEffect(() => {
+    if (!selectedProject?.id) return;
+    const s = getSocket();
+
+    const handleCellUpdated = (payload: any) => {
+      if (payload.projectId !== selectedProject.id) return;
+      setCellRevisions((prev) => ({
+        ...prev,
+        [`${payload.sheetName}!${payload.cell}`]: payload.revision,
+      }));
+
+      setEdits((prev) => [...prev, payload]);
+
+      if (workbook) {
+        applyEditsToWorkbook(workbook, [payload]);
+      }
+
+      if (exceljsWorkbook) {
+        try {
+          const ws = exceljsWorkbook.getWorksheet(payload.sheetName);
+          if (ws) updateMergedCellInExcelJS(ws, payload.cell, payload.newValue);
+        } catch {
+          /* ignore */
+        }
+      }
+
+      if (payload.sheetName === activeSheet) {
+        const parsed = XLSX.utils.decode_cell(payload.cell);
+        setSheetData((prev) => {
+          const copy = [...prev];
+          if (!copy[parsed.r]) copy[parsed.r] = [];
+          else copy[parsed.r] = [...copy[parsed.r]];
+          copy[parsed.r][parsed.c] = payload.newValue;
+          return copy;
+        });
+      }
+
+      if (payload.userId !== user?.id) {
+        toast.info(`${payload.updatedBy} vừa cập nhật ô ${payload.cell} (${payload.sheetName})`);
+      }
+    };
+
+    const handleRangesUpdated = (payload: any) => {
+      if (payload.projectId === selectedProject.id) {
+        setSelectedProject((prev: any) => (prev ? { ...prev, editableRanges: payload.editableRanges } : null));
+        toast.info("Phạm vi quyền sửa của báo giá vừa được cập nhật.");
+      }
+    };
+
+    const handleStatusUpdated = (payload: any) => {
+      if (payload.projectId === selectedProject.id) {
+        setSelectedProject((prev: any) => (prev ? { ...prev, trangThai: payload.status } : null));
+        toast.info(`Trạng thái báo giá đã chuyển sang: ${TRANG_THAI_LABELS[payload.status as TrangThai] || payload.status}`);
+      }
+    };
+
+    s.on("cell.updated", handleCellUpdated);
+    s.on("ranges.updated", handleRangesUpdated);
+    s.on("status.updated", handleStatusUpdated);
+
+    return () => {
+      s.off("cell.updated", handleCellUpdated);
+      s.off("ranges.updated", handleRangesUpdated);
+      s.off("status.updated", handleStatusUpdated);
+      leaveProjectRoom(selectedProject.id);
+    };
+  }, [selectedProject?.id, activeSheet, workbook, exceljsWorkbook, user?.id]);
 
   const handleTabChange = (sheetName: string, wb = workbook) => {
     if (!wb) return;
@@ -88,10 +174,8 @@ export function UserDashboard() {
     setSelectedColumn(null);
   };
 
-
-
   const handleCellChange = async (r: number, c: number, newValue: string) => {
-    if (!selectedProject || !workbook || !exceljsWorkbook) return;
+    if (!selectedProject || !workbook) return;
     if (locked) {
       toast.error("Báo giá đã khóa, không thể chỉnh sửa.");
       return;
@@ -109,6 +193,8 @@ export function UserDashboard() {
     const oldValue = cellObj && cellObj.v !== undefined && cellObj.v !== null ? String(cellObj.v) : "";
     if (oldValue === newValue) return;
 
+    const expectedRevision = cellRevisions[`${activeSheet}!${cellRef}`] || 0;
+
     const newData = [...sheetData];
     if (!newData[r]) newData[r] = [];
     else newData[r] = [...newData[r]];
@@ -124,19 +210,30 @@ export function UserDashboard() {
         oldValue,
         newValue,
       };
-      const savedEdit = await api.saveEdit(selectedProject.id, editData);
-      setEdits(prev => [...prev, savedEdit]);
+      const savedEdit = await api.saveEdit(selectedProject.id, editData, expectedRevision);
+      setEdits((prev) => [...prev, savedEdit]);
+      setCellRevisions((prev) => ({ ...prev, [`${activeSheet}!${cellRef}`]: savedEdit.revision }));
 
       applyEditsToWorkbook(workbook, [savedEdit]);
 
-      const ejWs = exceljsWorkbook.getWorksheet(activeSheet);
-      if (ejWs) {
-        updateMergedCellInExcelJS(ejWs, cellRef, newValue);
+      if (exceljsWorkbook) {
+        try {
+          const ejWs = exceljsWorkbook.getWorksheet(activeSheet);
+          if (ejWs) {
+            updateMergedCellInExcelJS(ejWs, cellRef, newValue);
+          }
+        } catch (ejErr) {
+          console.warn("ExcelJS update cell skipped:", ejErr);
+        }
       }
 
-      toast.success("Đã lưu");
+      toast.success(newValue === "" ? `Đã xoá ô ${cellRef}` : `Đã lưu ô ${cellRef}`);
     } catch (error: any) {
-      toast.error(error.message || "Lưu thất bại");
+      if (error.message?.includes("Xung đột") || error.message?.includes("Conflict")) {
+        toast.error(`Xung đột dữ liệu: Ô ${cellRef} vừa được cập nhật bởi người khác. Dữ liệu mới nhất đã được đồng bộ!`);
+      } else {
+        toast.error(error.message || "Lưu thất bại");
+      }
     }
   };
 
@@ -204,14 +301,24 @@ export function UserDashboard() {
   };
 
   const handleExport = async () => {
-    if (!selectedProject || !exceljsWorkbook) return;
+    if (!selectedProject || !workbook) return;
     try {
-      const base64 = await workbookToBase64(exceljsWorkbook);
+      if (exceljsWorkbook) {
+        try {
+          const base64 = await workbookToBase64(exceljsWorkbook);
+          downloadBase64File(base64, selectedProject.name?.replace(/\.xlsx$/i, "") || "baogia");
+          toast.success("Đã tải Excel (đã áp dụng các ô bạn điền). Bản gốc trên hệ thống không đổi.");
+          return;
+        } catch (ejErr) {
+          console.warn("ExcelJS export failed, falling back to XLSX engine:", ejErr);
+        }
+      }
+      const base64 = generateExcelBase64(workbook);
       downloadBase64File(base64, selectedProject.name?.replace(/\.xlsx$/i, "") || "baogia");
       toast.success("Đã tải Excel (đã áp dụng các ô bạn điền). Bản gốc trên hệ thống không đổi.");
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      toast.error("Không thể xuất tệp Excel!");
+      toast.error(e?.message || "Không thể xuất tệp Excel!");
     }
   };
 

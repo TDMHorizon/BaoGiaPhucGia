@@ -143,11 +143,30 @@ export const api = {
     return request(`/api/projects/${id}/versions/${version}`);
   },
 
-  async saveEdit(id: string, editData: Record<string, unknown>) {
+  async saveEdit(id: string, editData: Record<string, unknown>, expectedRevision?: number) {
     return request(`/api/projects/${id}/edits`, {
       method: "POST",
-      body: JSON.stringify(editData),
+      body: JSON.stringify({ ...editData, expectedRevision }),
     });
+  },
+
+  async getCellValues(id: string) {
+    return request(`/api/projects/${id}/cell-values`);
+  },
+
+  async getMemberPermissions(id: string) {
+    return request(`/api/projects/${id}/member-permissions`);
+  },
+
+  async setMemberPermissions(id: string, permissions: { userId: string; sheetName: string; editableRanges: string }[]) {
+    return request(`/api/projects/${id}/member-permissions`, {
+      method: "PUT",
+      body: JSON.stringify({ permissions }),
+    });
+  },
+
+  async getAuditLogs(limit: number = 100) {
+    return request(`/api/audit-logs?limit=${limit}`);
   },
 
   async getEdits(id: string) {

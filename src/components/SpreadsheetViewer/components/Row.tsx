@@ -38,12 +38,14 @@ export const Row = React.memo(({
         const cellRef = XLSX.utils.encode_cell({ r, c });
         const mergeInfo = mergesMap[`${r},${c}`];
         
+        const isInEditableRange = isCellInRange(cellRef, editableRange);
+
         let isEditable = false;
         if (mode === 'user') {
-          isEditable = !isLocked && isCellInRange(cellRef, editableRange);
+          isEditable = !isLocked && isInEditableRange;
         } else {
-          // In admin mode, editableRange is the current range being edited for the template
-          isEditable = isCellInRange(cellRef, editableRange);
+          // Admin và Manager có toàn quyền sửa và xóa bất kỳ ô nào trên bảng tính
+          isEditable = true;
         }
 
         let isSelected = false;
@@ -61,10 +63,11 @@ export const Row = React.memo(({
           r,
           c,
           isEditable,
+          isInEditableRange,
           isSelected,
           mergeInfo,
           colWidths,
-          selectedColor: mode === 'admin' ? "rgba(79, 70, 229, 0.15)" : undefined
+          selectedColor: mode === 'admin' ? "rgba(99, 102, 241, 0.25)" : undefined
         });
 
         return (
