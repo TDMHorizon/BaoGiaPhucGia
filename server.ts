@@ -582,18 +582,8 @@ async function startServer() {
     const nextRev = currentRevision + 1;
     const id = newId();
     const timestamp = now();
-    const safeUserId = user?.id || "unknown";
-    const safeUsername = user?.username || "Admin";
-    const safeSheetName = sheetName || "";
-    const safeCell = cell || "";
-    const safeOldValue = oldValue || "";
-    const safeNewValue = newValue || "";
-    getDb()
-      .prepare(
-        `INSERT INTO edits (id, project_id, user_id, username, sheet_name, cell, old_value, new_value, timestamp)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(id, project.id, user.id, user.username, sheetName, cell, oldValue ?? "", newValue ?? "", timestamp);
+    const val = newValue !== undefined && newValue !== null ? String(newValue) : "";
+    const oldVal = currentCell ? currentCell.value : (req.body.oldValue ? String(req.body.oldValue) : "");
 
     let nextSeq = 1;
     getDb().transaction(() => {
@@ -606,7 +596,7 @@ async function startServer() {
           `INSERT INTO edits (id, project_id, user_id, username, sheet_name, cell, old_value, new_value, sequence, timestamp)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
-        .run(id, project.id, user.id, user.username, sheetName, cell, oldValue, val, nextSeq, timestamp);
+        .run(id, project.id, user.id, user.username, sheetName, cell, oldVal, val, nextSeq, timestamp);
 
       // Lưu/Cập nhật trạng thái ô hiện tại (Current Cell State)
       getDb()
@@ -629,7 +619,7 @@ async function startServer() {
       projectId: project.id,
       sheetName,
       cell,
-      oldValue,
+      oldValue: oldVal,
       newValue: val,
       revision: nextRev,
       sequence: nextSeq,
@@ -645,7 +635,7 @@ async function startServer() {
       username: user.username,
       sheetName,
       cell,
-      oldValue,
+      oldValue: oldVal,
       newValue: val,
       revision: nextRev,
       sequence: nextSeq,

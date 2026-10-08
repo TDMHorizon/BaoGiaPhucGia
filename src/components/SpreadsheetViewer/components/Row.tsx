@@ -85,7 +85,8 @@ export const Row = React.memo(({
                 if (mode === 'user') {
                     isEditable = !isLocked && cellIsInRage;
                 } else {
-                    isEditable = cellIsInRage;
+                    // Admin và Manager luôn có toàn quyền sửa mọi ô trên bảng tính
+                    isEditable = true;
                 }
 
                 let isSelected = false;
@@ -98,8 +99,15 @@ export const Row = React.memo(({
                 }
 
                 const uiStyles = computeCellUIStyles({
-                    ejWs, r, c, isEditable, isSelected, mergeInfo, colWidths,
-                    selectedColor: mode === 'admin' ? "rgba(79, 70, 229, 0.15)" : undefined
+                    ejWs,
+                    r,
+                    c,
+                    isEditable,
+                    isInEditableRange: cellIsInRage,
+                    isSelected,
+                    mergeInfo,
+                    colWidths,
+                    selectedColor: mode === 'admin' ? "rgba(99, 102, 241, 0.3)" : undefined
                 });
 
                 return (

@@ -283,13 +283,30 @@ export function AdminDashboard() {
   const appendRange = (rangePart: string) => {
     const currentRange = ranges[activeSheet] || "";
     const parts = currentRange.split(",").map((r: string) => r.trim()).filter(Boolean);
+    let newParts: string[];
     if (parts.includes(rangePart)) {
-      setRanges({ ...ranges, [activeSheet]: parts.filter((r: string) => r !== rangePart).join(", ") });
+      newParts = parts.filter((r: string) => r !== rangePart);
     } else {
-      setRanges({ ...ranges, [activeSheet]: [...parts, rangePart].join(", ") });
+      newParts = [...parts, rangePart];
+    }
+    const updatedRangeStr = newParts.join(", ");
+    const updatedRanges = { ...ranges, [activeSheet]: updatedRangeStr };
+    setRanges(updatedRanges);
+
+    if (selectedProject?.id) {
+      api.updateRanges(selectedProject.id, updatedRanges)
+        .then(() => {
+          toast.success(
+            parts.includes(rangePart)
+              ? `Đã bỏ phân quyền vùng ${rangePart}`
+              : `Đã tô & phân quyền vùng ${rangePart} cho nhân viên`
+          );
+        })
+        .catch((err: any) => {
+          console.warn("Lỗi lưu ranges:", err);
+        });
     }
   };
-
 
   const handleCellMouseDown = (r: number, c: number) => {
     setDragStart({ r, c });
@@ -311,13 +328,12 @@ export function AdminDashboard() {
     const c1 = Math.min(dragStart.c, dragEnd.c);
     const c2 = Math.max(dragStart.c, dragEnd.c);
 
-    // Kéo rê chọn từ 2 ô trở lên để phân quyền cho nhân viên
-    if (r1 !== r2 || c1 !== c2) {
-      const start = XLSX.utils.encode_cell({ r: r1, c: c1 });
-      const end = XLSX.utils.encode_cell({ r: r2, c: c2 });
-      const rangePart = `${start}:${end}`;
-      appendRange(rangePart);
-    }
+    // Hỗ trợ cả 1 ô đơn lẻ lẫn dải ô
+    const start = XLSX.utils.encode_cell({ r: r1, c: c1 });
+    const end = XLSX.utils.encode_cell({ r: r2, c: c2 });
+    const rangePart = (r1 === r2 && c1 === c2) ? start : `${start}:${end}`;
+    appendRange(rangePart);
+
     setDragStart(null);
     setDragEnd(null);
   };
@@ -1008,16 +1024,45 @@ export function AdminDashboard() {
           </div>
         ) : (
           <div className="flex-1 bg-white shadow-xl rounded-xl border border-slate-300 flex flex-col overflow-hidden">
-            <div className="bg-slate-100 border-b flex px-2 pt-2 gap-1 overflow-x-auto shrink-0 custom-scrollbar">
-              {selectedProject.sheets?.map((sheet: string) => (
-                <button
-                  key={sheet}
-                  onClick={() => handleTabChange(sheet)}
-                  className={`px-4 py-2 text-xs font-bold rounded-t-lg transition-colors border border-b-0 ${activeSheet === sheet ? "bg-white text-indigo-700 border-slate-300 relative translate-y-[1px]" : "bg-slate-200 text-slate-600 hover:bg-slate-300 border-transparent"}`}
-                >
-                  {sheet}
-                </button>
-              ))}
+            <div className="bg-slate-100 border-b flex px-2 pt-1.5 gap-1 overflow-x-auto shrink-0 custom-scrollbar justify-between items-center">
+              <div className="flex gap-1 overflow-x-auto items-center">
+                {selectedProject.sheets?.map((sheet: string) => (
+                  <button
+                    key={sheet}
+                    onClick={() => handleTabChange(sheet)}
+                    className={`px-3 py-1.5 text-xs font-bold rounded-t-lg transition-colors border border-b-0 ${activeSheet === sheet ? "bg-white text-indigo-700 border-slate-300 relative translate-y-[1px]" : "bg-slate-200 text-slate-600 hover:bg-slate-300 border-transparent"}`}
+                  >
+                    {sheet}
+                  </button>
+                ))}
+              </div>
+
+              {/* Toolbar phân quyền nhanh cho nhân viên */}
+              <div className="flex items-center gap-2 pb-1 pr-2 text-xs">
+                <span className="text-[11px] font-semibold text-slate-600 flex items-center gap-1">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-emerald-100 border border-emerald-600 inline-block"></span>
+                  Vùng cấp quyền ({activeSheet}):
+                </span>
+                <span className="font-mono text-[11px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded max-w-xs truncate" title={ranges[activeSheet] || "Chưa có vùng nào"}>
+                  {ranges[activeSheet] || "Chưa có (kéo rê chuột để tô)"}
+                </span>
+                {ranges[activeSheet] && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      const updated = { ...ranges, [activeSheet]: "" };
+                      setRanges(updated);
+                      if (selectedProject?.id) {
+                        api.updateRanges(selectedProject.id, updated).then(() => toast.info(`Đã xóa toàn bộ vùng chọn sheet ${activeSheet}`));
+                      }
+                    }}
+                    className="h-6 text-[10px] text-red-600 hover:bg-red-50 px-1.5 font-medium"
+                  >
+                    Xóa vùng sheet này
+                  </Button>
+                )}
+              </div>
             </div>
             <div 
               className="flex-1 overflow-hidden flex flex-col relative"

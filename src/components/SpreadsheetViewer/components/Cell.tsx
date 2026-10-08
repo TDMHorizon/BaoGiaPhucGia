@@ -39,14 +39,9 @@ export const Cell = React.memo(({ r, c, value, uiStyles, mode, isEditable, onCel
     setIsEditing(false);
   };
 
-  // TÔ MÀU CHO ADMIN THẤY Ô NÀO ĐANG ĐƯỢC MỞ QUYỀN - SỬA THÀNH MÀU XANH LÁ NHẠT
-  const adminHighlightClass = (mode === 'admin' && isEditable)
-      ? '!bg-emerald-100/80 !text-emerald-900 font-medium border-emerald-200'
-      : '';
-
-  const className = `border border-slate-300 p-2 transition-colors ${adminHighlightClass} ${
+  const className = `border border-slate-300 p-2 transition-colors ${
       mode === 'admin'
-          ? 'cursor-text hover:outline hover:outline-2 hover:outline-emerald-500 hover:-outline-offset-2'
+          ? 'cursor-text hover:outline hover:outline-2 hover:outline-indigo-500 hover:-outline-offset-2'
           : isEditable
               ? "cursor-text hover:outline hover:outline-2 hover:outline-emerald-500 hover:-outline-offset-2"
               : "cursor-not-allowed"
