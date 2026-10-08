@@ -42,7 +42,6 @@ import {
   ensureDataDirs,
   saveProjectFile,
   readProjectFile,
-  deleteProjectFiles,
   readVersionSnapshot,
   saveTemplateFile,
   readTemplateFile,
@@ -75,8 +74,11 @@ function newId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function loadProject(id: string): ProjectRow | undefined {
-  return getDb().prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | undefined;
+function loadProject(id: string, includeDeleted = false): ProjectRow | undefined {
+  const query = includeDeleted
+    ? "SELECT * FROM projects WHERE id = ?"
+    : "SELECT * FROM projects WHERE id = ? AND deleted_at IS NULL";
+  return getDb().prepare(query).get(id) as ProjectRow | undefined;
 }
 
 async function projectWithFile(p: ProjectRow) {
@@ -251,7 +253,7 @@ async function startServer() {
     const status = String(req.query.status || "").trim();
     const assignee = String(req.query.assignee || "").trim();
 
-    let rows = getDb().prepare("SELECT * FROM projects ORDER BY updated_at DESC").all() as ProjectRow[];
+    let rows = getDb().prepare("SELECT * FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC").all() as ProjectRow[];
 
     if (user.role !== "admin" && user.role !== "manager") {
       rows = rows.filter((p) => userCanAccessProject(user, p));
@@ -276,7 +278,7 @@ async function startServer() {
 
   app.get("/api/projects/pending-count", authMiddleware, requireAdminOrManager, (_req, res) => {
     const row = getDb()
-      .prepare("SELECT COUNT(*) as c FROM projects WHERE trang_thai IN ('dang_lam', 'cho_duyet')")
+      .prepare("SELECT COUNT(*) as c FROM projects WHERE deleted_at IS NULL AND trang_thai IN ('dang_lam', 'cho_duyet')")
       .get() as { c: number };
     res.json({ count: row.c });
   });
@@ -329,6 +331,11 @@ async function startServer() {
     const project = loadProject(id)!;
     res.json(await projectWithFile(project));
   }));
+
+  app.get("/api/projects/deleted", authMiddleware, requireAdminOrManager, (_req, res) => {
+    const rows = getDb().prepare("SELECT * FROM projects WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC").all() as ProjectRow[];
+    res.json(rows.map(listSummary));
+  });
 
   app.get("/api/projects/:id", authMiddleware, catchAsync(async (req, res) => {
     const user = req.user!;
@@ -386,41 +393,29 @@ async function startServer() {
   app.delete("/api/projects/:id", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
-    getDb().prepare("DELETE FROM projects WHERE id = ?").run(project.id);
-    await deleteProjectFiles(project.id);
-
-    recordAuditLog({
-      userId: req.user!.id,
-      username: req.user!.username,
-      action: "PROJECT_DELETED",
-      resource: "projects",
-      resourceId: project.id,
-      detail: { projectName: project.name }
-    });
-
-    io.to(`project:${project.id}`).emit("project.deleted", {
-      projectId: project.id,
-      deletedBy: req.user!.username,
-    });
-
-    res.json({ ok: true });
+    if (project.deleted_at) return res.status(400).json({ error: "Project already deleted" });
+    getDb().prepare("UPDATE projects SET deleted_at = ?, updated_at = ? WHERE id = ?").run(now(), now(), project.id);
+    res.json({ ok: true, deletedAt: now() });
   }));
+
+  app.post("/api/projects/:id/restore", authMiddleware, requireAdminOrManager, (req, res) => {
+    const project = loadProject(req.params.id, true);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!project.deleted_at) return res.status(400).json({ error: "Project is not deleted" });
+    const restoredAt = now();
+    getDb().prepare("UPDATE projects SET deleted_at = NULL, updated_at = ? WHERE id = ?").run(restoredAt, project.id);
+    res.json(listSummary(loadProject(project.id)!));
+  });
 
   app.put("/api/projects/:id/ranges", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
-    const ranges = req.body.editableRanges || {};
+
     getDb()
-      .prepare("UPDATE projects SET editable_ranges = ?, updated_at = ? WHERE id = ?")
-      .run(JSON.stringify(ranges), now(), project.id);
+        .prepare("UPDATE projects SET editable_ranges = ?, updated_at = ? WHERE id = ?")
+        .run(JSON.stringify(req.body.editableRanges || {}), now(), project.id);
 
-    io.to(`project:${project.id}`).emit("ranges.updated", {
-      projectId: project.id,
-      editableRanges: ranges,
-      updatedBy: req.user!.username,
-    });
-
-    res.json(await projectWithFile(loadProject(project.id)!));
+    res.json({ success: true });
   }));
 
   // Chỉ admin/manager được cập nhật file gốc (cấu trúc sheet). Nhân viên không ghi đè.
@@ -587,8 +582,18 @@ async function startServer() {
     const nextRev = currentRevision + 1;
     const id = newId();
     const timestamp = now();
-    const val = newValue !== undefined && newValue !== null ? String(newValue) : "";
-    const oldValue = currentCell ? currentCell.value : (req.body.oldValue ?? "");
+    const safeUserId = user?.id || "unknown";
+    const safeUsername = user?.username || "Admin";
+    const safeSheetName = sheetName || "";
+    const safeCell = cell || "";
+    const safeOldValue = oldValue || "";
+    const safeNewValue = newValue || "";
+    getDb()
+      .prepare(
+        `INSERT INTO edits (id, project_id, user_id, username, sheet_name, cell, old_value, new_value, timestamp)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(id, project.id, user.id, user.username, sheetName, cell, oldValue ?? "", newValue ?? "", timestamp);
 
     let nextSeq = 1;
     getDb().transaction(() => {

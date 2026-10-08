@@ -18,9 +18,24 @@ import { StatusBadge } from "./StatusBadge";
 import { StatusWorkflow } from "./StatusWorkflow";
 import { isLockedStatus, TRANG_THAI_LABELS, type TrangThai } from "../lib/constants";
 import { printProjectAsPdf } from "../lib/printPdf";
+import { UserLayout } from "../layout/UserLayout";
+import { UserHome } from "./pages/UserHome";
+
+function getEditableRange(project: any, sheetName: string): string {
+  if (!project?.editableRanges) return "";
+
+  try {
+    const ranges = typeof project.editableRanges === "string"
+      ? JSON.parse(project.editableRanges)
+      : project.editableRanges;
+    return typeof ranges?.[sheetName] === "string" ? ranges[sheetName] : "";
+  } catch {
+    return "";
+  }
+}
 
 export function UserDashboard() {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const [projects, setProjects] = useState<any[]>([]);
   const [selectedProject, setSelectedProject] = useState<any>(null);
   const [workbook, setWorkbook] = useState<XLSX.WorkBook | null>(null);
@@ -37,6 +52,9 @@ export function UserDashboard() {
   const [searchQuery, setSearchQuery] = useState("");
   const [replaceQuery, setReplaceQuery] = useState("");
   const [matchCase, setMatchCase] = useState(false);
+  const [activeTab, setActiveTab] = useState("home");
+  const [showMobileNav, setShowMobileNav] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
   const locked = isLockedStatus(selectedProject?.trangThai);
 
@@ -54,17 +72,18 @@ export function UserDashboard() {
   };
 
   const handleSelectProject = async (id: string) => {
-    const project = await api.getProject(id);
-    setSelectedProject(project);
-
-    const wb = await parseExcel(project.fileBase64);
-    const projectEdits = await api.getEdits(id);
-    setEdits(projectEdits);
-
-    const updatedWb = applyEditsToWorkbook(wb, projectEdits);
-    setWorkbook(updatedWb);
-
     try {
+      const project = await api.getProject(id);
+      if (!project.fileBase64) throw new Error("Báo giá chưa có tệp Excel.");
+
+      const wb = await parseExcel(project.fileBase64);
+      const projectEdits = await api.getEdits(id);
+      const updatedWb = applyEditsToWorkbook(wb, projectEdits);
+
+      setSelectedProject(project);
+      setEdits(projectEdits);
+      setWorkbook(updatedWb);
+
       const ejWb = await loadExcelJSWorkbook(project.fileBase64);
       projectEdits.forEach((edit: any) => {
         const ws = ejWb.getWorksheet(edit.sheetName);
@@ -73,27 +92,18 @@ export function UserDashboard() {
         }
       });
       setExceljsWorkbook(ejWb);
-    } catch (e) {
-      console.error("Lỗi khi tải ExcelJS trong select project:", e);
-    }
 
-    try {
-      const cellValuesMap = await api.getCellValues(id);
-      const revs: Record<string, number> = {};
-      for (const [sheet, cells] of Object.entries(cellValuesMap as any)) {
-        for (const [c, info] of Object.entries(cells as any)) {
-          revs[`${sheet}!${c}`] = (info as any).revision;
-        }
+      if (updatedWb.SheetNames.length > 0) {
+        handleTabChange(updatedWb.SheetNames[0], updatedWb);
       }
-      setCellRevisions(revs);
-    } catch (e) {
-      console.warn("Không tải được cell revisions:", e);
-    }
-
-    joinProjectRoom(id);
-
-    if (updatedWb.SheetNames.length > 0) {
-      handleTabChange(updatedWb.SheetNames[0], updatedWb);
+    } catch (e: any) {
+      console.error("Lỗi khi tải file Excel:", e);
+      setSelectedProject(null);
+      setWorkbook(null);
+      setExceljsWorkbook(null);
+      setSheetData([]);
+      setActiveSheet("");
+      toast.error(e.message || "Không thể hiển thị file Excel.");
     }
   };
 
@@ -181,7 +191,7 @@ export function UserDashboard() {
       return;
     }
     const cellRef = XLSX.utils.encode_cell({ r, c });
-    const rangeStr = selectedProject.editableRanges?.[activeSheet];
+    const rangeStr = getEditableRange(selectedProject, activeSheet);
 
     if (!isCellInRange(cellRef, rangeStr)) {
       toast.error("Bạn không có quyền sửa ô này.");
@@ -243,7 +253,7 @@ export function UserDashboard() {
       toast.error("Báo giá đã khóa, không thể chỉnh sửa.");
       return;
     }
-    const rangeStr = selectedProject.editableRanges?.[activeSheet];
+    const rangeStr = getEditableRange(selectedProject, activeSheet);
 
     let replacedCount = 0;
     const newEdits: any[] = [];
@@ -323,14 +333,32 @@ export function UserDashboard() {
   };
 
   return (
-    <div className="h-[calc(100vh-80px)] flex flex-col">
+    <UserLayout
+      username={user?.username}
+      activeTab={activeTab}
+      isMobileOpen={showMobileNav}
+      isCollapsed={isSidebarCollapsed}
+      onTabChange={setActiveTab}
+      onMobileOpenChange={setShowMobileNav}
+      onToggleNavigation={() => { if (window.innerWidth >= 768) setIsSidebarCollapsed(prev => !prev); else setShowMobileNav(true); }}
+      onLogout={logout}
+    >
+    {activeTab === "dashboard" ? (
+      <UserHome
+        projects={projects}
+        edits={edits}
+        selectedProject={selectedProject}
+        onSelectProject={handleSelectProject}
+        onOpenProjects={() => setActiveTab("file")}
+      />
+    ) : <div className="flex h-full flex-col">
       {/* Top Ribbon */}
       <div className="bg-[#f3f2f1] flex flex-col shrink-0 border-b border-slate-300">
-        <Tabs defaultValue="home" className="w-full">
-          <TabsList className="h-8 bg-white border-b border-slate-300 rounded-none w-full justify-start px-2 gap-1 mb-0">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+          {/* <TabsList className="h-8 bg-white border-b border-slate-300 rounded-none w-full justify-start px-2 gap-1 mb-0">
             <TabsTrigger value="file" className="h-full rounded-none border-b-2 border-transparent data-[state=active]:border-indigo-600 data-[state=active]:text-indigo-700 data-[state=active]:shadow-none px-4 text-xs bg-transparent data-[state=active]:bg-white">Tệp</TabsTrigger>
             <TabsTrigger value="home" className="h-full rounded-none border-b-2 border-transparent data-[state=active]:border-indigo-600 data-[state=active]:text-indigo-700 data-[state=active]:shadow-none px-4 text-xs bg-transparent data-[state=active]:bg-white">Trang chủ</TabsTrigger>
-          </TabsList>
+          </TabsList> */}
           
           <div className="h-24 bg-white/50 px-2 py-1 flex items-start gap-4 overflow-x-auto custom-scrollbar">
             
@@ -479,7 +507,7 @@ export function UserDashboard() {
               activeSheet={activeSheet}
               mode="user"
               locked={locked}
-              editableRange={selectedProject.editableRanges?.[activeSheet] || ""}
+                editableRange={getEditableRange(selectedProject, activeSheet)}
               selectedColumn={selectedColumn}
               onColumnClick={(i) => setSelectedColumn(selectedColumn === i ? null : i)}
               onCellEdit={handleCellChange}
@@ -495,6 +523,7 @@ export function UserDashboard() {
           </div>
         )}
       </div>
-    </div>
+    </div>}
+    </UserLayout>
   );
 };

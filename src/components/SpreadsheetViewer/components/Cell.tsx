@@ -17,7 +17,7 @@ export const Cell = React.memo(({ r, c, value, uiStyles, mode, isEditable, onCel
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(value);
 
-  // Sync internal state if external value changes (e.g. from another user's edit or undo)
+  // Sync internal state if external value changes
   useEffect(() => {
     setEditValue(value);
   }, [value]);
@@ -25,7 +25,8 @@ export const Cell = React.memo(({ r, c, value, uiStyles, mode, isEditable, onCel
   if (uiStyles.shouldSkip) return null;
 
   const handleDoubleClick = () => {
-    if (isEditable) {
+    // MỞ QUYỀN CHO ADMIN SỬA HOẶC USER NẾU CÓ QUYỀN
+    if (mode === 'admin' || isEditable) {
       setIsEditing(true);
       setEditValue(value);
     }
@@ -38,46 +39,53 @@ export const Cell = React.memo(({ r, c, value, uiStyles, mode, isEditable, onCel
     setIsEditing(false);
   };
 
-  const className = `border border-slate-300 p-2 ${
-    isEditable 
-      ? "cursor-text hover:outline hover:outline-2 hover:outline-indigo-500 hover:-outline-offset-2" 
-      : "cursor-not-allowed"
+  // TÔ MÀU CHO ADMIN THẤY Ô NÀO ĐANG ĐƯỢC MỞ QUYỀN - SỬA THÀNH MÀU XANH LÁ NHẠT
+  const adminHighlightClass = (mode === 'admin' && isEditable)
+      ? '!bg-emerald-100/80 !text-emerald-900 font-medium border-emerald-200'
+      : '';
+
+  const className = `border border-slate-300 p-2 transition-colors ${adminHighlightClass} ${
+      mode === 'admin'
+          ? 'cursor-text hover:outline hover:outline-2 hover:outline-emerald-500 hover:-outline-offset-2'
+          : isEditable
+              ? "cursor-text hover:outline hover:outline-2 hover:outline-emerald-500 hover:-outline-offset-2"
+              : "cursor-not-allowed"
   } ${uiStyles.shouldTruncate ? 'truncate' : ''}`;
 
   return (
-    <td
-      className={className}
-      style={uiStyles.finalTdStyle}
-      title={value}
-      rowSpan={uiStyles.mergeInfo && 'rowSpan' in uiStyles.mergeInfo ? uiStyles.mergeInfo.rowSpan : undefined}
-      colSpan={uiStyles.mergeInfo && 'colSpan' in uiStyles.mergeInfo ? uiStyles.mergeInfo.colSpan : undefined}
-      onMouseDown={() => onMouseDown && onMouseDown(r, c)}
-      onMouseEnter={() => onMouseEnter && onMouseEnter(r, c)}
-      onDoubleClick={handleDoubleClick}
-    >
-      {isEditing ? (
-        <textarea
-          autoFocus
-          className="w-full h-full p-1 border-2 border-indigo-500 rounded bg-white shadow-inner focus:outline-none text-slate-800 resize-none min-h-[60px]"
-          value={editValue}
-          onChange={(e) => setEditValue(e.target.value)}
-          onBlur={handleSave}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              handleSave();
-            } else if (e.key === "Escape") {
-              setIsEditing(false);
-              setEditValue(value);
-            }
-          }}
-        />
-      ) : (
-        <span style={uiStyles.spanStyle}>
+      <td
+          className={className}
+          style={uiStyles.finalTdStyle}
+          title={value}
+          rowSpan={uiStyles.mergeInfo && 'rowSpan' in uiStyles.mergeInfo ? uiStyles.mergeInfo.rowSpan : undefined}
+          colSpan={uiStyles.mergeInfo && 'colSpan' in uiStyles.mergeInfo ? uiStyles.mergeInfo.colSpan : undefined}
+          onMouseDown={() => onMouseDown && onMouseDown(r, c)}
+          onMouseEnter={() => onMouseEnter && onMouseEnter(r, c)}
+          onDoubleClick={handleDoubleClick}
+      >
+        {isEditing ? (
+            <textarea
+                autoFocus
+                className="w-full h-full p-1 border-2 border-emerald-500 rounded bg-white shadow-inner focus:outline-none text-slate-800 resize-none min-h-[60px]"
+                value={editValue}
+                onChange={(e) => setEditValue(e.target.value)}
+                onBlur={handleSave}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSave();
+                  } else if (e.key === "Escape") {
+                    setIsEditing(false);
+                    setEditValue(value);
+                  }
+                }}
+            />
+        ) : (
+            <span style={uiStyles.spanStyle}>
           {value}
         </span>
-      )}
-    </td>
+        )}
+      </td>
   );
 });
 Cell.displayName = 'Cell';

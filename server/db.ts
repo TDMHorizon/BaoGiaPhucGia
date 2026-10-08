@@ -70,6 +70,7 @@ export type ProjectRow = {
   archived_by: string | null;
   created_at: string;
   updated_at: string;
+  deleted_at: string | null;
 };
 
 export type EditRow = {
@@ -189,7 +190,7 @@ function createBaseTables() {
     );
 
     CREATE TABLE IF NOT EXISTS projects (
-      id TEXT PRIMARY KEY,
+      id INT PRIMARY KEY,
       name TEXT NOT NULL,
       sheets TEXT NOT NULL DEFAULT '[]',
       editable_ranges TEXT NOT NULL DEFAULT '{}',
@@ -201,6 +202,7 @@ function createBaseTables() {
       version INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
+      deleted_at TEXT,
       FOREIGN KEY (nguoi_phu_trach_id) REFERENCES users(id)
     );
 
@@ -243,6 +245,14 @@ function createBaseTables() {
       created_at TEXT NOT NULL
     );
   `);
+
+  const projectColumns = db.prepare("PRAGMA table_info(projects)").all() as { name: string }[];
+  if (!projectColumns.some((column) => column.name === "deleted_at")) {
+    db.exec("ALTER TABLE projects ADD COLUMN deleted_at TEXT");
+  }
+
+  seedUsers();
+  return db;
 }
 
 /* ------------------------------ Migrations ------------------------------ */
@@ -539,8 +549,8 @@ export function projectToJson(p: ProjectRow, memberIds: string[] = [], stats?: P
   return {
     id: p.id,
     name: p.name,
-    sheets: JSON.parse(p.sheets || "[]") as string[],
-    editableRanges: JSON.parse(p.editable_ranges || "{}") as Record<string, string>,
+    sheets: p.sheets ? JSON.parse(p.sheets) : [],
+    editableRanges: p.editable_ranges ? JSON.parse(p.editable_ranges) : {},
     soBaoGia: p.so_bao_gia,
     tenKhachHang: p.ten_khach_hang,
     nguoiPhuTrachId: p.nguoi_phu_trach_id,
@@ -556,6 +566,7 @@ export function projectToJson(p: ProjectRow, memberIds: string[] = [], stats?: P
     editCount: s.editCount,
     createdAt: p.created_at,
     updatedAt: p.updated_at,
+    deletedAt: p.deleted_at,
   };
 }
 

@@ -7,7 +7,7 @@ import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { toast } from "sonner";
-import { Eye, EyeOff, Lock, User, Loader2, ShieldAlert } from "lucide-react";
+import { Eye, EyeOff, FileSpreadsheet, Lock, User, Loader2, ShieldAlert } from "lucide-react";
 
 export function Login() {
   const [username, setUsername] = useState("");
@@ -83,42 +83,41 @@ export function Login() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-955 via-indigo-955 to-slate-900 py-12 px-4 sm:px-6 lg:px-8 relative overflow-hidden">
-      {/* Background Decorative Blobs */}
-      <div className="absolute top-1/4 left-1/4 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-indigo-600/20 rounded-full blur-3xl pointer-events-none" />
-      <div className="absolute bottom-1/4 right-1/4 translate-x-1/2 translate-y-1/2 w-96 h-96 bg-emerald-600/10 rounded-full blur-3xl pointer-events-none" />
-
-      <Card className="w-full max-w-md bg-slate-900/60 border-slate-800/80 backdrop-blur-xl shadow-2xl relative z-10 text-slate-100 overflow-hidden">
-        {/* Border accent line */}
-        <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-indigo-500 via-purple-500 to-emerald-500" />
-        
-        <CardHeader className="pt-8 pb-4 text-center">
-          <div className="flex justify-center mb-4">
-            <div className="bg-indigo-500/10 p-3.5 rounded-2xl border border-indigo-500/30 flex items-center justify-center shadow-inner">
-              <svg className="size-8 text-indigo-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
+    <div className="min-h-screen bg-[#f4f8ff] px-4 py-6 text-slate-900 sm:px-6 lg:px-8">
+      <div className="mx-auto flex min-h-[calc(100vh-3rem)] w-full max-w-5xl items-center justify-center">
+        <Card className="grid w-full overflow-hidden border-blue-100 bg-white shadow-[0_24px_70px_rgba(15,75,145,0.14)] lg:grid-cols-[0.9fr_1.1fr]">
+          <div className="relative hidden overflow-hidden bg-[#0b4f9c] p-10 text-white lg:flex lg:flex-col lg:justify-between">
+            <div className="absolute -right-24 -top-24 h-64 w-64 rounded-full border-[28px] border-white/10" />
+            <div className="absolute -bottom-24 -left-16 h-52 w-52 rounded-full border-[22px] border-white/10" />
+            <div className="relative">
+              <div className="mb-8 flex h-12 w-12 items-center justify-center rounded-xl bg-white text-[#0b4f9c] shadow-lg"><FileSpreadsheet className="h-6 w-6" /></div>
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-blue-100">Phúc Gia Workspace</p>
+              <h1 className="mt-4 text-4xl font-bold leading-tight tracking-tight">Quản lý báo giá<br />rõ ràng hơn.</h1>
+              <p className="mt-5 max-w-xs text-sm leading-6 text-blue-100">Một không gian tập trung để quản lý dự án, biên tập Excel và theo dõi lịch sử cập nhật.</p>
             </div>
+            <div className="relative flex items-center gap-2 text-xs font-medium text-blue-100"><span className="h-2 w-2 rounded-full bg-emerald-300" />Hệ thống quản trị báo giá</div>
           </div>
-          <CardTitle className="text-2xl font-bold tracking-tight text-white">BÁO GIÁ PHÚC GIA</CardTitle>
-          <CardDescription className="text-slate-400 mt-1 text-sm">
-            Hệ thống Quản lý và Biên tập Báo giá Excel Chuyên nghiệp
-          </CardDescription>
-        </CardHeader>
-        
-        <CardContent className="px-8 pb-8 space-y-6">
+
+          <div className="p-6 sm:p-10">
+            <CardHeader className="p-0 pb-6">
+              <div className="mb-5 flex h-11 w-11 items-center justify-center rounded-xl bg-blue-50 text-[#0b4f9c] lg:hidden"><FileSpreadsheet className="h-5 w-5" /></div>
+              <CardTitle className="text-2xl font-bold tracking-tight text-slate-900">Đăng nhập</CardTitle>
+              <CardDescription className="mt-2 text-sm leading-5 text-slate-500">Đăng nhập để tiếp tục quản lý và biên tập báo giá.</CardDescription>
+            </CardHeader>
+
+            <CardContent className="space-y-6 p-0">
           {errorMessage && (
-            <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/35 text-red-200 px-4 py-3 rounded-lg text-sm transition-all duration-300">
-              <ShieldAlert className="size-4 shrink-0 text-red-400" />
+            <div role="alert" className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 transition-all duration-300">
+              <ShieldAlert className="size-4 shrink-0 text-red-500" />
               <span>{errorMessage}</span>
             </div>
           )}
 
           <form className="space-y-4" onSubmit={handleSubmit}>
             <div className="space-y-1.5">
-              <Label htmlFor="username" className="text-slate-300 text-xs font-semibold uppercase tracking-wider">Tên đăng nhập</Label>
+              <Label htmlFor="username" className="text-xs font-semibold uppercase tracking-wider text-slate-600">Tên đăng nhập</Label>
               <div className="relative">
-                <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-450 pointer-events-none">
+                <div className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
                   <User className="size-4" />
                 </div>
                 <Input
@@ -127,8 +126,8 @@ export function Login() {
                   type="text"
                   required
                   disabled={isLoading}
-                  placeholder="admin hoặc user"
-                  className="pl-10 h-10 border-slate-800 bg-slate-950/40 text-slate-200 placeholder:text-slate-600 focus-visible:border-indigo-500 focus-visible:ring-indigo-500/20"
+                  placeholder="Nhập tên đăng nhập"
+                  className="h-11 border-slate-200 bg-slate-50 pl-10 text-slate-900 placeholder:text-slate-400 focus-visible:border-[#0b4f9c] focus-visible:ring-[#0b4f9c]/20"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                 />
@@ -136,9 +135,9 @@ export function Login() {
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="password" className="text-slate-300 text-xs font-semibold uppercase tracking-wider">Mật khẩu</Label>
+              <Label htmlFor="password" className="text-xs font-semibold uppercase tracking-wider text-slate-600">Mật khẩu</Label>
               <div className="relative">
-                <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-450 pointer-events-none">
+                <div className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
                   <Lock className="size-4" />
                 </div>
                 <Input
@@ -147,15 +146,15 @@ export function Login() {
                   type={showPassword ? "text" : "password"}
                   required
                   disabled={isLoading}
-                  placeholder="••••••••"
-                  className="pl-10 pr-10 h-10 border-slate-800 bg-slate-950/40 text-slate-200 placeholder:text-slate-600 focus-visible:border-indigo-500 focus-visible:ring-indigo-500/20"
+                  placeholder="Nhập mật khẩu"
+                  className="h-11 border-slate-200 bg-slate-50 pl-10 pr-10 text-slate-900 placeholder:text-slate-400 focus-visible:border-[#0b4f9c] focus-visible:ring-[#0b4f9c]/20"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition-colors focus:outline-none cursor-pointer"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 cursor-pointer text-slate-400 transition-colors hover:text-[#0b4f9c] focus:outline-none"
                   disabled={isLoading}
                 >
                   {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
@@ -164,13 +163,13 @@ export function Login() {
             </div>
 
             <div className="flex items-center justify-between pt-1">
-              <label className="flex items-center gap-2 text-sm text-slate-400 cursor-pointer select-none">
+              <label className="flex cursor-pointer select-none items-center gap-2 text-sm text-slate-500">
                 <input
                   type="checkbox"
                   checked={rememberMe}
                   disabled={isLoading}
                   onChange={(e) => setRememberMe(e.target.checked)}
-                  className="rounded border-slate-800 bg-slate-950/40 text-indigo-650 focus:ring-indigo-500/30 cursor-pointer size-4"
+                  className="size-4 cursor-pointer rounded border-slate-300 bg-white text-[#0b4f9c] focus:ring-[#0b4f9c]/30"
                 />
                 <span>Ghi nhớ tài khoản</span>
               </label>
@@ -179,7 +178,7 @@ export function Login() {
             <Button 
               type="submit" 
               disabled={isLoading} 
-              className="w-full h-10 bg-indigo-600 hover:bg-indigo-500 text-white font-medium shadow-lg shadow-indigo-500/20 transition-all rounded-lg cursor-pointer flex items-center justify-center gap-2 mt-2"
+              className="mt-2 flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-[#0b4f9c] font-semibold text-white shadow-lg shadow-blue-900/15 transition-all hover:bg-[#083f7d]"
             >
               {isLoading ? (
                 <>
@@ -194,10 +193,10 @@ export function Login() {
 
           {allowQuickLogin && (
             <>
-              <div className="relative flex py-2 items-center">
-                <div className="flex-grow border-t border-slate-800/80"></div>
-                <span className="flex-shrink mx-4 text-slate-500 text-xs font-semibold tracking-wider uppercase">Đăng nhập nhanh</span>
-                <div className="flex-grow border-t border-slate-800/80"></div>
+              <div className="relative flex items-center py-2">
+                <div className="flex-grow border-t border-slate-200"></div>
+                <span className="mx-4 flex-shrink text-xs font-semibold uppercase tracking-wider text-slate-400">Đăng nhập nhanh</span>
+                <div className="flex-grow border-t border-slate-200"></div>
               </div>
 
               <div className="grid grid-cols-3 gap-2">
@@ -205,34 +204,27 @@ export function Login() {
                   type="button"
                   disabled={isLoading}
                   onClick={() => handleQuickLogin("admin")}
-                  className="flex flex-col items-center justify-center py-2 px-2 bg-slate-950/40 border border-slate-800 hover:border-indigo-500/50 hover:bg-indigo-950/20 transition-all rounded-lg group cursor-pointer"
+                  className="group flex cursor-pointer flex-col items-center justify-center rounded-lg border border-blue-100 bg-blue-50/60 px-3 py-2 transition-all hover:border-blue-300 hover:bg-blue-50"
                 >
-                  <span className="text-xs text-indigo-400 font-semibold group-hover:text-indigo-300">Quản trị</span>
-                  <span className="text-[9px] text-slate-500 mt-0.5">Admin</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={isLoading}
-                  onClick={() => handleQuickLogin("manager")}
-                  className="flex flex-col items-center justify-center py-2 px-2 bg-slate-950/40 border border-slate-800 hover:border-amber-500/50 hover:bg-amber-950/20 transition-all rounded-lg group cursor-pointer"
-                >
-                  <span className="text-xs text-amber-400 font-semibold group-hover:text-amber-300">Quản lý</span>
-                  <span className="text-[9px] text-slate-500 mt-0.5">Manager</span>
+                  <span className="text-xs font-semibold text-[#0b4f9c]">Quản trị viên</span>
+                  <span className="mt-0.5 text-[10px] text-slate-500">Admin Dashboard</span>
                 </button>
                 <button
                   type="button"
                   disabled={isLoading}
                   onClick={() => handleQuickLogin("user")}
-                  className="flex flex-col items-center justify-center py-2 px-2 bg-slate-950/40 border border-slate-800 hover:border-emerald-500/50 hover:bg-emerald-950/20 transition-all rounded-lg group cursor-pointer"
+                  className="group flex cursor-pointer flex-col items-center justify-center rounded-lg border border-emerald-100 bg-emerald-50/60 px-3 py-2 transition-all hover:border-emerald-300 hover:bg-emerald-50"
                 >
-                  <span className="text-xs text-emerald-400 font-semibold group-hover:text-emerald-300">Nhân viên</span>
-                  <span className="text-[9px] text-slate-500 mt-0.5">Staff</span>
+                  <span className="text-xs font-semibold text-emerald-700">Nhân viên</span>
+                  <span className="mt-0.5 text-[10px] text-slate-500">User Dashboard</span>
                 </button>
               </div>
             </>
           )}
-        </CardContent>
-      </Card>
+            </CardContent>
+          </div>
+        </Card>
+      </div>
     </div>
   );
 }

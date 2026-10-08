@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { FolderOpen, Settings, Users, FileText, Undo, Plus, Minus, Search, MousePointerClick, Filter, Upload, Download, Printer, Shield } from "lucide-react";
+import { FolderOpen, Settings, Users, FileText, Undo, Plus, Minus, Search, Filter, RotateCcw } from "lucide-react";
 import { api } from "../lib/api";
 import { fileToBase64, parseExcel, getSheetData, applyEditsToWorkbook, downloadBase64File, generateExcelBase64 } from "../lib/excel";
 import { SpreadsheetViewer } from "./SpreadsheetViewer";
@@ -23,20 +23,31 @@ import { TemplateLibrary } from "./TemplateLibrary";
 import { TRANG_THAI_LABELS, type TrangThai } from "../lib/constants";
 import { printProjectAsPdf } from "../lib/printPdf";
 import { useAuth } from "../lib/auth";
+import { AdminHeader, AdminSidebar } from "../layout/AdminLayout";
+import { AdminHome } from "./pages/AdminHome";
 
 export function AdminDashboard() {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const [projects, setProjects] = useState<any[]>([]);
   const [selectedProject, setSelectedProject] = useState<any>(null);
   const [edits, setEdits] = useState<any[]>([]);
   const [cellRevisions, setCellRevisions] = useState<Record<string, number>>({});
   const [ranges, setRanges] = useState<any>({});
-  const [mainTab, setMainTab] = useState("projects");
+  const [mainTab, setMainTab] = useState("file");
   const [searchQ, setSearchQ] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
   const [pendingCount, setPendingCount] = useState(0);
   const [showLeftPanel, setShowLeftPanel] = useState(true);
   const [showRightPanel, setShowRightPanel] = useState(true);
+  const [showMobileNav, setShowMobileNav] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isQuotesNavExpanded, setIsQuotesNavExpanded] = useState(true);
+  const [isAccountsNavExpanded, setIsAccountsNavExpanded] = useState(true);
+  const [isProjectDialogOpen, setIsProjectDialogOpen] = useState(false);
+  const [isTemplateDialogOpen, setIsTemplateDialogOpen] = useState(false);
+  const [isUserDialogOpen, setIsUserDialogOpen] = useState(false);
+  const [isDeletedProjectsDialogOpen, setIsDeletedProjectsDialogOpen] = useState(false);
+  const [deletedProjects, setDeletedProjects] = useState<any[]>([]);
 
   // For visual selector
   const [workbook, setWorkbook] = useState<XLSX.WorkBook | null>(null);
@@ -68,6 +79,25 @@ export function AdminDashboard() {
       setPendingCount(pending.count || 0);
     } catch (e: any) {
       toast.error(e.message || "Không tải được danh sách");
+    }
+  };
+
+  const loadDeletedProjects = async () => {
+    try {
+      setDeletedProjects(await api.getDeletedProjects());
+    } catch (e: any) {
+      toast.error(e.message || "Không tải được danh sách file đã xóa");
+    }
+  };
+
+  const handleRestoreProject = async (id: string) => {
+    try {
+      await api.restoreProject(id);
+      toast.success("Đã khôi phục file báo giá");
+      await loadDeletedProjects();
+      await loadProjects();
+    } catch (e: any) {
+      toast.error(e.message || "Khôi phục file thất bại");
     }
   };
 
@@ -111,7 +141,22 @@ export function AdminDashboard() {
       throw e;
     }
   };
+  const handleColumnClick = (colIndex: number) => {
+    const colLetter = XLSX.utils.encode_col(colIndex);
 
+    setDragStart(null);
+    setDragEnd(null);
+    appendRange(`${colLetter}:${colLetter}`);
+  };
+
+
+  const handleRowClick = (rowIndex: number) => {
+    const rowNumber = rowIndex + 1;
+
+    setDragStart(null);
+    setDragEnd(null);
+    appendRange(`${rowNumber}:${rowNumber}`);
+  };
   const handleSelectProject = async (id: string) => {
     setHistory([]); // Clear undo history for newly selected project
     const project = await api.getProject(id);
@@ -245,10 +290,6 @@ export function AdminDashboard() {
     }
   };
 
-  const handleColumnClick = (colIndex: number) => {
-    const colLetter = XLSX.utils.encode_col(colIndex);
-    appendRange(`${colLetter}:${colLetter}`);
-  };
 
   const handleCellMouseDown = (r: number, c: number) => {
     setDragStart({ r, c });
@@ -382,7 +423,57 @@ export function AdminDashboard() {
       toast.error("Không thể hoàn tác!");
     }
   };
+  const handleCellEdit = async (r: number, c: number, newValue: string) => {
+    if (!workbook || !selectedProject) return;
 
+    pushToHistory(selectedProject.fileBase64);
+
+    const cellRef = XLSX.utils.encode_cell({ r, c });
+    const sheetName = activeSheet;
+
+    const newEdit = {
+      sheetName,
+      cell: cellRef,
+      oldValue: sheetData[r][c] || "",
+      newValue: newValue || "",
+      username: user?.username || "Admin",
+      timestamp: new Date().toISOString()
+    };
+
+    try {
+      const newSheetData = [...sheetData];
+      if (!newSheetData[r]) newSheetData[r] = [];
+      newSheetData[r][c] = newValue;
+      setSheetData(newSheetData);
+
+
+      await api.saveEdit(selectedProject.id, newEdit);
+      const editsToApply = [...edits, newEdit];
+      setEdits(editsToApply);
+
+
+      const { wb, ejWb } = await updateWorkbookStateAndExcelJS(selectedProject.fileBase64, [newEdit]);
+      const buffer = await ejWb.xlsx.writeBuffer();
+
+
+      let binary = '';
+      const bytes = new Uint8Array(buffer as ArrayBuffer);
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const base64String = window.btoa(binary);
+
+      
+      await api.updateProjectFile(selectedProject.id, base64String, wb.SheetNames);
+      setSelectedProject({ ...selectedProject, fileBase64: base64String });
+
+      toast.success(`Đã cập nhật ô ${cellRef}`);
+    } catch (e: any) {
+      console.error(e);
+      toast.error("Lỗi khi lưu dữ liệu! Vui lòng nhấn F12 để xem chi tiết.");
+    }
+    
+  };
   const handleAddRow = async () => {
     if (!workbook || !selectedProject) return;
 
@@ -575,11 +666,51 @@ export function AdminDashboard() {
   })();
 
   return (
-    <div className="h-[calc(100vh-80px)] flex flex-col">
+    <div className="h-screen flex bg-[#f4f8ff] text-slate-900 overflow-hidden">
+      <AdminSidebar
+        userRole={user?.role}
+        mainTab={mainTab}
+        pendingCount={pendingCount}
+        isMobileOpen={showMobileNav}
+        isCollapsed={isSidebarCollapsed}
+        isQuotesExpanded={isQuotesNavExpanded}
+        isAccountsExpanded={isAccountsNavExpanded}
+        selectedProject={selectedProject}
+        onMainTabChange={setMainTab}
+        onMobileOpenChange={setShowMobileNav}
+        onQuotesExpandedChange={() => setIsQuotesNavExpanded(prev => !prev)}
+        onAccountsExpandedChange={() => setIsAccountsNavExpanded(prev => !prev)}
+        onProjectDialogOpen={() => setIsProjectDialogOpen(true)}
+        onTemplateDialogOpen={() => setIsTemplateDialogOpen(true)}
+        onUserDialogOpen={() => setIsUserDialogOpen(true)}
+        onDeletedProjectsOpen={() => { setIsDeletedProjectsDialogOpen(true); loadDeletedProjects(); }}
+        onLogout={logout}
+      />
+
+      <div className="min-w-0 flex-1 flex flex-col">
+        <AdminHeader
+          selectedProject={selectedProject}
+          username={user?.username}
+          onLogout={logout}
+          onToggleNavigation={() => { if (window.innerWidth >= 768) setIsSidebarCollapsed(prev => !prev); else setShowMobileNav(true); }}
+        />
+        <main className="min-h-0 flex-1 flex flex-col">
+        {mainTab === "dashboard" ? (
+          <AdminHome
+            projects={projects}
+            edits={edits}
+            pendingCount={pendingCount}
+            selectedProject={selectedProject}
+            onUploadFile={(file) => onDrop([file])}
+            onSelectProject={handleSelectProject}
+          />
+        ) : (
+          <>
       {/* Top Ribbon */}
-      <div className="bg-[#f3f2f1] flex flex-col shrink-0 border-b border-slate-300">
-        <Tabs defaultValue="home" className="w-full">
-          <TabsList className="h-8 bg-white border-b border-slate-300 rounded-none w-full justify-start px-2 gap-1 mb-0">
+      <div className="bg-white flex flex-col shrink-0 border-b border-slate-200 shadow-[0_1px_3px_rgba(15,23,42,0.04)]">
+        <Tabs value={mainTab} onValueChange={setMainTab} className="w-full">
+          <TabsList className="sr-only">
+            <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
             <TabsTrigger value="file" className="h-full rounded-none border-b-2 border-transparent data-[state=active]:border-indigo-600 data-[state=active]:text-indigo-700 data-[state=active]:shadow-none px-4 text-xs bg-transparent data-[state=active]:bg-white">Tệp</TabsTrigger>
             <TabsTrigger value="home" className="h-full rounded-none border-b-2 border-transparent data-[state=active]:border-indigo-600 data-[state=active]:text-indigo-700 data-[state=active]:shadow-none px-4 text-xs bg-transparent data-[state=active]:bg-white">Trang chủ</TabsTrigger>
             {user?.role === "admin" && (
@@ -588,30 +719,16 @@ export function AdminDashboard() {
           </TabsList>
           
           <div className="h-24 bg-white/50 px-2 py-1 flex items-start gap-4 overflow-x-auto custom-scrollbar">
+            <TabsContent value="dashboard" className="m-0 w-full h-full flex items-center gap-3 px-3 data-[state=inactive]:hidden">
+              <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-2"><p className="text-[11px] font-medium text-blue-600">Tổng báo giá</p><p className="text-xl font-bold text-blue-900">{projects.length}</p></div>
+              <div className="rounded-lg border border-amber-100 bg-amber-50 px-4 py-2"><p className="text-[11px] font-medium text-amber-700">Đang xử lý</p><p className="text-xl font-bold text-amber-900">{pendingCount}</p></div>
+              <p className="hidden sm:block text-xs text-slate-500">Chọn một chức năng ở thanh điều hướng để bắt đầu.</p>
+            </TabsContent>
             
             <TabsContent value="file" className="m-0 h-full flex items-start gap-2 pt-1 data-[state=inactive]:hidden">
               <div className="flex flex-col items-center">
-                <label className="cursor-pointer">
-                  <input
-                    type="file"
-                    accept=".xlsx"
-                    className="hidden"
-                    onChange={async (e) => {
-                      const file = e.target.files?.[0];
-                      if (file) onDrop([file]);
-                      e.target.value = "";
-                    }}
-                  />
-                  <div className="h-14 w-20 flex flex-col items-center justify-center gap-1 rounded-sm hover:bg-indigo-50 border border-transparent hover:border-indigo-100 transition-colors">
-                    <Upload className="w-6 h-6 text-indigo-600" strokeWidth={1.5} />
-                    <span className="text-[10px] font-medium leading-none text-center">Tải Excel lên</span>
-                  </div>
-                </label>
-              </div>
-
-              <div className="flex flex-col items-center">
-                <Dialog>
-                  <DialogTrigger render={<Button variant="ghost" className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-indigo-50" />}>
+                <Dialog open={isProjectDialogOpen} onOpenChange={setIsProjectDialogOpen}>
+                    <DialogTrigger render={<Button variant="ghost" className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-indigo-50" />}>
                       <FolderOpen className="w-6 h-6 text-indigo-600" strokeWidth={1.5} />
                       <span className="text-[10px] font-medium leading-none">Mở dự án</span>
                     </DialogTrigger>
@@ -621,28 +738,25 @@ export function AdminDashboard() {
                     </DialogHeader>
                     {/* The project list and upload component */}
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 mt-2">
-                      <div className="lg:col-span-4 space-y-4">
-                        <Card className="shadow-xs border-slate-200 bg-white">
-                          <CardHeader className="pb-3 border-b bg-slate-50/50">
-                            <CardTitle className="text-xs font-bold text-slate-800">Tải Lên File Excel (.xlsx)</CardTitle>
-                          </CardHeader>
-                          <CardContent className="pt-3 px-3 pb-3">
-                            <div {...getRootProps()} className={`border-2 border-dashed p-4 text-center cursor-pointer rounded-xl transition-all duration-200 ${isDragActive ? "border-blue-500 bg-blue-50/70" : "border-slate-200 hover:border-indigo-400 hover:bg-indigo-50/30"}`}>
-                              <input {...getInputProps()} />
-                              <div className="mx-auto w-8 h-8 rounded-full bg-white flex items-center justify-center border shadow-2xs mb-2">
-                                <Plus className="h-4.5 w-4.5 text-indigo-600" />
+                        <div className="lg:col-span-4 space-y-4">
+                          <Card className="shadow-xs border-slate-200 bg-white">
+                            <CardHeader className="pb-3 border-b bg-slate-50/50">
+                              <CardTitle className="text-xs font-bold text-slate-800">Tải Lên File Excel (.xlsx)</CardTitle>
+                            </CardHeader>
+                            <CardContent className="pt-3 px-3 pb-3">
+                              <div {...getRootProps()} className={`border-2 border-dashed p-4 text-center cursor-pointer rounded-xl transition-all duration-200 ${isDragActive ? "border-blue-500 bg-blue-50/70" : "border-slate-200"}`}>
+                                <input {...getInputProps()} />
+                                <div className="mx-auto w-8 h-8 rounded-full bg-white flex items-center justify-center border shadow-2xs mb-2">
+                                  <Plus className="h-4.5 w-4.5 text-indigo-600" />
+                                </div>
+                                <span className="text-xs font-bold text-slate-700 block mb-0.5">
+                                  {isDragActive ? "Thả file..." : "Kéo thả file Excel vào đây"}
+                                </span>
                               </div>
-                              <span className="text-xs font-bold text-slate-700 block mb-0.5">
-                                {isDragActive ? "Thả file vào đây..." : "Kéo thả file Excel vào đây"}
-                              </span>
-                              <span className="text-[10px] text-slate-400 block mt-1">
-                                Hoặc bấm để chọn file từ máy tính
-                              </span>
-                            </div>
-                          </CardContent>
-                        </Card>
-                      </div>
-                      <div className="lg:col-span-8">
+                            </CardContent>
+                          </Card>
+                        </div>
+                      <div className={user?.role === "admin" ? "lg:col-span-12" : "lg:col-span-8"}>
                         <Card className="shadow-xs border-slate-200 bg-white h-full flex flex-col">
                           <CardHeader className="py-2.5 px-3 border-b bg-slate-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                             <CardTitle className="text-xs font-bold text-slate-800 shrink-0">Danh sách dự án ({projects.length})</CardTitle>
@@ -681,39 +795,24 @@ export function AdminDashboard() {
                 <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Tệp tin</div>
               </div>
               
-              <div className="w-px h-14 bg-slate-200 mx-2" />
-              <div className="flex flex-col items-center">
-                <Dialog>
-                  <DialogTrigger render={<Button variant="ghost" className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-indigo-50" />}>
-                      <FileText className="w-6 h-6 text-emerald-600" strokeWidth={1.5} />
-                      <span className="text-[10px] font-medium leading-none">Templates</span>
-                    </DialogTrigger>
-                  <DialogContent className="sm:max-w-5xl w-full max-h-[90vh] overflow-y-auto">
-                    <DialogHeader><DialogTitle>Thư viện Templates</DialogTitle></DialogHeader>
-                    <TemplateLibrary onCloned={() => loadProjects()} />
-                  </DialogContent>
-                </Dialog>
-                <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Mẫu</div>
-              </div>
 
-              {selectedProject && (
-                <>
+
                   <div className="w-px h-14 bg-slate-200 mx-2" />
                   <div className="flex flex-col items-center">
-                    <div className="flex items-center gap-1 h-14">
-                      <Button variant="ghost" onClick={handleExportExcel} className="h-14 w-16 flex flex-col gap-1 rounded-sm hover:bg-emerald-50">
-                        <Download className="w-6 h-6 text-emerald-600" strokeWidth={1.5} />
-                        <span className="text-[10px] font-medium leading-none">Tải Excel</span>
-                      </Button>
-                      <Button variant="ghost" onClick={() => { if (!printProjectAsPdf(selectedProject, sheetData, activeSheet)) toast.error("Trình duyệt chặn cửa sổ in PDF"); }} className="h-14 w-16 flex flex-col gap-1 rounded-sm hover:bg-rose-50">
-                        <Printer className="w-6 h-6 text-rose-600" strokeWidth={1.5} />
-                        <span className="text-[10px] font-medium leading-none">Xuất PDF</span>
-                      </Button>
-                    </div>
-                    <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Xuất file</div>
+                    <Dialog open={isTemplateDialogOpen} onOpenChange={setIsTemplateDialogOpen}>
+                      <DialogTrigger render={<Button variant="ghost" className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-indigo-50" />}>
+                          <FileText className="w-6 h-6 text-emerald-600" strokeWidth={1.5} />
+                          <span className="text-[10px] font-medium leading-none">Templates</span>
+                        </DialogTrigger>
+                      <DialogContent className="sm:max-w-5xl w-full max-h-[90vh] overflow-y-auto">
+                        <DialogHeader><DialogTitle>Thư viện Templates</DialogTitle></DialogHeader>
+                        <TemplateLibrary onCloned={() => loadProjects()} />
+                      </DialogContent>
+                    </Dialog>
+                    <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Mẫu</div>
                   </div>
-                </>
-              )}
+
+
             </TabsContent>
             
             <TabsContent value="home" className="m-0 h-full flex items-start gap-4 pt-1 data-[state=inactive]:hidden w-full">
@@ -733,13 +832,18 @@ export function AdminDashboard() {
                         <DialogHeader><DialogTitle>Cấu hình & Nhật ký</DialogTitle></DialogHeader>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
                           <div className="space-y-4">
+
                             <ProjectMetaForm project={selectedProject} onUpdated={(p) => { setSelectedProject(p); loadProjects(); }} onDeleted={() => { setSelectedProject(null); loadProjects(); }} />
+                            )
+
                             <Card className="shadow-xs border-slate-200 bg-white">
                               <CardHeader className="py-2.5 px-3 border-b bg-slate-50/50"><CardTitle className="text-xs font-bold text-slate-800 uppercase tracking-wider">Trạng thái xử lý</CardTitle></CardHeader>
                               <CardContent className="p-3">
                                 <StatusWorkflow project={selectedProject} role={user?.role} onUpdated={(p) => { setSelectedProject(p); loadProjects(); }} />
                               </CardContent>
                             </Card>
+                            )
+
                             <Card className="shadow-xs border-slate-200 bg-white">
                               <CardHeader className="py-2.5 px-3 border-b bg-slate-50/50 flex flex-row items-center justify-between">
                                 <CardTitle className="text-xs font-bold text-slate-800 uppercase tracking-wider">Vùng ô mở quyền sửa</CardTitle>
@@ -754,6 +858,7 @@ export function AdminDashboard() {
                                 ))}
                               </CardContent>
                             </Card>
+                            )
                           </div>
                           <div>
                             <Card className="shadow-xs border-slate-200 bg-white h-full">
@@ -786,9 +891,10 @@ export function AdminDashboard() {
                     <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Cài đặt & Logs</div>
                   </div>
                   
-                  <div className="w-px h-14 bg-slate-200 mx-2" />
-                  <div className="flex flex-col items-center">
-                    <div className="flex h-14 items-center gap-1">
+                    <>
+                      <div className="w-px h-14 bg-slate-200 mx-2" />
+                      <div className="flex flex-col items-center">
+                        <div className="flex h-14 items-center gap-1">
                           <div className="flex flex-col gap-1 border-r border-slate-200 pr-2 mr-1">
                             <div className="flex items-center gap-1">
                               <Input type="number" min="1" placeholder="Dòng..." value={rowInsertIndex} onChange={(e) => setRowInsertIndex(e.target.value)} className="w-16 h-6 text-[10px] py-0 bg-white" />
@@ -809,6 +915,8 @@ export function AdminDashboard() {
                         </div>
                         <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Chỉnh sửa</div>
                       </div>
+                    </>
+                  )
                   
                   <div className="w-px h-14 bg-slate-200 mx-2" />
                   <div className="flex flex-col items-center">
@@ -840,7 +948,7 @@ export function AdminDashboard() {
             {user?.role === "admin" && (
               <TabsContent value="admin" className="m-0 h-full flex items-start gap-2 pt-1 data-[state=inactive]:hidden">
                 <div className="flex flex-col items-center">
-                  <Dialog>
+                  <Dialog open={isUserDialogOpen} onOpenChange={setIsUserDialogOpen}>
                     <DialogTrigger render={<Button variant="ghost" className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-blue-50" />}>
                         <Users className="w-6 h-6 text-blue-600" strokeWidth={1.5} />
                         <span className="text-[10px] font-medium leading-none">Tài khoản</span>
@@ -858,6 +966,27 @@ export function AdminDashboard() {
                 <div className="flex flex-col items-center">
                   <AuditLogsModal />
                   <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Nhật ký</div>
+                </div>
+                <div className="flex flex-col items-center">
+                  <Dialog open={isDeletedProjectsDialogOpen} onOpenChange={setIsDeletedProjectsDialogOpen}>
+                    <DialogTrigger render={<Button variant="ghost" className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-amber-50" />}>
+                      <RotateCcw className="w-6 h-6 text-amber-600" strokeWidth={1.5} />
+                      <span className="text-[10px] font-medium leading-none">Khôi phục file</span>
+                    </DialogTrigger>
+                    <DialogContent className="sm:max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+                      <DialogHeader><DialogTitle>Khôi phục file đã xóa</DialogTitle></DialogHeader>
+                      <div className="mt-2 space-y-2">
+                        {deletedProjects.length === 0 ? <p className="py-8 text-center text-sm text-slate-500">Không có file nào trong danh sách đã xóa.</p> : deletedProjects.map((project) => (
+                          <div key={project.id} className="flex items-center gap-3 rounded-lg border border-slate-200 p-3">
+                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-amber-600"><RotateCcw className="h-4 w-4" /></div>
+                            <div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-slate-800">{project.name}</p><p className="mt-1 text-[11px] text-slate-500">Đã xóa: {project.deletedAt ? new Date(project.deletedAt).toLocaleString("vi-VN") : "Không rõ thời điểm"}</p></div>
+                            <Button size="sm" onClick={() => handleRestoreProject(project.id)} className="shrink-0 bg-[#0b4f9c] text-xs hover:bg-[#083f7d]">Khôi phục</Button>
+                          </div>
+                        ))}
+                      </div>
+                    </DialogContent>
+                  </Dialog>
+                  <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Khôi phục</div>
                 </div>
               </TabsContent>
             )}
@@ -896,25 +1025,27 @@ export function AdminDashboard() {
               onMouseLeave={() => { if (dragStart) handleCellMouseUp(); }}
             >
               <SpreadsheetViewer
-                workbook={workbook}
-                exceljsWorkbook={exceljsWorkbook}
-                sheetData={sheetData}
-                activeSheet={activeSheet}
-                mode="admin"
-                editableRange={ranges[activeSheet] || ""}
-                selectedRange={(() => {
-                  if (!dragStart || !dragEnd) return "";
-                  const r1 = Math.min(dragStart.r, dragEnd.r);
-                  const r2 = Math.max(dragStart.r, dragEnd.r);
-                  const c1 = Math.min(dragStart.c, dragEnd.c);
-                  const c2 = Math.max(dragStart.c, dragEnd.c);
-                  return `${XLSX.utils.encode_cell({ r: r1, c: c1 })}:${XLSX.utils.encode_cell({ r: r2, c: c2 })}`;
-                })()}
-                previewLimit={previewLimit}
-                onColumnClick={handleColumnClick}
-                onCellEdit={handleCellChange}
-                onCellMouseDown={handleCellMouseDown}
-                onCellMouseEnter={handleCellMouseEnter}
+                  workbook={workbook}
+                  exceljsWorkbook={exceljsWorkbook}
+                  sheetData={sheetData}
+                  activeSheet={activeSheet}
+                  mode="admin"
+                  editableRange={ranges[activeSheet] || ""}
+                  selectedRange={(() => {
+                    if (!dragStart || !dragEnd) return "";
+                    const r1 = Math.min(dragStart.r, dragEnd.r);
+                    const r2 = Math.max(dragStart.r, dragEnd.r);
+                    const c1 = Math.min(dragStart.c, dragEnd.c);
+                    const c2 = Math.max(dragStart.c, dragEnd.c);
+                    return `${XLSX.utils.encode_cell({ r: r1, c: c1 })}:${XLSX.utils.encode_cell({ r: r2, c: c2 })}`;
+                  })()}
+                  previewLimit={previewLimit}
+
+                  onColumnClick={handleColumnClick}
+                  onRowClick={handleRowClick}
+                  onCellMouseDown={handleCellMouseDown}
+                  onCellMouseEnter={handleCellMouseEnter}
+                  onCellEdit={handleCellEdit}
               />
             </div>
             <div className="bg-slate-50 border-t px-4 py-1.5 shrink-0 flex justify-between items-center text-[11px] text-slate-500 font-medium">
@@ -926,6 +1057,10 @@ export function AdminDashboard() {
             </div>
           </div>
         )}
+      </div>
+          </>
+        )}
+         </main>
       </div>
     </div>
   );

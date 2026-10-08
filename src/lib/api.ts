@@ -85,6 +85,10 @@ export const api = {
     return request(`/api/projects${query ? `?${query}` : ""}`);
   },
 
+  async getDeletedProjects() {
+    return request("/api/projects/deleted");
+  },
+
   async getPendingCount() {
     return request("/api/projects/pending-count");
   },
@@ -112,6 +116,10 @@ export const api = {
 
   async deleteProject(id: string) {
     return request(`/api/projects/${id}`, { method: "DELETE" });
+  },
+
+  async restoreProject(id: string) {
+    return request(`/api/projects/${id}/restore`, { method: "POST" });
   },
 
   async updateRanges(id: string, editableRanges: Record<string, string>) {
