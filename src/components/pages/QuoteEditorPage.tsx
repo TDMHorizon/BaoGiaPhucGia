@@ -283,7 +283,8 @@ export const QuoteEditorPage: React.FC = () => {
     // Chỉ Admin / Manager khi dự án đã phát hành 'da_gui' mới được xuất file trần không Watermark.
     // Nếu chưa đủ điều kiện, tự động chuyển sang luồng xuất bản nháp (Draft Export) có watermark UC17.
     const isOfficialAllowed =
-      (user?.role === "admin" || user?.role === "manager") && project.trangThai === "da_gui";
+      (user?.role === "admin" || user?.role === "manager") &&
+      (project.trangThai === "da_gui" || project.trangThai === "cho_gui" || !!project.finalizedSnapshotId);
 
     if (!isOfficialAllowed) {
       toast.info("Báo giá chưa phát hành chính thức, tệp xuất tự động mang nhãn Bản Dự Thảo (UC17)!");
@@ -291,6 +292,28 @@ export const QuoteEditorPage: React.FC = () => {
     }
 
     try {
+      // 1. Thử tải trực tiếp bản chính thức từ snapshot bất biến ở backend (UC18 - Actor: Thạnh)
+      try {
+        const blob = await api.downloadOfficialExcel(projectId!);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        const safeName = (project.name || "baogia").replace(/\.xlsx$/i, "");
+        a.download = `${safeName}_CHINH_THUC.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        toast.success("Đã xuất tệp Excel A4 chính thức từ snapshot bất biến (UC18)!");
+        return;
+      } catch (backendErr: any) {
+        if (backendErr?.status === 400 && backendErr?.message?.includes("phê duyệt")) {
+          toast.warning("Chưa có phiên bản nào được Admin phê duyệt (UC09). Chuyển sang tải bản dự thảo!");
+          return handleExportDraftExcel();
+        }
+        console.warn("Backend official export fallback:", backendErr);
+      }
+
       if (exceljsWorkbook) {
         // [P1-16] Clone một đối tượng workbook độc lập, KHÔNG MUTATE workbook state trên React!
         const exportWb = await cloneExcelJSWorkbook(exceljsWorkbook);

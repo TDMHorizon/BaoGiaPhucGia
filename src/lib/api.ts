@@ -299,4 +299,130 @@ export const api = {
       body: JSON.stringify(payload),
     });
   },
+
+  // UC10: Khóa / Mở khóa báo giá (Admin only)
+  async lockProject(id: string, reason?: string) {
+    return request(`/api/projects/${id}/lock`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+  },
+
+  async unlockProject(id: string, reason?: string) {
+    return request(`/api/projects/${id}/unlock`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+  },
+
+  // UC11: Lưu trữ & Xóa vĩnh viễn
+  async archiveProject(id: string) {
+    return request(`/api/projects/${id}/archive`, { method: "POST" });
+  },
+
+  async unarchiveProject(id: string) {
+    return request(`/api/projects/${id}/unarchive`, { method: "POST" });
+  },
+
+  async getArchivedProjects() {
+    return request("/api/projects/archived");
+  },
+
+  async permanentDeleteProject(id: string) {
+    return request(`/api/projects/${id}/permanent`, { method: "DELETE" });
+  },
+
+  // UC08: Thẩm định tài chính (Manager/Admin)
+  async getFinancialReview(id: string) {
+    return request(`/api/projects/${id}/financial-review`);
+  },
+
+  async submitFinancialReview(
+    id: string,
+    payload: {
+      status: "PASS" | "REQUEST_CHANGES";
+      note?: string;
+      customCost?: number;
+      expectedProjectRevision?: number;
+      expectedFinanceRevision?: number;
+    }
+  ) {
+    return request(`/api/projects/${id}/financial-review`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  // UC09: Phê duyệt phát hành (Admin only)
+  async getApprovalStatus(id: string) {
+    return request(`/api/projects/${id}/approval`);
+  },
+
+  async approveProject(
+    id: string,
+    payload?: {
+      note?: string;
+      expectedProjectRevision?: number;
+      expectedFinanceRevision?: number;
+    }
+  ) {
+    return request(`/api/projects/${id}/approve`, {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  async rejectProject(id: string, reason: string) {
+    return request(`/api/projects/${id}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+  },
+
+  // UC15: Khôi phục phiên bản cũ (Admin only)
+  async restoreVersion(id: string, version: number, reason?: string) {
+    return request(`/api/projects/${id}/versions/${version}/restore`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+  },
+
+  // UC18: Xuất Excel A4 chính thức (Admin/Manager)
+  async downloadOfficialExcel(id: string, version?: number): Promise<Blob> {
+    const qs = version ? `?version=${version}` : "";
+    const res = await fetch(`/api/projects/${id}/export/official${qs}`, {
+      headers: {
+        Authorization: `Bearer ${getToken()}`,
+      },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: "Không thể xuất bản chính thức" }));
+      throw new Error(err.error || "Không thể xuất bản chính thức");
+    }
+    return res.blob();
+  },
+
+  // UC21: Kiểm toán toàn bộ vết sửa đổi (Admin only)
+  async getGlobalEdits(params: {
+    projectId?: string;
+    userId?: string;
+    sheet?: string;
+    cell?: string;
+    from?: string;
+    to?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const qs = new URLSearchParams();
+    if (params.projectId) qs.set("projectId", params.projectId);
+    if (params.userId) qs.set("userId", params.userId);
+    if (params.sheet) qs.set("sheet", params.sheet);
+    if (params.cell) qs.set("cell", params.cell);
+    if (params.from) qs.set("from", params.from);
+    if (params.to) qs.set("to", params.to);
+    if (params.page) qs.set("page", String(params.page));
+    if (params.limit) qs.set("limit", String(params.limit));
+    const query = qs.toString();
+    return request(`/api/audit/edits${query ? `?${query}` : ""}`);
+  },
 };

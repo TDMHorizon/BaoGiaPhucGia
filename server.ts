@@ -33,7 +33,8 @@ import {
   type VersionRow,
   type TemplateRow,
   isCellDisabled,
-  updateProjectDisabledRange
+  updateProjectDisabledRange,
+  recordProjectEvent
 } from "./server/db";
 import {
   authenticateUser,
@@ -61,24 +62,38 @@ import {
 import { buildFinalWorkbookBuffer, loadWorkbookFromBuffer } from "./server/services/excelService";
 import { applyDraftWatermarkToWorkbook } from "./src/lib/exceljs-helper";
 import * as XLSX from "xlsx";
-
-/** Bản gốc không bị ghi đè. User chỉ điền ô được phép rồi tải Excel gửi khách. */
-const USER_TRANSITIONS: Record<string, TrangThai[]> = {
-  nhap: ["dang_lam"],
-  dang_lam: ["da_gui"],
-  // legacy statuses from older builds
-  cho_duyet: ["da_gui", "dang_lam"],
-  da_duyet: ["da_gui", "dang_lam"],
-  da_gui: [],
-};
-
-const ADMIN_TRANSITIONS: Record<string, TrangThai[]> = {
-  nhap: ["dang_lam", "da_gui"],
-  dang_lam: ["da_gui", "nhap"],
-  cho_duyet: ["dang_lam", "da_gui", "nhap"],
-  da_duyet: ["dang_lam", "da_gui", "nhap"],
-  da_gui: ["dang_lam", "nhap"],
-};
+import {
+  USER_TRANSITIONS,
+  ADMIN_TRANSITIONS,
+  canUserTransition,
+  isProjectMutationLocked,
+  transitionProjectStatus,
+  lockProjectManually,
+  unlockProjectManually,
+} from "./server/services/projectWorkflowService";
+import {
+  calculateProjectFinancials,
+  getProjectFinancialReviewStatus,
+  submitFinancialReview,
+} from "./server/services/financeReviewService";
+import {
+  approveQuotation,
+  rejectQuotation,
+} from "./server/services/approvalService";
+import {
+  getProjectVersionsList,
+  getSnapshotBufferForVersion,
+  restoreSnapshotAsWorkingRevision,
+  getOfficialA4ExportBuffer,
+} from "./server/services/snapshotService";
+import {
+  handleProjectDelete,
+  archiveProject,
+  unarchiveProject,
+  permanentDeleteProject,
+  getArchivedProjectsList,
+} from "./server/services/archiveService";
+import { queryGlobalEdits } from "./server/services/auditQueryService";
 
 function now() {
   return new Date().toISOString();
@@ -583,11 +598,19 @@ async function startServer() {
     res.json(await projectWithFile(project));
   }));
 
+  // UC11: Danh sách báo giá đã lưu trữ (Manager/Admin)
+  app.get("/api/projects/archived", authMiddleware, requireAdminOrManager, (_req, res) => {
+    const rows = getArchivedProjectsList();
+    res.json(rows.map((p) => listSummary(p)));
+  });
+
   app.get("/api/projects/:id", authMiddleware, catchAsync(async (req, res) => {
     const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
-    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+    if (!userCanAccessProject(user, project, user.role === "admin" || user.role === "manager")) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     res.json(await projectWithFile(project));
   }));
 
@@ -600,8 +623,8 @@ async function startServer() {
     }
 
     // Kiểm tra trạng thái khóa (trừ Admin có quyền can thiệp đặc biệt)
-    if (user.role !== "admin" && isProjectLocked(project.trang_thai)) {
-      return res.status(403).json({ error: "Báo giá đang ở trạng thái khóa/đã phát hành, không thể chỉnh sửa!" });
+    if (user.role !== "admin" && isProjectMutationLocked(project)) {
+      return res.status(403).json({ error: "Báo giá đang ở trạng thái khóa/đã phát hành hoặc bị Admin khóa thủ công, không thể chỉnh sửa!" });
     }
 
     const body = req.body || {};
@@ -901,13 +924,56 @@ async function startServer() {
     res.json({ ok: true, memberIds: uniqueMembers, nguoiPhuTrachId: nextOwner });
   }));
 
-  app.delete("/api/projects/:id", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
+  // UC11: Xóa dự án (Nhân viên xóa nháp của mình, Quản lý/Admin xóa vào thùng rác)
+  app.delete("/api/projects/:id", authMiddleware, catchAsync(async (req, res) => {
+    const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
-    const deletedAt = now();
-    getDb().prepare("UPDATE projects SET isDelete = 1, deleted_at = ?, updated_at = ? WHERE id = ?").run(deletedAt, deletedAt, project.id);
-    const permanentlyDeletedAt = new Date(Date.parse(deletedAt) + 30 * 24 * 60 * 60 * 1000).toISOString();
-    res.json({ ok: true, isDelete: true, deletedAt, permanentlyDeletedAt });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+
+    const result = await handleProjectDelete(project, user);
+    res.json(result);
+  }));
+
+  // UC11: Lưu trữ báo giá (Manager/Admin)
+  app.post("/api/projects/:id/archive", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+
+    const updated = await archiveProject(project, user);
+    io.to(`project:${project.id}`).emit("project.updated", {
+      projectId: project.id,
+      archived: true,
+      archivedBy: user.username,
+    });
+    res.json(listSummary(updated));
+  }));
+
+  // UC11: Khôi phục lưu trữ báo giá (Manager/Admin)
+  app.post("/api/projects/:id/unarchive", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id, false) || loadProject(req.params.id, true);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project, true)) return res.status(403).json({ error: "Forbidden" });
+
+    const updated = await unarchiveProject(project, user);
+    io.to(`project:${project.id}`).emit("project.updated", {
+      projectId: project.id,
+      archived: false,
+    });
+    res.json(listSummary(updated));
+  }));
+
+  // UC11: Xóa cứng vĩnh viễn (Admin only)
+  app.delete("/api/projects/:id/permanent", authMiddleware, requireAdmin, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id, true) || loadProject(req.params.id, false);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const result = await permanentDeleteProject(project, user);
+    res.json(result);
   }));
 
   app.post("/api/projects/:id/restore", authMiddleware, requireAdminOrManager, (req, res) => {
@@ -962,7 +1028,7 @@ async function startServer() {
     res.json(await projectWithFile(loadProject(project.id)!));
   }));
 
-  // Status workflow
+  // Status workflow (UC10)
   app.post("/api/projects/:id/status", authMiddleware, catchAsync(async (req, res) => {
     const user = req.user!;
     const project = loadProject(req.params.id);
@@ -970,23 +1036,51 @@ async function startServer() {
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
 
     const nextStatus = req.body?.trangThai as TrangThai;
-    const allowed =
-      (user.role === "admin" || user.role === "manager")
-        ? ADMIN_TRANSITIONS[project.trang_thai]
-        : USER_TRANSITIONS[project.trang_thai];
-
-    if (!allowed?.includes(nextStatus)) {
-      return res.status(400).json({ error: "Invalid status transition" });
-    }
-
-    getDb()
-      .prepare("UPDATE projects SET trang_thai = ?, updated_at = ? WHERE id = ?")
-      .run(nextStatus, now(), project.id);
+    const note = req.body?.note;
+    const updated = await transitionProjectStatus(project, nextStatus, user, note);
 
     io.to(`project:${project.id}`).emit("status.updated", {
       projectId: project.id,
-      status: nextStatus,
+      status: updated.trang_thai,
       updatedBy: user.username,
+    });
+
+    res.json(await projectWithFile(loadProject(project.id)!));
+  }));
+
+  // UC10: Khóa thủ công báo giá (Admin only)
+  app.post("/api/projects/:id/lock", authMiddleware, requireAdmin, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const reason = req.body?.reason || "Khóa bởi Admin";
+    const updated = await lockProjectManually(project, user, reason);
+
+    io.to(`project:${project.id}`).emit("project.locked", {
+      projectId: project.id,
+      locked: true,
+      lockedBy: user.username,
+      reason,
+    });
+
+    res.json(await projectWithFile(loadProject(project.id)!));
+  }));
+
+  // UC10: Mở khóa thủ công báo giá (Admin only)
+  app.post("/api/projects/:id/unlock", authMiddleware, requireAdmin, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const reason = req.body?.reason || "Mở khóa bởi Admin";
+    const updated = await unlockProjectManually(project, user, reason);
+
+    io.to(`project:${project.id}`).emit("project.locked", {
+      projectId: project.id,
+      locked: false,
+      unlockedBy: user.username,
+      reason,
     });
 
     res.json(await projectWithFile(loadProject(project.id)!));
@@ -1124,28 +1218,16 @@ async function startServer() {
     res.send(outBuffer);
   }));
 
-  // Versions
-  app.get("/api/projects/:id/versions", authMiddleware, (req, res) => {
+  // Versions (UC14 - Actor: Thạnh)
+  app.get("/api/projects/:id/versions", authMiddleware, catchAsync(async (req, res) => {
     const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
 
-    const rows = getDb()
-      .prepare("SELECT * FROM versions WHERE project_id = ? ORDER BY version DESC")
-      .all(project.id) as VersionRow[];
-
-    res.json(
-      rows.map((v) => ({
-        id: v.id,
-        projectId: v.project_id,
-        version: v.version,
-        note: v.note,
-        createdBy: v.created_by,
-        createdAt: v.created_at,
-      }))
-    );
-  });
+    const versions = await getProjectVersionsList(project);
+    res.json(versions);
+  }));
 
   app.get("/api/projects/:id/versions/:version", authMiddleware, catchAsync(async (req, res) => {
     const user = req.user!;
@@ -1158,6 +1240,164 @@ async function startServer() {
     if (!fileBase64) return res.status(404).json({ error: "Version not found" });
     res.json({ version, fileBase64 });
   }));
+
+  // UC15: Khôi phục phiên bản snapshot cũ thành revision làm việc mới (Admin only)
+  app.post("/api/projects/:id/versions/:version/restore", authMiddleware, requireAdmin, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const targetVersion = Number(req.params.version);
+    const reason = req.body?.reason;
+    const result = await restoreSnapshotAsWorkingRevision(project, targetVersion, user, reason);
+
+    io.to(`project:${project.id}`).emit("project.restored", {
+      projectId: project.id,
+      version: targetVersion,
+      restoredBy: user.username,
+      newProjectRevision: result.newProjectRevision,
+    });
+    io.to(`project:${project.id}`).emit("structure.updated", {
+      projectId: project.id,
+      updatedBy: user.username,
+    });
+
+    res.json({ ok: true, ...result });
+  }));
+
+  // UC18: Xuất Excel A4 chính thức từ snapshot đã duyệt (Admin/Manager - Actor: Thạnh)
+  app.get("/api/projects/:id/export/official", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+
+    const targetVersion = req.query.version ? Number(req.query.version) : undefined;
+    const { buffer, fileName, version } = await getOfficialA4ExportBuffer(project, targetVersion);
+
+    recordProjectEvent(project.id, "OFFICIAL_EXPORTED", user.id, user.username, {
+      version,
+      fileName,
+    });
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(fileName)}"`);
+    res.send(buffer);
+  }));
+
+  // UC08: Lấy trạng thái thẩm định tài chính (Manager/Admin)
+  app.get("/api/projects/:id/financial-review", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+
+    const status = getProjectFinancialReviewStatus(project);
+    res.json(status);
+  }));
+
+  // UC08: Kế toán thực hiện thẩm định tài chính (Manager/Admin)
+  app.post("/api/projects/:id/financial-review", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+
+    const review = await submitFinancialReview(project, user, req.body || {});
+
+    io.to(`project:${project.id}`).emit("financial_review.updated", {
+      projectId: project.id,
+      review,
+      reviewedBy: user.username,
+    });
+
+    res.json({ ok: true, ...review, review });
+  }));
+
+  // UC09: Xem trạng thái phê duyệt (Manager/Admin)
+  app.get("/api/projects/:id/approval", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+
+    const reviewStatus = getProjectFinancialReviewStatus(project);
+    const latestDecision = getDb()
+      .prepare("SELECT * FROM approval_decisions WHERE project_id = ? ORDER BY created_at DESC LIMIT 1")
+      .get(project.id) as any;
+
+    res.json({
+      canApprove: reviewStatus.canApprove,
+      reviewStatus,
+      latestDecision,
+      finalizedSnapshotId: project.finalized_snapshot_id,
+    });
+  }));
+
+  // UC09: Admin phê duyệt phát hành (Admin only - Actor: Minh)
+  app.post("/api/projects/:id/approve", authMiddleware, requireAdmin, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const result = await approveQuotation(project, user, req.body || {});
+
+    io.to(`project:${project.id}`).emit("approval.updated", {
+      projectId: project.id,
+      decision: "APPROVED",
+      version: result.version,
+      snapshotId: result.snapshotId,
+      approvedBy: user.username,
+    });
+    io.to(`project:${project.id}`).emit("status.updated", {
+      projectId: project.id,
+      status: "da_gui",
+      updatedBy: user.username,
+    });
+
+    res.json({ ok: true, ...result });
+  }));
+
+  // UC09: Admin từ chối phê duyệt (Admin only - Actor: Minh)
+  app.post("/api/projects/:id/reject", authMiddleware, requireAdmin, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const reason = req.body?.reason || "Admin từ chối phê duyệt";
+    await rejectQuotation(project, user, { reason });
+
+    io.to(`project:${project.id}`).emit("approval.updated", {
+      projectId: project.id,
+      decision: "REJECTED",
+      rejectedBy: user.username,
+      reason,
+    });
+    io.to(`project:${project.id}`).emit("status.updated", {
+      projectId: project.id,
+      status: "dang_lam",
+      updatedBy: user.username,
+    });
+
+    res.json({ ok: true, decision: "REJECTED", message: "Đã từ chối phê duyệt và trả về trạng thái đang làm" });
+  }));
+
+  // UC21: Admin kiểm toán toàn bộ vết sửa đổi toàn hệ thống (Admin only)
+  app.get("/api/audit/edits", authMiddleware, requireAdmin, (req, res) => {
+    const user = req.user!;
+    const filter = {
+      projectId: req.query.projectId as string,
+      userId: req.query.userId as string,
+      sheet: req.query.sheet as string,
+      cell: req.query.cell as string,
+      from: req.query.from as string,
+      to: req.query.to as string,
+      page: req.query.page ? Number(req.query.page) : undefined,
+      limit: req.query.limit ? Number(req.query.limit) : undefined,
+    };
+    const result = queryGlobalEdits(user, filter);
+    res.json(result);
+  });
 
   // Lấy cấu hình các vùng đã bị vô hiệu hóa (disabled_ranges - UC04 Tình huống 10)
   app.get("/api/projects/:id/disabled-ranges", authMiddleware, (req, res) => {
@@ -1271,7 +1511,7 @@ async function startServer() {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
-    if (user.role !== "admin" && user.role !== "manager" && isProjectLocked(project.trang_thai)) {
+    if (user.role !== "admin" && isProjectMutationLocked(project)) {
       return res.status(403).json({ error: "Báo giá đã bị khóa, không thể chỉnh sửa." });
     }
 
@@ -1395,7 +1635,7 @@ async function startServer() {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
-    if (user.role !== "admin" && user.role !== "manager" && isProjectLocked(project.trang_thai)) {
+    if (user.role !== "admin" && isProjectMutationLocked(project)) {
       return res.status(403).json({ error: "Báo giá đã bị khóa, không thể chỉnh sửa." });
     }
 

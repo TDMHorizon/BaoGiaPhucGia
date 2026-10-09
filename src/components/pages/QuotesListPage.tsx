@@ -20,6 +20,7 @@ import {
   FiLayers,
   FiX,
   FiCheckCircle,
+  FiArchive,
 } from "react-icons/fi";
 import { RiBuilding4Line, RiFileExcel2Line } from "react-icons/ri";
 
@@ -127,6 +128,17 @@ export const QuotesListPage: React.FC = () => {
       loadData();
     } catch (e: any) {
       toast.error(e?.message || "Không thể xóa dự án");
+    }
+  };
+
+  const handleArchive = async (id: string, name: string) => {
+    if (!window.confirm(`Bạn có chắc muốn chuyển báo giá "${name}" vào danh sách lưu trữ lâu dài không?`)) return;
+    try {
+      await api.archiveProject(id);
+      toast.success(`Đã lưu trữ báo giá "${name}" (UC11)`);
+      loadData();
+    } catch (e: any) {
+      toast.error(e?.message || "Không thể lưu trữ báo giá");
     }
   };
 
@@ -285,16 +297,28 @@ export const QuotesListPage: React.FC = () => {
 
                 {/* Actions Footer */}
                 <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
-                  {isAdmin && (
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(p.id, p.name)}
-                      className="rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600 transition-colors"
-                      title="Xóa vào thùng rác"
-                    >
-                      <FiTrash2 className="h-4 w-4" />
-                    </button>
-                  )}
+                  <div className="flex items-center gap-1">
+                    {(isAdmin || isManager || (user?.role === "user" && p.trangThai === "nhap" && (p.nguoiPhuTrachId === user?.id || p.nguoi_phu_trach_id === user?.id))) && (
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(p.id, p.name)}
+                        className="rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600 transition-colors"
+                        title="Xóa vào thùng rác (UC11)"
+                      >
+                        <FiTrash2 className="h-4 w-4" />
+                      </button>
+                    )}
+                    {(isAdmin || isManager) && (
+                      <button
+                        type="button"
+                        onClick={() => handleArchive(p.id, p.name)}
+                        className="rounded-lg p-2 text-slate-400 hover:bg-amber-50 hover:text-amber-600 transition-colors"
+                        title="Lưu trữ báo giá (UC11)"
+                      >
+                        <FiArchive className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
 
                   <Link
                     to={`/quotes/${p.id}/editor`}

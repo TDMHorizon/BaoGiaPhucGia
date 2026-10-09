@@ -21,6 +21,7 @@ import { toast } from "sonner";
 import { api } from "../../lib/api";
 import { formatVND, numberToVietnameseWords, DEFAULT_SURVEY_ITEMS } from "../../lib/quote-calculator";
 import { isLockedStatus } from "../../lib/constants";
+import { FinancialReviewPanel } from "../../features/reviews/FinancialReviewPanel";
 
 interface CellDetails {
   sheetName: string;
@@ -100,7 +101,7 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
   const isManager = userRole === "manager";
   const canEditFinancial = isAdmin || isManager;
 
-  const [activeTab, setActiveTab] = useState<"cell" | "permissions" | "members" | "history" | "structure" | "finance">("cell");
+  const [activeTab, setActiveTab] = useState<"cell" | "permissions" | "members" | "history" | "structure" | "finance" | "review">("cell");
   const [editingRange, setEditingRange] = useState<string>(editableRanges[currentSheet] || "");
   const [isSavingRange, setIsSavingRange] = useState(false);
 
@@ -374,6 +375,18 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
           title="Quản lý Giờ làm thêm OT & Tài chính báo giá (UC06, UC05)"
         >
           Tài chính & OT
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("review")}
+          className={`flex-1 min-w-[70px] rounded-md py-1.5 px-1 font-semibold text-center transition-all ${
+            activeTab === "review"
+              ? "bg-white text-indigo-600 shadow-xs"
+              : "text-slate-500 hover:text-slate-800"
+          }`}
+          title="Thẩm định Kế toán & Phê duyệt Admin (UC08, UC09, UC10)"
+        >
+          Xét duyệt
         </button>
         <button
           type="button"
@@ -1288,6 +1301,16 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
               )}
             </button>
           </div>
+        )}
+
+        {/* Tab 7: Review & Approval (UC08, UC09, UC10) */}
+        {activeTab === "review" && (
+          <FinancialReviewPanel
+            projectId={projectId}
+            userRole={userRole}
+            project={project}
+            onRefreshData={onRefreshData}
+          />
         )}
       </div>
     </div>

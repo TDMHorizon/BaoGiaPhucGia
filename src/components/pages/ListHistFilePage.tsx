@@ -10,6 +10,7 @@ import {
   Search,
   ShieldCheck,
   Table,
+  Trash2,
   X,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
@@ -123,6 +124,25 @@ export function ListHistFilePage() {
       toast.error(error.message || "Khôi phục file thất bại");
     } finally {
       setRestoringId(null);
+    }
+  };
+
+  const handlePermanentDelete = async (project: DeletedProject) => {
+    if (
+      !window.confirm(
+        `CẢNH BÁO: Bạn có chắc chắn muốn XÓA VĨNH VIỄN báo giá "${project.name}" (UC11)?\nToàn bộ dữ liệu lịch sử và tệp đính kèm sẽ bị xóa sạch khỏi máy chủ và không thể khôi phục!`
+      )
+    )
+      return;
+    try {
+      await api.permanentDeleteProject(project.id);
+      setProjects((current) => current.filter((item) => item.id !== project.id));
+      if (previewProject?.id === project.id) {
+        closePreview();
+      }
+      toast.success(`Đã xóa vĩnh viễn ${project.name} (UC11)`);
+    } catch (error: any) {
+      toast.error(error.message || "Xóa vĩnh viễn thất bại");
     }
   };
 
@@ -304,6 +324,19 @@ export function ListHistFilePage() {
                                   <RotateCcw className="h-3.5 w-3.5" />
                                   {restoringId === project.id ? "Đang khôi phục..." : "Khôi phục"}
                                 </Button>
+                                {user?.role === "admin" && (
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="icon"
+                                    onClick={() => handlePermanentDelete(project)}
+                                    aria-label={`Xóa vĩnh viễn ${project.name}`}
+                                    title="Xóa vĩnh viễn khỏi máy chủ (UC11)"
+                                    className="border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                )}
                               </div>
                             </td>
                           </tr>

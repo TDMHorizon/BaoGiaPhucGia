@@ -7,6 +7,7 @@ import { QuotesListPage } from "./components/pages/QuotesListPage";
 import { TemplatesPage } from "./components/pages/TemplatesPage";
 import { UpdateProfile } from "./components/pages/UpdateProfile";
 import { ListHistFilePage } from "./components/pages/ListHistFilePage";
+import { GlobalEditsAuditPage } from "./features/audits/GlobalEditsAuditPage";
 
 import { HomePage } from "./components/pages/HomePage";
 
@@ -18,6 +19,7 @@ export const ROUTES = {
   managementRevenue: "/management/revenue",
   managementUsers: "/management/users",
   managementRoles: "/management/roles",
+  managementAuditEdits: "/management/audit-edits",
   quotes: "/quotes",
   quoteEditor: "/quotes/:projectId/editor",
   templates: "/templates",
@@ -142,6 +144,10 @@ export const router = createBrowserRouter([
   {
     path: ROUTES.managementRoles,
     Component: ManagementRoute,
+  },
+  {
+    path: ROUTES.managementAuditEdits,
+    Component: GlobalEditsAuditPage,
   },
 
   // Quotes & UC05 Editor Routes
