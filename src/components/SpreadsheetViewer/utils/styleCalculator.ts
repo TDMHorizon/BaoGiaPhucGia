@@ -7,7 +7,6 @@ interface ComputeCellStylesOptions {
   r: number;
   c: number;
   isEditable: boolean;
-  isInEditableRange?: boolean;
   isSelected: boolean;
   selectedColor?: string; // Color when selected
   mergeInfo?: MergeInfo;
@@ -23,7 +22,7 @@ export interface CellUIStyles {
 }
 
 export function computeCellUIStyles(opts: ComputeCellStylesOptions): CellUIStyles {
-  const { ejWs, r, c, isEditable, isInEditableRange, isSelected, selectedColor, mergeInfo, colWidths } = opts;
+  const { ejWs, r, c, isEditable, isSelected, selectedColor, mergeInfo, colWidths } = opts;
 
   if (mergeInfo?.shouldSkip) {
     return {
@@ -49,11 +48,9 @@ export function computeCellUIStyles(opts: ComputeCellStylesOptions): CellUIStyle
   const shouldTruncate = totalWidth < 120;
 
   let baseBgColor = cellStyle.fillColor || "transparent";
-  if (isInEditableRange) {
-    // Vùng ô phân quyền cho nhân viên: hiển thị màu xanh lá pastel bền vững
-    if (baseBgColor === "transparent" || baseBgColor === "#ffffff") {
-      baseBgColor = "#dcfce7";
-    }
+  if (baseBgColor === "transparent" || baseBgColor === "#ffffff") {
+    // isEditable highlight
+    baseBgColor = isEditable ? "#ecfdf5" : "transparent";
   }
 
   const defaultSelectedColor = "rgba(191, 219, 254, 0.5)"; // Blue for user dashboard
@@ -65,18 +62,6 @@ export function computeCellUIStyles(opts: ComputeCellStylesOptions): CellUIStyle
     width: `${totalWidth}px`,
     minWidth: `${totalWidth}px`,
     maxWidth: `${totalWidth}px`,
-    ...(isInEditableRange && !isSelected
-      ? {
-          outline: "1.5px dashed #16a34a",
-          outlineOffset: "-1.5px",
-        }
-      : {}),
-    ...(isSelected
-      ? {
-          outline: "2px solid #6366f1",
-          outlineOffset: "-2px",
-        }
-      : {}),
   };
 
   const spanStyle: React.CSSProperties = {

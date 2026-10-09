@@ -1,13 +1,10 @@
-import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useState, useEffect, useRef } from "react";
 import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
-import { parseExcel, getSheetData, applyEditsToWorkbook, downloadBase64File, generateExcelBase64 } from "../lib/excel";
+import { parseExcel, getSheetData, applyEditsToWorkbook } from "../lib/excel";
 import { isCellInRange } from "../lib/utils-excel";
-import { loadExcelJSWorkbook, updateMergedCellInExcelJS, workbookToBase64 } from "../lib/exceljs-helper";
-import { getSocket, joinProjectRoom, leaveProjectRoom, emitCellFocus, emitCellBlur } from "../lib/socket";
+import { loadExcelJSWorkbook, updateMergedCellInExcelJS } from "../lib/exceljs-helper";
 import { SpreadsheetViewer } from "./SpreadsheetViewer";
-import { ActiveEditor } from "./SpreadsheetViewer/components/Cell";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
@@ -15,15 +12,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogClose } from "./ui/dialog";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
-import { FolderOpen, Download, Printer, Search } from "lucide-react";
+import { FolderOpen, Search } from "lucide-react";
 import { StatusBadge } from "./StatusBadge";
 import { StatusWorkflow } from "./StatusWorkflow";
 import { isLockedStatus, TRANG_THAI_LABELS, type TrangThai } from "../lib/constants";
-import { printProjectAsPdf } from "../lib/printPdf";
 import { UserLayout } from "../layout/UserLayout";
 import { UserHome } from "./pages/UserHome";
-import { VisualConflictResolverModal, type ConflictInfo } from "./VisualConflictResolverModal";
-import { ROUTES } from "../router";
+import { ProjectWriteQueue } from "../lib/project-write-queue";
 
 function getEditableRange(project: any, sheetName: string): string {
   if (!project?.editableRanges) return "";
@@ -38,9 +33,32 @@ function getEditableRange(project: any, sheetName: string): string {
   }
 }
 
+const DRAFT_KEY = (id: string) => `baogia_draft_user_${id}`;
+const loadDraft = (id: string): any[] => {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY(id));
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+};
+const saveDraftToStorage = (id: string, edits: any[]) => {
+  try {
+    localStorage.setItem(DRAFT_KEY(id), JSON.stringify(edits));
+  } catch {
+    // ignore
+  }
+};
+const clearDraftFromStorage = (id: string) => {
+  try {
+    localStorage.removeItem(DRAFT_KEY(id));
+  } catch {
+    // ignore
+  }
+};
+
 export function UserDashboard() {
   const { user, logout } = useAuth();
-  const navigate = useNavigate();
   const [projects, setProjects] = useState<any[]>([]);
   const [selectedProject, setSelectedProject] = useState<any>(null);
   const [workbook, setWorkbook] = useState<XLSX.WorkBook | null>(null);
@@ -48,12 +66,11 @@ export function UserDashboard() {
   const [sheetData, setSheetData] = useState<any[][]>([]);
   const [activeSheet, setActiveSheet] = useState<string>("");
   const [edits, setEdits] = useState<any[]>([]);
-  const [cellRevisions, setCellRevisions] = useState<Record<string, number>>({});
-  const [conflictInfo, setConflictInfo] = useState<ConflictInfo | null>(null);
+  const revisionByProject = useRef(new Map<string, number>());
+  const writeQueue = useRef(new ProjectWriteQueue());
   const [selectedColumn, setSelectedColumn] = useState<number | null>(null);
-  const [disabledRanges, setDisabledRanges] = useState<any>({});
-  const [activeEditors, setActiveEditors] = useState<Record<string, ActiveEditor>>({});
-  const [focusedCell, setFocusedCell] = useState<{ sheetName: string; r: number; c: number; cell: string } | null>(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const pendingEditsRef = useRef<any[]>([]);
 
   const [searchQ, setSearchQ] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
@@ -71,19 +88,10 @@ export function UserDashboard() {
     loadProjects();
   }, [searchQ, filterStatus]);
 
-
   const loadProjects = async () => {
     try {
-      const data = await api.getProjectByUserId();
-
-      const query = searchQ.trim().toLowerCase();
-      const filteredData = data.filter((project: any) => {
-        if (filterStatus && project.trangThai !== filterStatus) return false;
-        if (!query) return true;
-        return `${project.name} ${project.soBaoGia || ""} ${project.tenKhachHang || ""} ${project.ghiChu || ""}`.toLowerCase().includes(query);
-      });
-
-      setProjects(filteredData);
+      const data = await api.getProjects({ q: searchQ || undefined, status: filterStatus || undefined });
+      setProjects(data);
     } catch (e: any) {
       toast.error(e.message || "Không tải được danh sách");
     }
@@ -93,23 +101,45 @@ export function UserDashboard() {
     try {
       const project = await api.getProject(id);
       if (!project.fileBase64) throw new Error("Báo giá chưa có tệp Excel.");
+      revisionByProject.current.set(id, project.version);
+
+      const permissions = await api.getMyProjectPermissions(id);
+      const editableRanges: Record<string, string[]> = {};
+      for (const grant of permissions.grants) {
+        if (!grant.canEdit) continue;
+        (editableRanges[grant.sheetName] ??= []).push(grant.rangeRef);
+      }
+      const projectWithPermissions = {
+        ...project,
+        editableRanges: Object.fromEntries(
+          Object.entries(editableRanges).map(([sheetName, ranges]) => [sheetName, ranges.join(",")]),
+        ),
+      };
 
       const wb = await parseExcel(project.fileBase64);
       const projectEdits = await api.getEdits(id);
-      const updatedWb = applyEditsToWorkbook(wb, projectEdits);
+      const updatedWb = wb;
 
-      setSelectedProject(project);
-      setDisabledRanges(project.disabledRanges || {});
+      const draft = loadDraft(id);
+      pendingEditsRef.current = draft;
+      setHasUnsavedChanges(draft.length > 0);
+
+      if (draft.length > 0) {
+        applyEditsToWorkbook(updatedWb, draft);
+        toast.info(`Đã khôi phục ${draft.length} thay đổi chưa lưu từ bản nháp.`);
+      }
+
+      setSelectedProject(projectWithPermissions);
       setEdits(projectEdits);
       setWorkbook(updatedWb);
 
       const ejWb = await loadExcelJSWorkbook(project.fileBase64);
-      projectEdits.forEach((edit: any) => {
-        const ws = ejWb.getWorksheet(edit.sheetName);
-        if (ws) {
-          updateMergedCellInExcelJS(ws, edit.cell, edit.newValue);
-        }
-      });
+      if (ejWb && draft.length > 0) {
+        draft.forEach(d => {
+          const ws = ejWb.getWorksheet(d.sheetName);
+          if (ws) updateMergedCellInExcelJS(ws, d.cell, d.newValue);
+        });
+      }
       setExceljsWorkbook(ejWb);
 
       if (updatedWb.SheetNames.length > 0) {
@@ -126,239 +156,6 @@ export function UserDashboard() {
     }
   };
 
-  // Realtime Socket.IO sync (UC07, UC19)
-  useEffect(() => {
-    if (!selectedProject?.id) return;
-    joinProjectRoom(selectedProject.id);
-    const s = getSocket();
-
-    const handleCellUpdated = (payload: any) => {
-      if (payload.projectId !== selectedProject.id) return;
-      setCellRevisions((prev) => ({
-        ...prev,
-        [`${payload.sheetName}!${payload.cell}`]: payload.revision,
-      }));
-
-      setEdits((prev) => [...prev, payload]);
-
-      if (workbook) {
-        applyEditsToWorkbook(workbook, [payload]);
-      }
-
-      if (exceljsWorkbook) {
-        try {
-          const ws = exceljsWorkbook.getWorksheet(payload.sheetName);
-          if (ws) updateMergedCellInExcelJS(ws, payload.cell, payload.newValue);
-        } catch {
-          /* ignore */
-        }
-      }
-
-      if (payload.sheetName === activeSheet) {
-        const parsed = XLSX.utils.decode_cell(payload.cell);
-        setSheetData((prev) => {
-          const copy = [...prev];
-          if (!copy[parsed.r]) copy[parsed.r] = [];
-          else copy[parsed.r] = [...copy[parsed.r]];
-          copy[parsed.r][parsed.c] = payload.newValue;
-          return copy;
-        });
-      }
-
-      if (payload.userId !== user?.id) {
-        // Dọn dẹp indicator sửa ô của peer
-        setActiveEditors((prev) => {
-          const next = { ...prev };
-          delete next[`${payload.sheetName}!${payload.cell}`];
-          delete next[payload.cell];
-          return next;
-        });
-
-        // UC07 - Tình huống 6: Khi người sửa sau chưa kịp sửa mà ô đã đổi giá trị của người trước
-        if (focusedCell?.sheetName === payload.sheetName && focusedCell?.cell === payload.cell) {
-          toast.warning(
-            `⚠️ Dữ liệu ô ${payload.cell} bạn đang chuẩn bị sửa vừa được ${payload.updatedBy} cập nhật giá trị mới: "${payload.newValue}"!`,
-            { duration: 8000 }
-          );
-        } else {
-          // UC07 - Tình huống 5: Ô khác vừa được người khác cập nhật xong
-          toast.info(`Người dùng ${payload.updatedBy} vừa cập nhật ô ${payload.cell} (${payload.sheetName}): "${payload.newValue}"`, {
-            duration: 5000,
-          });
-        }
-      }
-    };
-
-    // UC07 - Tình huống 5: Hiển thị realtime ô nhân viên khác đang sửa
-    const handleCellFocused = (payload: any) => {
-      if (payload?.projectId !== selectedProject.id) return;
-      if (payload?.user?.id === user?.id) return;
-      const keyFull = `${payload.sheetName}!${payload.cell}`;
-      const keyShort = payload.cell;
-      setActiveEditors((prev) => ({
-        ...prev,
-        [keyFull]: {
-          userId: payload.user.id,
-          username: payload.user.username,
-          color: payload.user.color || "#6366f1",
-        },
-        ...(payload.sheetName === activeSheet
-          ? {
-              [keyShort]: {
-                userId: payload.user.id,
-                username: payload.user.username,
-                color: payload.user.color || "#6366f1",
-              },
-            }
-          : {}),
-      }));
-    };
-
-    const handleCellBlurred = (payload: any) => {
-      if (payload?.projectId !== selectedProject.id) return;
-      const keyFull = `${payload.sheetName}!${payload.cell}`;
-      const keyShort = payload.cell;
-      setActiveEditors((prev) => {
-        const next = { ...prev };
-        delete next[keyFull];
-        delete next[keyShort];
-        return next;
-      });
-    };
-
-    // UC07 - Tình huống 3 & 7: Khi nhân viên bị xóa phân công hoặc thu hồi quyền
-    const handleMembershipRevoked = (payload: any) => {
-      if (
-        payload?.projectId === selectedProject.id &&
-        (payload?.userId === user?.id || payload?.removedUserIds?.includes(user?.id))
-      ) {
-        toast.error(payload.message || "Bạn không còn được phân công trong files báo giá này! Đang quay về trang tổng quan...", {
-          duration: 7000,
-        });
-        setSelectedProject(null);
-        setWorkbook(null);
-        setExceljsWorkbook(null);
-        loadProjects();
-      }
-    };
-
-    // UC19 - Tình huống 3: Khi tài khoản bị Admin khóa
-    const handleAccountLocked = (payload: any) => {
-      if (payload?.userId === user?.id) {
-        toast.error(payload.message || "Tài khoản nhân viên của bạn đã bị khoá. Vui lòng liên hệ Admin để xử lý!", {
-          duration: 8000,
-        });
-        setSelectedProject(null);
-        setWorkbook(null);
-        setExceljsWorkbook(null);
-      }
-    };
-
-    const handleRangesUpdated = (payload: any) => {
-      if (payload.projectId === selectedProject.id) {
-        setSelectedProject((prev: any) => (prev ? { ...prev, editableRanges: payload.editableRanges } : null));
-        toast.info("Phạm vi quyền sửa của báo giá vừa được cập nhật.");
-      }
-    };
-
-    const handleStatusUpdated = (payload: any) => {
-      if (payload.projectId === selectedProject.id) {
-        setSelectedProject((prev: any) => (prev ? { ...prev, trangThai: payload.status } : null));
-        toast.info(`Trạng thái báo giá đã chuyển sang: ${TRANG_THAI_LABELS[payload.status as TrangThai] || payload.status}`);
-      }
-    };
-
-    // UC04 - Tình huống 10: Admin vô hiệu hóa logic ô, dòng, cột
-    const handleRangeDisabled = (payload: any) => {
-      if (payload?.projectId !== selectedProject.id) return;
-      const newConfig = payload.disabledRanges || {};
-      setDisabledRanges(newConfig);
-      setSelectedProject((prev: any) => (prev ? { ...prev, disabledRanges: newConfig } : null));
-
-      if (focusedCell && focusedCell.sheetName === payload.sheetName) {
-        const { cell, r } = focusedCell;
-        const coord = XLSX.utils.decode_cell(cell);
-        const colLetter = XLSX.utils.encode_col(coord.c);
-        let hit = false;
-        if (payload.type === "CELL" && String(payload.target).trim().toUpperCase() === cell.trim().toUpperCase()) hit = true;
-        if (payload.type === "ROW" && Number(payload.target) === (r + 1)) hit = true;
-        if (payload.type === "COLUMN" && String(payload.target).trim().toUpperCase() === colLetter.trim().toUpperCase()) hit = true;
-
-        if (hit) {
-          toast.error(`Ô ${cell} vừa được Admin vô hiệu hóa. Bạn không thể tiếp tục chỉnh sửa ô này! Vui lòng chuyển sang những ô khác theo phân công.`, {
-            duration: 8000,
-          });
-          setFocusedCell(null);
-        } else {
-          toast.info(`Admin vừa vô hiệu hóa ${payload.type === 'ROW' ? 'dòng ' + payload.target : payload.type === 'COLUMN' ? 'cột ' + payload.target : 'ô ' + payload.target} trên sheet "${payload.sheetName}".`);
-        }
-      } else {
-        toast.info(`Admin vừa vô hiệu hóa ${payload.type === 'ROW' ? 'dòng ' + payload.target : payload.type === 'COLUMN' ? 'cột ' + payload.target : 'ô ' + payload.target} trên sheet "${payload.sheetName}".`);
-      }
-    };
-
-    const handleRangeEnabled = (payload: any) => {
-      if (payload?.projectId !== selectedProject.id) return;
-      const newConfig = payload.disabledRanges || {};
-      setDisabledRanges(newConfig);
-      setSelectedProject((prev: any) => (prev ? { ...prev, disabledRanges: newConfig } : null));
-      toast.info(`Admin vừa khôi phục ${payload.type === 'ROW' ? 'dòng ' + payload.target : payload.type === 'COLUMN' ? 'cột ' + payload.target : 'ô ' + payload.target} trên sheet "${payload.sheetName}".`);
-    };
-
-    s.on("cell.updated", handleCellUpdated);
-    s.on("cell_focused", handleCellFocused);
-    s.on("cell_blurred", handleCellBlurred);
-    s.on("project.membership_revoked", handleMembershipRevoked);
-    s.on("account.locked", handleAccountLocked);
-    s.on("ranges.updated", handleRangesUpdated);
-    s.on("status.updated", handleStatusUpdated);
-    s.on("range.disabled", handleRangeDisabled);
-    s.on("project:range:disabled", handleRangeDisabled);
-    s.on("range.enabled", handleRangeEnabled);
-    s.on("project:range:enabled", handleRangeEnabled);
-
-    return () => {
-      s.off("cell.updated", handleCellUpdated);
-      s.off("cell_focused", handleCellFocused);
-      s.off("cell_blurred", handleCellBlurred);
-      s.off("project.membership_revoked", handleMembershipRevoked);
-      s.off("account.locked", handleAccountLocked);
-      s.off("ranges.updated", handleRangesUpdated);
-      s.off("status.updated", handleStatusUpdated);
-      s.off("range.disabled", handleRangeDisabled);
-      s.off("project:range:disabled", handleRangeDisabled);
-      s.off("range.enabled", handleRangeEnabled);
-      s.off("project:range:enabled", handleRangeEnabled);
-      leaveProjectRoom(selectedProject.id);
-    };
-  }, [selectedProject?.id, activeSheet, workbook, exceljsWorkbook, user?.id, focusedCell]);
-
-  const handleCellFocus = (r: number, c: number, cellRef: string) => {
-    if (!selectedProject || !user) return;
-    setFocusedCell({ sheetName: activeSheet, r, c, cell: cellRef });
-    emitCellFocus({
-      projectId: selectedProject.id,
-      sheetName: activeSheet,
-      r,
-      c,
-      cell: cellRef,
-      user: { id: user.id, username: user.username, color: "#6366f1" },
-    });
-  };
-
-  const handleCellBlur = (r: number, c: number, cellRef: string) => {
-    if (!selectedProject || !user) return;
-    setFocusedCell(null);
-    emitCellBlur({
-      projectId: selectedProject.id,
-      sheetName: activeSheet,
-      r,
-      c,
-      cell: cellRef,
-      userId: user.id,
-    });
-  };
-
   const handleTabChange = (sheetName: string, wb = workbook) => {
     if (!wb) return;
     setActiveSheet(sheetName);
@@ -367,8 +164,21 @@ export function UserDashboard() {
     setSelectedColumn(null);
   };
 
+  const saveCellEdit = (projectId: string, editData: Record<string, unknown>) =>
+    writeQueue.current.run(projectId, async () => {
+      const baseRevision = revisionByProject.current.get(projectId);
+      if (baseRevision === undefined) throw new Error("Workbook revision is unavailable. Reload the project.");
+
+      const savedEdit = await api.saveEdit(projectId, editData, baseRevision);
+      revisionByProject.current.set(projectId, savedEdit.revision);
+      setSelectedProject((current: any) =>
+        current?.id === projectId ? { ...current, version: savedEdit.revision } : current,
+      );
+      return savedEdit;
+    });
+
   const handleCellChange = async (r: number, c: number, newValue: string) => {
-    if (!selectedProject || !workbook) return;
+    if (!selectedProject || !workbook || !exceljsWorkbook) return;
     if (locked) {
       toast.error("Báo giá đã khóa, không thể chỉnh sửa.");
       return;
@@ -386,155 +196,75 @@ export function UserDashboard() {
     const oldValue = cellObj && cellObj.v !== undefined && cellObj.v !== null ? String(cellObj.v) : "";
     if (oldValue === newValue) return;
 
-    const expectedRevision = cellRevisions[`${activeSheet}!${cellRef}`] || 0;
+    const projectId = selectedProject.id;
+    const editData = {
+      userId: user?.id,
+      username: user?.username,
+      sheetName: activeSheet,
+      cell: cellRef,
+      oldValue,
+      newValue,
+    };
 
-    const newData = [...sheetData];
-    if (!newData[r]) newData[r] = [];
-    else newData[r] = [...newData[r]];
-    newData[r][c] = newValue;
-    setSheetData(newData);
+    // Buffer locally
+    const existingIdx = pendingEditsRef.current.findIndex((e: any) => e.sheetName === activeSheet && e.cell === cellRef);
+    if (existingIdx >= 0) {
+      pendingEditsRef.current[existingIdx] = { ...pendingEditsRef.current[existingIdx], newValue };
+    } else {
+      pendingEditsRef.current.push(editData);
+    }
+    saveDraftToStorage(projectId, pendingEditsRef.current);
+    setHasUnsavedChanges(true);
+
+    applyEditsToWorkbook(workbook, [editData]);
+    setSheetData((current) => {
+      const updated = [...current];
+      if (!updated[r]) updated[r] = [];
+      else updated[r] = [...updated[r]];
+      updated[r][c] = newValue;
+      return updated;
+    });
+
+    const ejWs = exceljsWorkbook.getWorksheet(activeSheet);
+    if (ejWs) {
+      updateMergedCellInExcelJS(ejWs, cellRef, newValue);
+    }
+  };
+
+  const handleSave = async () => {
+    if (!selectedProject) return;
+    const projectId = selectedProject.id;
+    const editsToSave = [...pendingEditsRef.current];
+    if (editsToSave.length === 0) {
+      toast.info("Tất cả thay đổi đã được lưu.");
+      return;
+    }
 
     try {
-      const editData = {
-        userId: user?.id,
-        username: user?.username,
-        sheetName: activeSheet,
-        cell: cellRef,
-        oldValue,
-        newValue,
-      };
-      const savedEdit = await api.saveEdit(selectedProject.id, editData, expectedRevision);
-      setEdits((prev) => [...prev, savedEdit]);
-      setCellRevisions((prev) => ({ ...prev, [`${activeSheet}!${cellRef}`]: savedEdit.revision }));
-
-      applyEditsToWorkbook(workbook, [savedEdit]);
-
-      if (exceljsWorkbook) {
-        try {
-          const ejWs = exceljsWorkbook.getWorksheet(activeSheet);
-          if (ejWs) {
-            updateMergedCellInExcelJS(ejWs, cellRef, newValue);
-          }
-        } catch (ejErr) {
-          console.warn("ExcelJS update cell skipped:", ejErr);
-        }
+      for (const editData of editsToSave) {
+        const savedEdit = await saveCellEdit(projectId, editData);
+        setEdits(prev => [...prev, savedEdit]);
       }
-
-      toast.success(newValue === "" ? `Đã xoá ô ${cellRef}` : `Đã lưu ô ${cellRef}`);
+      pendingEditsRef.current = [];
+      clearDraftFromStorage(projectId);
+      setHasUnsavedChanges(false);
+      toast.success(`Đã lưu thành công ${editsToSave.length} thay đổi!`);
     } catch (error: any) {
-      if (error.status === 409 || error.data?.conflict || error.message?.includes("Xung đột") || error.message?.includes("Conflict")) {
-        const conflictData = error.data || {};
-        const serverVal = conflictData.latestValue !== undefined ? String(conflictData.latestValue) : "";
-        const serverRev = typeof conflictData.latestRevision === "number" ? conflictData.latestRevision : (expectedRevision + 1);
-        const serverUser = conflictData.updatedBy || "người khác";
-
-        // Hoàn nguyên ô trên bảng tính về giá trị mới nhất của server
-        const revertedData = [...sheetData];
-        if (revertedData[r]) {
-          revertedData[r] = [...revertedData[r]];
-          revertedData[r][c] = serverVal;
-          setSheetData(revertedData);
-        }
-
-        // Cập nhật lại revision của ô từ server
-        setCellRevisions((prev) => ({ ...prev, [`${activeSheet}!${cellRef}`]: serverRev }));
-
-        // Bật Modal Giải Quyết Xung Đột Trực Quan 3 Cột (Chương 13 & 14)
-        setConflictInfo({
-          cell: cellRef,
-          sheetName: activeSheet,
-          serverValue: serverVal,
-          serverRevision: serverRev,
-          serverUpdatedBy: serverUser,
-          clientValue: newValue,
-          oldValue,
-        });
-
-        toast.error(`Xung đột đồng thời: Ô ${cellRef} vừa được ${serverUser} lưu giá trị khác. Vui lòng chọn cách hợp nhất!`);
-      } else if (
-        error.data?.code === "CELL_DISABLED" ||
-        (error.status === 403 && (error.message?.includes("vô hiệu hóa") || error.message?.includes("vô hiệu hoá")))
-      ) {
-        // UC04 - Tình huống 10: Backend từ chối vì ô đã bị Admin vô hiệu hóa
-        const revertedData = [...sheetData];
-        if (revertedData[r]) {
-          revertedData[r] = [...revertedData[r]];
-          revertedData[r][c] = oldValue;
-          setSheetData(revertedData);
-        }
-        toast.error(`Ô ${cellRef} vừa được Admin vô hiệu hóa. Bạn không thể tiếp tục chỉnh sửa ô này! Vui lòng chuyển sang những ô khác theo phân công.`, { duration: 8000 });
-      } else if (
-        error.status === 401 ||
-        error.data?.code === "ACCOUNT_LOCKED" ||
-        (error.message?.includes("khoá") && error.message?.includes("tài khoản")) ||
-        (error.message?.includes("khóa") && error.message?.includes("tài khoản"))
-      ) {
-        toast.error("Tài khoản nhân viên của bạn đã bị khoá. Vui lòng liên hệ Admin để xử lý!", { duration: 8000 });
-        setSelectedProject(null);
-        setWorkbook(null);
-        setExceljsWorkbook(null);
-      } else if (error.status === 403 && (error.message?.includes("phân công") || error.message?.includes("quyền"))) {
-        toast.error(error.message || "Bạn không còn được phân công hoặc không có quyền sửa trong báo giá này!", { duration: 7000 });
-        if (error.message?.includes("phân công")) {
-          setSelectedProject(null);
-          setWorkbook(null);
-          setExceljsWorkbook(null);
-          loadProjects();
-        }
-      } else {
-        const revertedData = [...sheetData];
-        if (revertedData[r]) {
-          revertedData[r] = [...revertedData[r]];
-          revertedData[r][c] = oldValue;
-          setSheetData(revertedData);
-        }
-        toast.error(error.message || "Lưu thất bại");
-      }
+      console.error("Save failed", error);
+      toast.error(error.message || "Lưu thất bại.");
     }
   };
 
-  const handleResolveConflict = async (chosenValue: string, expectedRevision: number) => {
-    if (!conflictInfo || !selectedProject || !workbook) return;
-    const { cell, sheetName, oldValue } = conflictInfo;
-    const coords = XLSX.utils.decode_cell(cell);
-
-    const newData = [...sheetData];
-    if (!newData[coords.r]) newData[coords.r] = [];
-    else newData[coords.r] = [...newData[coords.r]];
-    newData[coords.r][coords.c] = chosenValue;
-    setSheetData(newData);
-
-    try {
-      const editData = {
-        userId: user?.id,
-        username: user?.username,
-        sheetName,
-        cell,
-        oldValue: oldValue || "",
-        newValue: chosenValue,
-      };
-      const savedEdit = await api.saveEdit(selectedProject.id, editData, expectedRevision);
-      setEdits((prev) => [...prev, savedEdit]);
-      setCellRevisions((prev) => ({ ...prev, [`${sheetName}!${cell}`]: savedEdit.revision }));
-      applyEditsToWorkbook(workbook, [savedEdit]);
-
-      if (exceljsWorkbook) {
-        try {
-          const ejWs = exceljsWorkbook.getWorksheet(sheetName);
-          if (ejWs) {
-            updateMergedCellInExcelJS(ejWs, cell, chosenValue);
-          }
-        } catch (ejErr) {
-          console.warn("ExcelJS update cell skipped:", ejErr);
-        }
+  // Tự động lưu sau mỗi 60 giây nếu có thay đổi chưa lưu
+  useEffect(() => {
+    if (!selectedProject) return;
+    const interval = setInterval(() => {
+      if (pendingEditsRef.current.length > 0) {
+        handleSave();
       }
-      toast.success(`Đã hợp nhất và lưu giá trị ô ${cell}: "${chosenValue}"`);
-    } catch (err: any) {
-      toast.error(err.message || "Không thể lưu giá trị đã giải quyết xung đột.");
-    } finally {
-      setConflictInfo(null);
-    }
-  };
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [selectedProject?.id]);
 
   const handleSearchReplace = async () => {
     if (!searchQuery || !selectedProject || !workbook || !exceljsWorkbook) return;
@@ -546,25 +276,18 @@ export function UserDashboard() {
 
     let replacedCount = 0;
     const newEdits: any[] = [];
-    const newData = [...sheetData];
 
     const escapedSearchQuery = searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const searchRegex = new RegExp(escapedSearchQuery, matchCase ? 'g' : 'gi');
 
-    for (let r = 0; r < newData.length; r++) {
-      if (!newData[r]) continue;
-      let rowCopied = false;
-      for (let c = 0; c < newData[r].length; c++) {
-        const cellValue = String(newData[r][c] || "");
+    for (let r = 0; r < sheetData.length; r++) {
+      if (!sheetData[r]) continue;
+      for (let c = 0; c < sheetData[r].length; c++) {
+        const cellValue = String(sheetData[r][c] || "");
         if (cellValue.match(searchRegex)) {
           const cellRef = XLSX.utils.encode_cell({ r, c });
           if (isCellInRange(cellRef, rangeStr)) {
-            if (!rowCopied) {
-              newData[r] = [...newData[r]];
-              rowCopied = true;
-            }
             const newValue = cellValue.replace(searchRegex, replaceQuery);
-            newData[r][c] = newValue;
 
             newEdits.push({
               userId: user?.id,
@@ -581,98 +304,36 @@ export function UserDashboard() {
     }
 
     if (replacedCount > 0) {
-      setSheetData(newData);
+      let savedCount = 0;
       try {
-        // Tối ưu N+1 requests: Gửi toàn bộ thay thế trong 1 Batch atomic transaction
-        const savedEdits = await api.saveBatchEdits(selectedProject.id, newEdits);
-        setEdits((prev) => [...prev, ...savedEdits]);
-        applyEditsToWorkbook(workbook, savedEdits);
+        for (const edit of newEdits) {
+          const savedEdit = await saveCellEdit(selectedProject.id, edit);
+          const { r, c } = XLSX.utils.decode_cell(edit.cell);
+          setEdits(prev => [...prev, savedEdit]);
+          applyEditsToWorkbook(workbook, [savedEdit]);
+          setSheetData((current) => {
+            const updated = [...current];
+            if (!updated[r]) updated[r] = [];
+            else updated[r] = [...updated[r]];
+            updated[r][c] = edit.newValue;
+            return updated;
+          });
 
-        if (exceljsWorkbook) {
-          for (const edit of newEdits) {
-            try {
-              const ejWs = exceljsWorkbook.getWorksheet(edit.sheetName);
-              if (ejWs) {
-                updateMergedCellInExcelJS(ejWs, edit.cell, edit.newValue);
-              }
-            } catch (ejErr) {
-              // ignore
-            }
+          const ejWs = exceljsWorkbook.getWorksheet(edit.sheetName);
+          if (ejWs) {
+            updateMergedCellInExcelJS(ejWs, edit.cell, edit.newValue);
           }
+          savedCount++;
         }
-        toast.success(`Đã thay thế hàng loạt ${replacedCount} vị trí (lưu nguyên tử trong 1 Batch).`);
-      } catch (err: any) {
-        toast.error(err.message || "Lưu hàng loạt thất bại.");
+        toast.success(`Đã thay thế ${savedCount} vị trí.`);
+      } catch (error: any) {
+        toast.error(error.message || "Không thể lưu kết quả thay thế.");
+        if (savedCount > 0) {
+          toast.info(`Đã lưu ${savedCount}/${replacedCount} vị trí trước khi bị từ chối.`);
+        }
       }
     } else {
       toast.info("Không tìm thấy trong vùng được phép sửa.");
-    }
-  };
-
-  const handleExport = async () => {
-    if (!selectedProject || !workbook) return;
-    try {
-      if (exceljsWorkbook) {
-        try {
-          if (disabledRanges && typeof disabledRanges === "object") {
-            for (const [sName, cfg] of Object.entries(disabledRanges as any)) {
-              const ws = exceljsWorkbook.getWorksheet(sName);
-              if (!ws) continue;
-              const config = cfg as any;
-              const disabledFill: any = {
-                type: 'pattern',
-                pattern: 'solid',
-                fgColor: { argb: 'FF64748B' } // Slate 500
-              };
-              if (Array.isArray(config.rows)) {
-                for (const rNum of config.rows) {
-                  try {
-                    const row = ws.getRow(Number(rNum));
-                    if (row) {
-                      row.eachCell({ includeEmpty: true }, (cell) => {
-                        cell.fill = disabledFill;
-                      });
-                    }
-                  } catch {}
-                }
-              }
-              if (Array.isArray(config.columns)) {
-                for (const colLetter of config.columns) {
-                  try {
-                    const col = ws.getColumn(String(colLetter));
-                    if (col) {
-                      col.eachCell({ includeEmpty: true }, (cell) => {
-                        cell.fill = disabledFill;
-                      });
-                    }
-                  } catch {}
-                }
-              }
-              if (Array.isArray(config.cells)) {
-                for (const cellRef of config.cells) {
-                  try {
-                    const c = ws.getCell(String(cellRef));
-                    if (c) c.fill = disabledFill;
-                  } catch {}
-                }
-              }
-            }
-          }
-
-          const base64 = await workbookToBase64(exceljsWorkbook);
-          downloadBase64File(base64, selectedProject.name?.replace(/\.xlsx$/i, "") || "baogia");
-          toast.success("Đã tải Excel (đã áp dụng các ô bạn điền và vùng khóa). Bản gốc trên hệ thống không đổi.");
-          return;
-        } catch (ejErr) {
-          console.warn("ExcelJS export failed, falling back to XLSX engine:", ejErr);
-        }
-      }
-      const base64 = generateExcelBase64(workbook);
-      downloadBase64File(base64, selectedProject.name?.replace(/\.xlsx$/i, "") || "baogia");
-      toast.success("Đã tải Excel (đã áp dụng các ô bạn điền). Bản gốc trên hệ thống không đổi.");
-    } catch (e: any) {
-      console.error(e);
-      toast.error(e?.message || "Không thể xuất tệp Excel!");
     }
   };
 
@@ -685,7 +346,6 @@ export function UserDashboard() {
       onTabChange={setActiveTab}
       onMobileOpenChange={setShowMobileNav}
       onToggleNavigation={() => { if (window.innerWidth >= 768) setIsSidebarCollapsed(prev => !prev); else setShowMobileNav(true); }}
-      onProfile={() => navigate(ROUTES.profile)}
       onLogout={logout}
     >
     {activeTab === "dashboard" ? (
@@ -695,9 +355,12 @@ export function UserDashboard() {
         selectedProject={selectedProject}
         onSelectProject={handleSelectProject}
         onOpenProjects={() => setActiveTab("file")}
+        onOpenProject={(id) => {
+          handleSelectProject(id);
+          setActiveTab("file");
+        }}
       />
-    ) : (
-      <div className="flex h-full flex-col">
+    ) : <div className="flex h-full flex-col">
       {/* Top Ribbon */}
       <div className="bg-[#f3f2f1] flex flex-col shrink-0 border-b border-slate-300">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
@@ -751,24 +414,6 @@ export function UserDashboard() {
                 <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Tệp tin</div>
               </div>
 
-              {selectedProject && (
-                <>
-                  <div className="w-px h-14 bg-slate-200 mx-2" />
-                  <div className="flex flex-col items-center">
-                    <div className="flex items-center gap-1 h-14">
-                      <Button variant="ghost" onClick={handleExport} className="h-14 w-16 flex flex-col gap-1 rounded-sm hover:bg-emerald-50">
-                        <Download className="w-6 h-6 text-emerald-600" strokeWidth={1.5} />
-                        <span className="text-[10px] font-medium leading-none">Tải Excel</span>
-                      </Button>
-                      <Button variant="ghost" onClick={() => { if (!printProjectAsPdf(selectedProject, sheetData, activeSheet)) toast.error("Trình duyệt chặn cửa sổ in PDF"); }} className="h-14 w-16 flex flex-col gap-1 rounded-sm hover:bg-rose-50">
-                        <Printer className="w-6 h-6 text-rose-600" strokeWidth={1.5} />
-                        <span className="text-[10px] font-medium leading-none">Xuất PDF</span>
-                      </Button>
-                    </div>
-                    <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Xuất file</div>
-                  </div>
-                </>
-              )}
             </TabsContent>
 
             <TabsContent value="home" className="m-0 h-full flex items-start gap-4 pt-1 data-[state=inactive]:hidden w-full">
@@ -834,7 +479,7 @@ export function UserDashboard() {
             <p className="text-xs text-slate-500">Mở Danh sách Báo Giá ở thanh công cụ phía trên để bắt đầu.</p>
           </div>
         ) : (
-          <div className="flex-1 bg-white shadow-xl rounded-xl border border-slate-300 flex flex-col overflow-hidden">
+          <div className="flex-1 flex flex-col overflow-hidden">
             <div className="bg-slate-100 border-b flex px-2 pt-2 gap-1 overflow-x-auto shrink-0 custom-scrollbar">
               {workbook?.SheetNames.map(name => (
                 <button
@@ -853,14 +498,12 @@ export function UserDashboard() {
               activeSheet={activeSheet}
               mode="user"
               locked={locked}
-              editableRange={getEditableRange(selectedProject, activeSheet)}
+                editableRange={getEditableRange(selectedProject, activeSheet)}
               selectedColumn={selectedColumn}
-              disabledRanges={disabledRanges}
-              activeEditors={activeEditors}
               onColumnClick={(i) => setSelectedColumn(selectedColumn === i ? null : i)}
               onCellEdit={handleCellChange}
-              onCellFocus={handleCellFocus}
-              onCellBlur={handleCellBlur}
+              onSave={handleSave}
+              hasUnsavedChanges={hasUnsavedChanges}
             />
             {locked && (
               <div className="bg-amber-50 border-t border-amber-200 px-4 py-2 shrink-0 flex items-center justify-center text-amber-700 text-xs font-bold gap-2">
@@ -873,14 +516,7 @@ export function UserDashboard() {
           </div>
         )}
       </div>
-    </div>
-    )}
-      <VisualConflictResolverModal
-        isOpen={!!conflictInfo}
-        onClose={() => setConflictInfo(null)}
-        conflict={conflictInfo}
-        onResolve={handleResolveConflict}
-      />
+    </div>}
     </UserLayout>
   );
 };

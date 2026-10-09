@@ -60,8 +60,8 @@ export function Login() {
     }
   };
 
-  const handleQuickLogin = async (role: "admin" | "manager" | "user") => {
-    const defaultUser = role === "admin" ? "admin" : role === "manager" ? "manager" : "user";
+  const handleQuickLogin = async (role: "admin" | "user") => {
+    const defaultUser = role === "admin" ? "admin" : "user";
     const defaultPass = "password";
 
     setUsername(defaultUser);
@@ -72,10 +72,9 @@ export function Login() {
     try {
       const user = await api.login(defaultUser, defaultPass);
       login(user);
-      const roleLabel = role === "admin" ? "Quản trị" : role === "manager" ? "Quản lý" : "Nhân viên";
-      toast.success(`Đăng nhập nhanh thành công với quyền ${roleLabel}!`);
-    } catch (error: any) {
-      setErrorMessage(error.message || "Không thể thực hiện đăng nhập nhanh. Vui lòng thử lại.");
+      toast.success(`Đăng nhập nhanh thành công với quyền ${role === "admin" ? "Quản trị" : "Nhân viên"}!`);
+    } catch (error) {
+      setErrorMessage("Không thể thực hiện đăng nhập nhanh. Vui lòng thử lại.");
       toast.error("Đăng nhập nhanh thất bại!");
     } finally {
       setIsLoading(false);
@@ -199,7 +198,7 @@ export function Login() {
                 <div className="flex-grow border-t border-slate-200"></div>
               </div>
 
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 gap-3">
                 <button
                   type="button"
                   disabled={isLoading}

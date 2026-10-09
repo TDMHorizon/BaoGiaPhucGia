@@ -10,7 +10,6 @@ type UserLayoutProps = {
   onTabChange: (tab: string) => void;
   onMobileOpenChange: (open: boolean) => void;
   onToggleNavigation: () => void;
-  onProfile: () => void;
   onLogout: () => void;
   children: ReactNode;
 };
@@ -23,7 +22,6 @@ export function UserLayout({
   onTabChange,
   onMobileOpenChange,
   onToggleNavigation,
-  onProfile,
   onLogout,
   children,
 }: UserLayoutProps) {
@@ -49,7 +47,7 @@ export function UserLayout({
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-[72px] shrink-0 items-center justify-between gap-4 border-b border-blue-100 bg-white px-4 shadow-[0_1px_4px_rgba(15,75,145,0.06)] sm:px-6">
           <div className="flex min-w-0 items-center gap-3"><button type="button" onClick={onToggleNavigation} className="flex h-9 w-9 items-center justify-center rounded-lg border border-blue-100 bg-blue-50 text-[#0b4f9c] transition-colors hover:bg-blue-100" aria-label="Đóng hoặc mở điều hướng" title="Đóng hoặc mở điều hướng"><PanelLeftClose className="h-4 w-4" /></button><div className="min-w-0"><p className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#0b4f9c]">Không gian nhân viên</p><h1 className="truncate text-lg font-bold tracking-tight text-slate-900 sm:text-xl">Báo giá Phúc Gia</h1></div></div>
-          <div className="relative flex shrink-0 items-center gap-3"><span className="hidden text-xs font-medium text-slate-500 sm:inline">Xin chào, {username || "Nhân viên"}</span><button type="button" onClick={() => setIsProfileMenuOpen(prev => !prev)} className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-100 text-[#0b4f9c] transition-colors hover:bg-blue-200" aria-label="Mở menu tài khoản" aria-expanded={isProfileMenuOpen}><UserRound className="h-4 w-4" /></button>{isProfileMenuOpen && <div className="absolute right-0 top-11 z-50 w-48 rounded-lg border border-blue-100 bg-white p-1.5 shadow-lg"><button type="button" onClick={() => { setIsProfileMenuOpen(false); onProfile(); }} className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium text-slate-700 hover:bg-blue-50 hover:text-[#0b4f9c]"><UserRound className="h-4 w-4" /><span>Quản lý tài khoản</span></button><button type="button" onClick={onLogout} className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium text-slate-700 hover:bg-red-50 hover:text-red-600"><LogOut className="h-4 w-4" /><span>Đăng xuất</span></button></div>}</div>
+          <div className="relative flex shrink-0 items-center gap-3"><span className="hidden text-xs font-medium text-slate-500 sm:inline">Xin chào, {username || "Nhân viên"}</span><button type="button" onClick={() => setIsProfileMenuOpen(prev => !prev)} className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-100 text-[#0b4f9c] transition-colors hover:bg-blue-200" aria-label="Mở menu tài khoản" aria-expanded={isProfileMenuOpen}><UserRound className="h-4 w-4" /></button>{isProfileMenuOpen && <div className="absolute right-0 top-11 z-50 w-40 rounded-lg border border-blue-100 bg-white p-1.5 shadow-lg"><button type="button" onClick={onLogout} className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium text-slate-700 hover:bg-red-50 hover:text-red-600"><LogOut className="h-4 w-4" /><span>Đăng xuất</span></button></div>}</div>
         </header>
         <main className="min-h-0 flex-1 overflow-hidden">{children}</main>
       </div>
