@@ -302,10 +302,12 @@ export function applyDraftWatermarkToWorkbook(
     ws.headerFooter.oddFooter = `&R&"Arial,Italic"&10&K64748B Báo giá Phúc Gia - ${watermarkText} | Trang &P/&N`;
     ws.headerFooter.evenFooter = `&R&"Arial,Italic"&10&K64748B Báo giá Phúc Gia - ${watermarkText} | Trang &P/&N`;
 
-    // 4. Đảm bảo hiển thị lưới khi in và chế độ xem rõ ràng
+    // 4. Đảm bảo hiển thị lưới khi in và cấu hình trang A4 chuẩn (bắt buộc theo đặc tả UC17 [P1-14])
     if (!ws.pageSetup) {
       (ws as any).pageSetup = {};
     }
+    ws.pageSetup.paperSize = 9; // 9 = A4 paper size in Excel OpenXML
+    ws.pageSetup.fitToPage = true;
     ws.pageSetup.showGridLines = true;
   });
 }

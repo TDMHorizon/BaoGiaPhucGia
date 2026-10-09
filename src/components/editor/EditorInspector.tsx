@@ -19,7 +19,7 @@ import {
 } from "react-icons/fi";
 import { toast } from "sonner";
 import { api } from "../../lib/api";
-import { formatVND, numberToVietnameseWords } from "../../lib/quote-calculator";
+import { formatVND, numberToVietnameseWords, DEFAULT_SURVEY_ITEMS } from "../../lib/quote-calculator";
 import { isLockedStatus } from "../../lib/constants";
 
 interface CellDetails {
@@ -51,6 +51,7 @@ interface EditRecord {
   new_value?: string;
   newValue?: string;
   created_at?: string;
+  timestamp?: string;
 }
 
 interface EditorInspectorProps {
@@ -127,6 +128,26 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
     vatRateCell: project?.financialConfig?.cellMapping?.vatRateCell || "",
     discountCell: project?.financialConfig?.cellMapping?.discountCell || "",
   });
+
+  // [P0-02] Danh mục hạng mục công việc với đơn giá và số lượng
+  const [lineItems, setLineItems] = useState<Array<{
+    id: string;
+    code?: string;
+    name: string;
+    unit: string;
+    quantity: number;
+    unitPrice: number;
+    priceCell?: string;
+  }>>(() => {
+    if (Array.isArray(project?.financialConfig?.items) && project.financialConfig.items.length > 0) {
+      return project.financialConfig.items;
+    }
+    return DEFAULT_SURVEY_ITEMS.map((item, idx) => ({
+      ...item,
+      priceCell: `E${10 + idx}`,
+    }));
+  });
+
   const [isSavingFinance, setIsSavingFinance] = useState(false);
 
   // Sync state when project updates
@@ -140,6 +161,9 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
       setTravelAllowance(Number(project.financialConfig?.travelAllowance ?? 0));
       if (project.financialConfig?.cellMapping) {
         setCellMapping(project.financialConfig.cellMapping);
+      }
+      if (Array.isArray(project.financialConfig?.items) && project.financialConfig.items.length > 0) {
+        setLineItems(project.financialConfig.items);
       }
     }
   }, [project]);
@@ -237,9 +261,10 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
         }
       }
 
-      // 2. Cập nhật metadata dự án (projects table)
+      // 2. Cập nhật metadata dự án (projects table) kèm OCC revision
       const payload: any = {
         otHours: Number(otHours),
+        expectedFinanceRevision: project?.financeRevision,
       };
 
       if (canEditFinancial) {
@@ -248,6 +273,8 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
         payload.discountAmount = Number(discountAmount);
         payload.financialConfig = {
           ...(project?.financialConfig || {}),
+          items: lineItems,
+          itemsSubtotal: subTotalItems,
           equipmentAllowance: Number(equipmentAllowance),
           travelAllowance: Number(travelAllowance),
           cellMapping: {
@@ -273,18 +300,32 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
       }
       toast.success("Đã đồng bộ và lưu dữ liệu Tài chính & OT vào bảng tính thành công!");
     } catch (err: any) {
+      if (err?.status === 409 || err?.message?.includes("409")) {
+        toast.error("Xung đột đồng thời (OCC): Dữ liệu tài chính vừa được cập nhật bởi người khác! Vui lòng làm mới dữ liệu.");
+        onRefreshData?.();
+        return;
+      }
       toast.error(err?.message || "Lỗi lưu dữ liệu tài chính/OT");
     } finally {
       setIsSavingFinance(false);
     }
   };
 
-  // Calculations for summary card
-  const totalOtCost = (Number(otHours) || 0) * (Number(otRate) || 505000);
+  // [P1-10] Không bị fallback ngầm 505.000 khi otRate = 0
+  const effectiveOtRate =
+    otRate !== undefined && otRate !== null && !isNaN(Number(otRate)) ? Number(otRate) : 505000;
+  const totalOtCost = (Number(otHours) || 0) * effectiveOtRate;
   const totalAllowances = (Number(equipmentAllowance) || 0) + (Number(travelAllowance) || 0);
-  const totalBeforeVat = Math.max(0, totalOtCost + totalAllowances - (Number(discountAmount) || 0));
+
+  // [P0-02] & [P1-08]: QuoteFinancialSummary hợp nhất từ đơn giá hạng mục + OT + phụ cấp - chiết khấu
+  const subTotalItems = lineItems.reduce(
+    (sum, it) => sum + (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0),
+    0
+  );
+  const totalBase = subTotalItems + totalOtCost + totalAllowances;
+  const totalBeforeVat = Math.max(0, totalBase - (Number(discountAmount) || 0));
   const vatAmount = Math.round(totalBeforeVat * ((Number(vatRate) || 0) / 100));
-  const totalFinancialEst = totalBeforeVat + vatAmount;
+  const grandTotal = totalBeforeVat + vatAmount;
 
   const sheetDisabled = disabledRanges[currentSheet] || { cells: [], rows: [], columns: [] };
 
@@ -581,7 +622,9 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
                       <div className="flex items-center justify-between text-slate-500 mb-1">
                         <span className="font-bold text-slate-700">{author}</span>
                         <span className="font-mono text-[10px] text-slate-400">
-                          {item.created_at ? new Date(item.created_at).toLocaleTimeString("vi-VN") : ""}
+                          {item.timestamp || item.created_at
+                            ? new Date(item.timestamp || item.created_at!).toLocaleString("vi-VN")
+                            : ""}
                         </span>
                       </div>
                       <div className="flex items-center gap-1.5 font-mono">
@@ -956,6 +999,98 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
               </div>
             </div>
 
+            {/* BLOCK 1.5: UC05 - Quản lý đơn giá từng hạng mục */}
+            <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-2xs space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                  <FiDollarSign className="h-3.5 w-3.5 text-blue-600" />
+                  <span>Đơn Giá Từng Hạng Mục (UC05)</span>
+                </span>
+                <span
+                  className={`rounded px-2 py-0.5 text-[10px] font-bold ${
+                    canEditFinancial
+                      ? "bg-blue-50 text-[#105CB3]"
+                      : "bg-slate-100 text-slate-500"
+                  }`}
+                >
+                  {canEditFinancial ? "Kế toán chỉnh sửa" : "Chỉ xem"}
+                </span>
+              </div>
+
+              <p className="text-[10.5px] text-slate-500">
+                Kế toán được phép điều chỉnh đơn giá từng dòng. Khối lượng kỹ thuật chỉ đọc (UC04 bảo vệ).
+              </p>
+
+              <div className="space-y-2 max-h-56 overflow-y-auto pr-1 custom-scrollbar">
+                {lineItems.map((item, idx) => {
+                  const lineTotal = (Number(item.quantity) || 0) * (Number(item.unitPrice) || 0);
+                  return (
+                    <div
+                      key={item.id || idx}
+                      className="rounded-lg border border-slate-100 bg-slate-50/80 p-2 text-[11px] space-y-1.5"
+                    >
+                      <div className="flex items-start justify-between gap-1">
+                        <span className="font-semibold text-slate-800 line-clamp-1">
+                          {item.code ? `[${item.code}] ` : ""}{item.name}
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-mono shrink-0">
+                          {item.priceCell || ""}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 items-center">
+                        <div>
+                          <span className="text-[9.5px] text-slate-400 block">Khối lượng:</span>
+                          <span className="font-mono font-bold text-slate-700">
+                            {item.quantity} {item.unit}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[9.5px] text-slate-400 block">Đơn giá (VNĐ):</span>
+                          {canEditFinancial ? (
+                            <input
+                              type="number"
+                              min="0"
+                              step="50000"
+                              value={item.unitPrice}
+                              onChange={(e) => {
+                                const newPrice = Math.max(0, parseInt(e.target.value, 10) || 0);
+                                setLineItems((prev) =>
+                                  prev.map((it, i) => (i === idx ? { ...it, unitPrice: newPrice } : it))
+                                );
+                                if (onCellEdit && item.priceCell) {
+                                  onCellEdit(
+                                    cellMapping.sheetName || currentSheet,
+                                    item.priceCell.trim().toUpperCase(),
+                                    newPrice
+                                  ).catch(() => {});
+                                }
+                              }}
+                              className="w-full rounded border border-slate-200 bg-white px-1.5 py-0.5 text-right font-mono text-[11px] font-bold text-blue-700 focus:border-[#105CB3]"
+                            />
+                          ) : (
+                            <span className="font-mono font-semibold text-slate-700">
+                              {formatVND(item.unitPrice)}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-right">
+                          <span className="text-[9.5px] text-slate-400 block">Thành tiền:</span>
+                          <span className="font-mono font-bold text-slate-900">
+                            {formatVND(lineTotal)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="flex items-center justify-between pt-1 border-t border-slate-100 text-xs">
+                <span className="text-slate-600 font-medium">Tổng tiền các hạng mục:</span>
+                <span className="font-mono font-bold text-slate-900">{formatVND(subTotalItems)}</span>
+              </div>
+            </div>
+
             {/* BLOCK 2: UC05 - Sửa VAT, Chiết Khấu, Phụ Cấp */}
             <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-2xs space-y-3">
               <div className="flex items-center justify-between">
@@ -1085,40 +1220,48 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
               </div>
             </div>
 
-            {/* BLOCK 3: Tổng hợp tài chính & Đọc tiền bằng chữ */}
-            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2">
+            {/* BLOCK 3: [P1-08] Tổng hợp tài chính toàn diện & Đọc tiền bằng chữ */}
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2.5">
               <span className="font-bold text-slate-800 block text-xs">
-                Tổng Hợp Tạm Tính (OT + Tài chính)
+                Tổng Hợp Toàn Bộ Báo Giá (UC05 + UC06)
               </span>
 
               <div className="space-y-1.5 text-[11px]">
                 <div className="flex justify-between text-slate-600">
-                  <span>Chi phí OT:</span>
-                  <span className="font-mono font-semibold">{formatVND(totalOtCost)}</span>
+                  <span>Tiền các hạng mục:</span>
+                  <span className="font-mono font-semibold">{formatVND(subTotalItems)}</span>
                 </div>
                 <div className="flex justify-between text-slate-600">
-                  <span>Tổng phụ cấp:</span>
-                  <span className="font-mono font-semibold">{formatVND(totalAllowances)}</span>
+                  <span>Chi phí làm thêm OT:</span>
+                  <span className="font-mono font-semibold">+ {formatVND(totalOtCost)}</span>
+                </div>
+                <div className="flex justify-between text-slate-600">
+                  <span>Tổng phụ cấp thiết bị/đi lại:</span>
+                  <span className="font-mono font-semibold">+ {formatVND(totalAllowances)}</span>
                 </div>
                 {discountAmount > 0 && (
                   <div className="flex justify-between text-rose-600">
-                    <span>Chiết khấu:</span>
+                    <span>Chiết khấu thương mại:</span>
                     <span className="font-mono font-semibold">- {formatVND(discountAmount)}</span>
                   </div>
                 )}
+                <div className="flex justify-between text-slate-700 font-semibold pt-1 border-t border-slate-200/80">
+                  <span>Tổng cộng trước thuế:</span>
+                  <span className="font-mono">{formatVND(totalBeforeVat)}</span>
+                </div>
                 <div className="flex justify-between text-slate-600">
                   <span>Tiền thuế VAT ({vatRate}%):</span>
-                  <span className="font-mono font-semibold">{formatVND(vatAmount)}</span>
+                  <span className="font-mono font-semibold">+ {formatVND(vatAmount)}</span>
                 </div>
-                <div className="pt-2 border-t border-slate-200 flex justify-between font-bold text-xs text-slate-900">
-                  <span>Cộng thêm vào dự toán:</span>
-                  <span className="font-mono text-emerald-600">{formatVND(totalFinancialEst)}</span>
+                <div className="pt-2 border-t border-slate-300 flex justify-between font-bold text-xs text-slate-900">
+                  <span>TỔNG CỘNG THANH TOÁN:</span>
+                  <span className="font-mono text-emerald-700 text-sm">{formatVND(grandTotal)}</span>
                 </div>
               </div>
 
-              {totalFinancialEst > 0 && (
-                <div className="pt-1 text-[10.5px] italic text-slate-500 leading-tight">
-                  {numberToVietnameseWords(totalFinancialEst)}
+              {grandTotal > 0 && (
+                <div className="pt-1.5 text-[10.5px] italic text-slate-600 leading-tight border-t border-slate-200">
+                  Bằng chữ: <strong>{numberToVietnameseWords(grandTotal)}</strong>
                 </div>
               )}
             </div>

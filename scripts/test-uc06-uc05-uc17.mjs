@@ -10,6 +10,8 @@
 import ExcelJS from "exceljs";
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
+import { io as ioClient } from "socket.io-client";
 
 const BASE = process.env.API_BASE || "http://localhost:3000";
 
@@ -300,6 +302,52 @@ async function main() {
   assert(finRes8.data.financialConfig?.equipmentAllowance === 4500000, "Phụ cấp máy móc không đúng");
   ok("Tình huống 14: Kế toán cấu hình phụ cấp thiết bị RTK & công tác xa -> Thành công");
 
+  // Tình huống 14b: [P0-05] Kiểm tra OCC (Optimistic Concurrency Control) trên siêu dữ liệu tài chính
+  const staleRevRes = await api(`/api/projects/${projectId}`, {
+    method: "PATCH",
+    token: mgrToken,
+    body: {
+      vatRate: 8,
+      expectedFinanceRevision: 999, // Stale revision
+    },
+  });
+  assert(staleRevRes.status === 409, "Gửi stale revision nhưng không trả về HTTP 409 Conflict");
+  ok("Tình huống 14b: [P0-05] Gửi sai expectedFinanceRevision -> Backend trả về HTTP 409 Conflict chống Lost Update!");
+
+  // Tình huống 14c: [P1-09] Validate số vô hạn Infinity và phụ cấp âm
+  const infRes = await api(`/api/projects/${projectId}`, {
+    method: "PATCH",
+    token: mgrToken,
+    body: { otHours: "Infinity" },
+  });
+  assert(infRes.status === 400, "otHours Infinity không bị từ chối với HTTP 400");
+
+  const negAllowanceRes = await api(`/api/projects/${projectId}`, {
+    method: "PATCH",
+    token: mgrToken,
+    body: {
+      financialConfig: { equipmentAllowance: -500000 },
+    },
+  });
+  assert(negAllowanceRes.status === 400, "Phụ cấp âm không bị từ chối với HTTP 400");
+  ok("Tình huống 14c: [P1-09] Validate chặt chẽ: Chặn số vô hạn Infinity và phụ cấp âm với HTTP 400!");
+
+  // Tình huống 14d: [P1-10] Đặt otRate = 0 (miễn phí OT) không bị fallback thành 505.000
+  const zeroRateRes = await api(`/api/projects/${projectId}`, {
+    method: "PATCH",
+    token: mgrToken,
+    body: { otRate: 0 },
+  });
+  assert(zeroRateRes.ok && zeroRateRes.data.otRate === 0, "otRate = 0 bị fallback");
+  ok("Tình huống 14d: [P1-10] Kế toán đặt otRate = 0 -> Bảo toàn chính xác 0đ, không bị fallback 505.000đ");
+
+  // Reset otRate về 505000 để kiểm thử tiếp
+  await api(`/api/projects/${projectId}`, {
+    method: "PATCH",
+    token: mgrToken,
+    body: { otRate: 505000 },
+  });
+
   // Tình huống 15: Kiểm tra tính bền vững sau khi tải lại project
   const reloadProj = await api(`/api/projects/${projectId}`, {
     method: "GET",
@@ -309,52 +357,45 @@ async function main() {
   assert(reloadProj.data.otHours === 4, "Dữ liệu OT bị mất sau khi reload");
   assert(reloadProj.data.vatRate === 10, "Dữ liệu VAT bị mất sau khi reload");
   assert(reloadProj.data.discountAmount === 2500000, "Dữ liệu chiết khấu bị mất sau khi reload");
-  ok("Tình huống 15: Reload project -> Toàn bộ dữ liệu OT, VAT, chiết khấu được bảo toàn vẹn toàn");
+  assert(reloadProj.data.financeRevision >= 2, "financeRevision không được lưu");
+  ok("Tình huống 15: Reload project -> Toàn bộ dữ liệu OT, VAT, chiết khấu và financeRevision được bảo toàn vẹn toàn");
 
   // ====================================================================
   // PHẦN 3: KIỂM THỬ UC17 - XUẤT EXCEL NHÁP CÓ WATERMARK
   // ====================================================================
   console.log("\n--- [UC17] KIỂM THỬ XUẤT EXCEL NHÁP CÓ WATERMARK CHÌM & HEADER A4 ---");
 
-  // Tình huống 16: Dựng workbook từ base64 và áp dụng Watermark "BẢN DỰ THẢO - CHƯA DUYỆT"
-  const testWb = new ExcelJS.Workbook();
-  const testWs = testWb.addWorksheet("Báo giá khảo sát");
-  testWs.addRow(["Hạng mục", "Khối lượng", "Đơn giá", "Thành tiền"]);
-  testWs.addRow(["Đo trắc dọc trắc ngang", 5, 2000000, 10000000]);
+  // Tình huống 16: [P1-15] Đo SHA-256 checksum của file nền TRƯỚC và SAU khi xuất bản nháp
+  const serverFilePath = path.join(process.cwd(), "data", "files", `${projectId}.xlsx`);
+  let hashBefore = "";
+  if (fs.existsSync(serverFilePath)) {
+    hashBefore = crypto.createHash("sha256").update(fs.readFileSync(serverFilePath)).digest("hex");
+  }
 
-  // Cấu hình header/footer in ấn A4 (bắt buộc theo đặc tả UC17)
-  const watermarkText = "BẢN DỰ THẢO - CHƯA DUYỆT";
-  testWs.headerFooter.oddHeader = `&C&"Arial,Bold"&22&KDC2626 *** ${watermarkText} ***`;
-  testWs.headerFooter.evenHeader = `&C&"Arial,Bold"&22&KDC2626 *** ${watermarkText} ***`;
-  testWs.headerFooter.oddFooter = `&R&"Arial,Italic"&10&K64748B Báo giá Phúc Gia - ${watermarkText} | Trang &P/&N`;
-  testWs.pageSetup.showGridLines = true;
-
-  // Thêm ảnh watermark
-  const samplePngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
-  const imgId = testWb.addImage({
-    base64: samplePngBase64,
-    extension: "png",
+  // Tải file nháp thực tế từ endpoint máy chủ
+  const draftExportResponse = await fetch(`http://localhost:3000/api/projects/${projectId}/export/draft`, {
+    headers: { Authorization: `Bearer ${userToken}` },
   });
-  testWs.addBackgroundImage(imgId);
-
-  const exportedBuf = await testWb.xlsx.writeBuffer();
-  assert(exportedBuf.byteLength > 0, "Không thể xuất buffer Excel");
+  assert(draftExportResponse.status === 200, "Gọi endpoint GET /export/draft thất bại");
+  const draftBuffer = Buffer.from(await draftExportResponse.arrayBuffer());
+  assert(draftBuffer.byteLength > 0, "Buffer file nháp rỗng");
 
   // Đọc lại file vừa xuất bằng ExcelJS để kiểm tra tính toàn vẹn và Watermark
   const verifyWb = new ExcelJS.Workbook();
-  await verifyWb.xlsx.load(exportedBuf);
-  const verifyWs = verifyWb.getWorksheet("Báo giá khảo sát");
+  await verifyWb.xlsx.load(draftBuffer);
+  const verifyWs = verifyWb.worksheets[0];
   assert(verifyWs !== undefined, "Sheet không tồn tại sau khi xuất");
   assert(verifyWs.headerFooter.oddHeader.includes("BẢN DỰ THẢO - CHƯA DUYỆT"), "Header in ấn không chứa dấu dự thảo");
   assert(verifyWs.headerFooter.oddFooter.includes("Báo giá Phúc Gia"), "Footer in ấn không chứa định danh");
-  ok("Tình huống 16: File .xlsx xuất nháp chứa Header in ấn A4 & Watermark chìm 'BẢN DỰ THẢO - CHƯA DUYỆT'");
+  assert(verifyWs.pageSetup.paperSize === 9, "Khổ giấy in không phải A4 (paperSize !== 9)");
+  assert(verifyWs.pageSetup.fitToPage === true, "fitToPage không bật");
+  ok("Tình huống 16: File .xlsx xuất nháp thật từ server chứa Watermark A4 chuẩn (paperSize=9, fitToPage=true)");
 
-  // Tình huống 17: Kiểm tra file nền của server (data/files/{id}.xlsx) không bị sửa đổi
-  const serverFilePath = path.join(process.cwd(), "data", "files", `${projectId}.xlsx`);
+  // Tình huống 17: [P1-15] Kiểm tra SHA-256 checksum file nền trên server để chứng minh nguyên vẹn 100%
   if (fs.existsSync(serverFilePath)) {
-    const stats = fs.statSync(serverFilePath);
-    assert(stats.size > 0, "File nền trên server bị hỏng");
-    ok(`Tình huống 17: File nền trên server (${projectId}.xlsx) được bảo toàn 100%, không bị ghi đè!`);
+    const hashAfter = crypto.createHash("sha256").update(fs.readFileSync(serverFilePath)).digest("hex");
+    assert(hashBefore === hashAfter, "File nền trên server bị biến đổi (SHA-256 checksum không khớp)!");
+    ok(`Tình huống 17: File nền trên server (${projectId}.xlsx) có SHA-256 trước và sau xuất khớp 100%, tuyệt đối không bị ghi đè!`);
   } else {
     ok(`Tình huống 17: File nền trên server được bảo vệ an toàn (chế độ in-memory/disk)`);
   }
@@ -468,8 +509,74 @@ async function main() {
   assert(sWs.headerFooter.oddHeader.includes("BẢN DỰ THẢO - CHƯA DUYỆT"), "Header file export không có watermark");
   ok("Tình huống 22b: Endpoint server GET /export/draft xuất file .xlsx có watermark nháp A4 hợp lệ 100%!");
 
+  // Tình huống 23: [P0-01] Workbook xuất chứa dữ liệu tài chính & OT đã commit
+  const c25Val = sWs.getCell("C25").value;
+  assert(String(c25Val) === "6.5", `Ô C25 không chứa giờ OT 6.5 (giá trị thực tế: ${c25Val})`);
+  ok("Tình huống 23: [P0-01] File xuất phản ánh chính xác dữ liệu giờ OT vào tọa độ ô đã ánh xạ (C25 = 6.5)!");
+
+  // Tình huống 24: [P0-04] Kiểm tra Export Policy trên endpoint GET /api/projects/:id/export
+  console.log("\n--- [UC17/UC18] KIỂM THỬ CHÍNH SÁCH XUẤT TỆP (EXPORT POLICY [P0-04]) ---");
+  // 1. User gọi GET /export khi trạng thái dang_lam -> Trả về bản nháp có watermark và suffix _BAN_DU_THAO
+  const userNormExport = await fetch(`http://localhost:3000/api/projects/${projectId}/export`, {
+    headers: { Authorization: `Bearer ${userToken}` },
+  });
+  assert(userNormExport.status === 200, "User tải /export thất bại");
+  const dispHeader = userNormExport.headers.get("content-disposition") || "";
+  assert(dispHeader.includes("_BAN_DU_THAO.xlsx"), "Chính sách export không áp hậu tố _BAN_DU_THAO cho nhân viên");
+  const uBuf = Buffer.from(await userNormExport.arrayBuffer());
+  const uWb = new ExcelJS.Workbook();
+  await uWb.xlsx.load(uBuf);
+  assert(uWb.worksheets[0].headerFooter?.oddHeader?.includes("BẢN DỰ THẢO - CHƯA DUYỆT"), "File không chứa watermark nháp");
+  ok("Tình huống 24a: [P0-04] Nhân viên tải qua đường export thường -> Bắt buộc nhận file có Watermark dự thảo!");
+
+  // 2. Chuyển trạng thái sang da_gui -> Admin tải bản chính thức không watermark
+  await api(`/api/projects/${projectId}/status`, {
+    method: "POST",
+    token: adminToken,
+    body: { trangThai: "da_gui", note: "Chốt phát hành chính thức" },
+  });
+  const adminOfficialExport = await fetch(`http://localhost:3000/api/projects/${projectId}/export`, {
+    headers: { Authorization: `Bearer ${adminToken}` },
+  });
+  assert(adminOfficialExport.status === 200, "Admin tải /export thất bại");
+  const adminDispHeader = adminOfficialExport.headers.get("content-disposition") || "";
+  assert(!adminDispHeader.includes("_BAN_DU_THAO.xlsx"), "Bản chính thức vẫn còn hậu tố _BAN_DU_THAO");
+  const admBuf = Buffer.from(await adminOfficialExport.arrayBuffer());
+  const admWb = new ExcelJS.Workbook();
+  await admWb.xlsx.load(admBuf);
+  assert(!admWb.worksheets[0].headerFooter?.oddHeader?.includes("BẢN DỰ THẢO - CHƯA DUYỆT"), "Bản chính thức vẫn chứa watermark dự thảo!");
+  ok("Tình huống 24b: [P0-04] Admin tải báo giá đã gửi khách -> Nhận bản chính thức sạch sẽ, không có watermark dự thảo!");
+
+  // Tình huống 25: [P0-06] Socket.IO Handshake Auth & Room Authorization
+  console.log("\n--- [P0-06] KIỂM THỬ SOCKET.IO AUTH VÀ BẢO VỆ PHÒNG (ROOM AUTHORIZATION) ---");
+  await new Promise((resolve, reject) => {
+    const s = ioClient("http://localhost:3000", {
+      auth: { token: user2Token }, // user2 không thuộc project
+      transports: ["websocket"],
+      reconnection: false,
+    });
+    s.on("connect", () => {
+      s.emit("join_project", projectId);
+    });
+    s.on("error", (err) => {
+      try {
+        assert(err.message.includes("Forbidden"), "Error message không khớp");
+        ok("Tình huống 25: [P0-06] Socket.IO chặn người dùng ngoài dự án (user2) tham gia room project trái phép!");
+        s.disconnect();
+        resolve(true);
+      } catch (e) {
+        s.disconnect();
+        reject(e);
+      }
+    });
+    setTimeout(() => {
+      s.disconnect();
+      reject(new Error("Socket không nhận được phản hồi từ chối authorization"));
+    }, 3000);
+  });
+
   console.log("\n======================================================================");
-  console.log("🎉 TẤT CẢ 22 TÌNH HUỐNG KIỂM THỬ CHO UC06, UC05, UC17 ĐỀU ĐẠT 100%!");
+  console.log("🎉 TẤT CẢ CÁC TÌNH HUỐNG KIỂM THỬ NÂNG CAO CHO UC06, UC05, UC17 ĐỀU ĐẠT 100%!");
   console.log("======================================================================\n");
 }
 

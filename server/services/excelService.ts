@@ -154,13 +154,23 @@ export interface EditForReplay {
   sequence: number;
 }
 
+export interface FinancialMetadataForReplay {
+  otHours?: number;
+  otRate?: number;
+  vatRate?: number;
+  discountAmount?: number;
+  financialConfig?: any;
+}
+
 /**
  * Dựng file Excel hoàn chỉnh = workbook nền + các edit đã được server chấp nhận,
  * áp dụng theo `sequence` TĂNG DẦN (cũ -> mới) để giá trị cuối cùng là giá trị mới nhất.
+ * Đồng thời ánh xạ các giá trị tài chính & OT (UC05/UC06) vào các ô đã cấu hình.
  */
 export async function buildFinalWorkbookBuffer(
   baseBuffer: Buffer,
-  edits: EditForReplay[]
+  edits: EditForReplay[],
+  financialMetadata?: FinancialMetadataForReplay
 ): Promise<{ buffer: Buffer; applied: number; frozenExternalFormulas: number }> {
   const wb = await loadWorkbookFromBuffer(baseBuffer);
   const meta = buildMeta(wb);
@@ -176,6 +186,63 @@ export async function buildFinalWorkbookBuffer(
     const ws = wb.getWorksheet(sheetName)!;
     applyEditToWorksheet(ws, formatCellRef(meta.resolveMasterCell(sheetName, addr)), e.new_value ?? "");
     applied++;
+  }
+
+  // [P0-01] Ánh xạ siêu dữ liệu tài chính & OT (UC05 & UC06) vào workbook trước khi xuất
+  if (financialMetadata) {
+    let cfg = financialMetadata.financialConfig;
+    if (typeof cfg === "string") {
+      try {
+        cfg = JSON.parse(cfg);
+      } catch {}
+    }
+    const mapping = cfg?.cellMapping;
+    if (mapping) {
+      const targetSheetName = meta.resolveSheetName(mapping.sheetName || "") || wb.worksheets[0]?.name;
+      if (targetSheetName) {
+        const ws = wb.getWorksheet(targetSheetName);
+        if (ws) {
+          const editedCells = new Set(
+            ordered.map((e) => `${meta.resolveSheetName(e.sheet_name)}!${e.cell.toUpperCase()}`)
+          );
+
+          const otHours = Number(financialMetadata.otHours ?? 0);
+          const otRate = Number(financialMetadata.otRate ?? 505000);
+          const otAmount = otHours * otRate;
+          const vatRate = Number(financialMetadata.vatRate ?? 8);
+          const discount = Number(financialMetadata.discountAmount ?? 0);
+
+          if (mapping.otHoursCell && !editedCells.has(`${targetSheetName}!${mapping.otHoursCell.toUpperCase()}`)) {
+            const addr = parseCellRef(mapping.otHoursCell);
+            if (addr) {
+              applyEditToWorksheet(ws, formatCellRef(meta.resolveMasterCell(targetSheetName, addr)), String(otHours));
+              applied++;
+            }
+          }
+          if (mapping.otAmountCell && !editedCells.has(`${targetSheetName}!${mapping.otAmountCell.toUpperCase()}`)) {
+            const addr = parseCellRef(mapping.otAmountCell);
+            if (addr) {
+              applyEditToWorksheet(ws, formatCellRef(meta.resolveMasterCell(targetSheetName, addr)), String(otAmount));
+              applied++;
+            }
+          }
+          if (mapping.vatRateCell && !editedCells.has(`${targetSheetName}!${mapping.vatRateCell.toUpperCase()}`)) {
+            const addr = parseCellRef(mapping.vatRateCell);
+            if (addr) {
+              applyEditToWorksheet(ws, formatCellRef(meta.resolveMasterCell(targetSheetName, addr)), String(vatRate));
+              applied++;
+            }
+          }
+          if (mapping.discountCell && !editedCells.has(`${targetSheetName}!${mapping.discountCell.toUpperCase()}`)) {
+            const addr = parseCellRef(mapping.discountCell);
+            if (addr) {
+              applyEditToWorksheet(ws, formatCellRef(meta.resolveMasterCell(targetSheetName, addr)), String(discount));
+              applied++;
+            }
+          }
+        }
+      }
+    }
   }
 
   // ExcelJS không tự tính lại công thức: yêu cầu Excel tính lại toàn bộ khi mở file.

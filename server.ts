@@ -152,27 +152,67 @@ async function startServer() {
     maxHttpBufferSize: 1e8,
   });
 
+  // [P0-06] Socket.IO Handshake Authentication: Xác thực JWT token
+  io.use((socket, next) => {
+    const token =
+      (socket.handshake.auth?.token as string) ||
+      (socket.handshake.headers?.authorization?.startsWith("Bearer ")
+        ? socket.handshake.headers.authorization.slice(7)
+        : (socket.handshake.query?.token as string));
+
+    if (token) {
+      const user = verifyToken(token);
+      if (user) {
+        const dbUser = getDb().prepare("SELECT active, token_version FROM users WHERE id = ?").get(user.id) as
+          | { active: number; token_version: number }
+          | undefined;
+        if (dbUser && dbUser.active && (user.tokenVersion === undefined || user.tokenVersion === dbUser.token_version)) {
+          (socket as any).user = user;
+          return next();
+        }
+      }
+    }
+    // Cho phép kết nối nhưng gắn cờ unauthenticated
+    next();
+  });
+
   io.on("connection", (socket) => {
+    const socketUser = (socket as any).user;
+
     socket.on("identify_user", (userId: string) => {
-      if (userId) socket.join(`user:${userId}`);
+      // Chỉ cho phép user join user-room của chính mình (hoặc admin)
+      if (userId && (socketUser?.id === userId || socketUser?.role === "admin" || !socketUser)) {
+        socket.join(`user:${userId}`);
+      }
     });
+
     socket.on("join_project", (projectId: string) => {
-      if (projectId) socket.join(`project:${projectId}`);
+      if (!projectId) return;
+      // [P0-06] Kiểm tra quyền truy cập dự án trước khi cho phép lắng nghe sự kiện tài chính/sửa ô
+      if (socketUser) {
+        const project = loadProject(projectId);
+        if (!project || !userCanAccessProject(socketUser, project)) {
+          socket.emit("error", { message: "Forbidden: Bạn không có quyền truy cập room dự án này" });
+          return;
+        }
+      }
+      socket.join(`project:${projectId}`);
     });
+
     socket.on("leave_project", (projectId: string) => {
       if (projectId) socket.leave(`project:${projectId}`);
     });
 
     // Realtime Collaborative Presence: Nhân viên focus/bắt đầu sửa ô (UC07)
     socket.on("cell_focus", (data: { projectId: string; sheetName: string; r: number; c: number; cell: string; user: { id: string; username: string; color?: string } }) => {
-      if (data?.projectId) {
+      if (data?.projectId && socket.rooms.has(`project:${data.projectId}`)) {
         socket.to(`project:${data.projectId}`).emit("cell_focused", data);
       }
     });
 
     // Realtime Collaborative Presence: Nhân viên rời ô / kết thúc sửa (UC07)
     socket.on("cell_blur", (data: { projectId: string; sheetName: string; r: number; c: number; cell: string; userId: string }) => {
-      if (data?.projectId) {
+      if (data?.projectId && socket.rooms.has(`project:${data.projectId}`)) {
         socket.to(`project:${data.projectId}`).emit("cell_blurred", data);
       }
     });
@@ -578,11 +618,24 @@ async function startServer() {
     let discountAmount = Number(project.discount_amount ?? 0);
     let financialConfig = project.financial_config ?? "{}";
 
+    // [P0-05] Concurrency Control (OCC): Kiểm tra expectedFinanceRevision
+    const currentFinanceRevision = Number(project.finance_revision ?? 1);
+    if (body.expectedFinanceRevision !== undefined) {
+      const expRev = Number(body.expectedFinanceRevision);
+      if (expRev !== currentFinanceRevision) {
+        return res.status(409).json({
+          error: `Dữ liệu tài chính đã bị thay đổi bởi người khác (phiên bản máy chủ: ${currentFinanceRevision}, phiên bản gửi lên: ${expRev}). Vui lòng tải lại trước khi lưu!`,
+          currentRevision: currentFinanceRevision,
+          serverData: projectToJson(project),
+        });
+      }
+    }
+
     // UC06: Nhập giờ OT (Nhân viên được phân công, Manager, Admin đều được phép nhập)
     if (body.otHours !== undefined) {
       const parsedOt = Number(body.otHours);
-      if (isNaN(parsedOt) || parsedOt < 0) {
-        return res.status(400).json({ error: "Số giờ làm thêm OT phải là số lớn hơn hoặc bằng 0" });
+      if (!Number.isFinite(parsedOt) || parsedOt < 0 || parsedOt > 100000) {
+        return res.status(400).json({ error: "Số giờ làm thêm OT phải là số hữu hạn lớn hơn hoặc bằng 0" });
       }
       otHours = parsedOt;
     }
@@ -593,8 +646,8 @@ async function startServer() {
         return res.status(403).json({ error: "Nhân viên kỹ thuật không có quyền thay đổi đơn giá OT định mức (UC06)!" });
       }
       const parsedRate = Number(body.otRate);
-      if (isNaN(parsedRate) || parsedRate < 0) {
-        return res.status(400).json({ error: "Đơn giá OT định mức phải là số >= 0" });
+      if (!Number.isFinite(parsedRate) || parsedRate < 0 || parsedRate > 1e12) {
+        return res.status(400).json({ error: "Đơn giá OT định mức phải là số hữu hạn >= 0" });
       }
       otRate = parsedRate;
     }
@@ -609,21 +662,45 @@ async function startServer() {
       }
       if (body.vatRate !== undefined) {
         const parsedVat = Number(body.vatRate);
-        if (isNaN(parsedVat) || parsedVat < 0 || parsedVat > 100) {
+        if (!Number.isFinite(parsedVat) || parsedVat < 0 || parsedVat > 100) {
           return res.status(400).json({ error: "Thuế suất VAT phải là số từ 0% đến 100%" });
         }
         vatRate = parsedVat;
       }
       if (body.discountAmount !== undefined) {
         const parsedDiscount = Number(body.discountAmount);
-        if (isNaN(parsedDiscount) || parsedDiscount < 0) {
-          return res.status(400).json({ error: "Chiết khấu phải là số >= 0" });
+        if (!Number.isFinite(parsedDiscount) || parsedDiscount < 0 || parsedDiscount > 1e12) {
+          return res.status(400).json({ error: "Chiết khấu phải là số hữu hạn >= 0" });
         }
         discountAmount = parsedDiscount;
       }
       if (body.financialConfig !== undefined) {
-        financialConfig =
-          typeof body.financialConfig === "string" ? body.financialConfig : JSON.stringify(body.financialConfig);
+        let parsedConfig: any = body.financialConfig;
+        if (typeof parsedConfig === "string") {
+          try {
+            parsedConfig = JSON.parse(parsedConfig);
+          } catch {
+            return res.status(400).json({ error: "Cấu hình tài chính financialConfig JSON không hợp lệ" });
+          }
+        }
+        if (typeof parsedConfig !== "object" || parsedConfig === null || Array.isArray(parsedConfig)) {
+          return res.status(400).json({ error: "financialConfig phải là một JSON object" });
+        }
+        if (parsedConfig.equipmentAllowance !== undefined) {
+          const eq = Number(parsedConfig.equipmentAllowance);
+          if (!Number.isFinite(eq) || eq < 0 || eq > 1e12) {
+            return res.status(400).json({ error: "Phụ cấp máy móc equipmentAllowance phải là số hợp lệ >= 0" });
+          }
+          parsedConfig.equipmentAllowance = eq;
+        }
+        if (parsedConfig.travelAllowance !== undefined) {
+          const tr = Number(parsedConfig.travelAllowance);
+          if (!Number.isFinite(tr) || tr < 0 || tr > 1e12) {
+            return res.status(400).json({ error: "Phụ cấp đi lại travelAllowance phải là số hợp lệ >= 0" });
+          }
+          parsedConfig.travelAllowance = tr;
+        }
+        financialConfig = JSON.stringify(parsedConfig);
       }
     }
 
@@ -662,11 +739,20 @@ async function startServer() {
       if (body.ghiChu !== undefined) ghiChu = body.ghiChu;
     }
 
+    const hasFinancialChanges =
+      otHours !== Number(project.ot_hours ?? 0) ||
+      otRate !== Number(project.ot_rate ?? 505000) ||
+      vatRate !== Number(project.vat_rate ?? 8) ||
+      discountAmount !== Number(project.discount_amount ?? 0) ||
+      financialConfig !== (project.financial_config ?? "{}");
+
+    const nextFinanceRevision = hasFinancialChanges ? currentFinanceRevision + 1 : currentFinanceRevision;
+
     getDb()
       .prepare(
         `UPDATE projects SET name = ?, so_bao_gia = ?, ten_khach_hang = ?, nguoi_phu_trach_id = ?,
          ghi_chu = ?, editable_ranges = ?, sheets = ?, ot_hours = ?, ot_rate = ?, vat_rate = ?,
-         discount_amount = ?, financial_config = ?, updated_at = ? WHERE id = ?`
+         discount_amount = ?, financial_config = ?, finance_revision = ?, updated_at = ? WHERE id = ?`
       )
       .run(
         name,
@@ -681,10 +767,41 @@ async function startServer() {
         vatRate,
         discountAmount,
         financialConfig,
+        nextFinanceRevision,
         now(),
         project.id
       );
 
+    // [P1-07] Ghi nhận Audit Log chuyên biệt khi có điều chỉnh tài chính hoặc OT
+    if (hasFinancialChanges) {
+      recordAuditLog({
+        userId: user.id,
+        username: user.username,
+        action: "PROJECT_FINANCIAL_UPDATED",
+        resource: "projects",
+        resourceId: project.id,
+        detail: {
+          old: {
+            otHours: project.ot_hours,
+            otRate: project.ot_rate,
+            vatRate: project.vat_rate,
+            discountAmount: project.discount_amount,
+            financialConfig: project.financial_config,
+            financeRevision: currentFinanceRevision,
+          },
+          new: {
+            otHours,
+            otRate,
+            vatRate,
+            discountAmount,
+            financialConfig,
+            financeRevision: nextFinanceRevision,
+          },
+        },
+      });
+    }
+
+    // [P1-12] Realtime Socket phát đầy đủ thông tin tài chính kèm financeRevision
     io.to(`project:${project.id}`).emit("project.updated", {
       projectId: project.id,
       updatedBy: user.username,
@@ -692,9 +809,18 @@ async function startServer() {
       otRate,
       vatRate,
       discountAmount,
+      financialConfig: (() => {
+        try {
+          return JSON.parse(financialConfig);
+        } catch {
+          return {};
+        }
+      })(),
+      financeRevision: nextFinanceRevision,
     });
 
-    res.json(await projectWithFile(loadProject(project.id)!));
+    // [P2-17] Trả về JSON metadata nhẹ kèm danh sách thành viên, không serialize lại toàn bộ file Base64
+    res.json(listSummary(loadProject(project.id)!));
   }));
 
   // Phân công thành viên chuyên biệt (Admin-only - UC07)
@@ -920,7 +1046,7 @@ async function startServer() {
   }));
 
   // UC17: Xuất tệp Excel Nháp có Watermark "BẢN DỰ THẢO - CHƯA DUYỆT"
-  // Kết hợp workbook nền + toàn bộ edits đã commit trong SQLite, áp Watermark in ấn A4 & background, trả về .xlsx
+  // Kết hợp workbook nền + toàn bộ edits + tài chính đã commit trong SQLite, áp Watermark in ấn A4 & background, trả về .xlsx
   // TUYỆT ĐỐI KHÔNG GHI ĐÈ FILE NỀN data/files/{id}.xlsx VÀ KHÔNG TẠO EDIT GIẢ TRÁI PHÉP.
   app.get("/api/projects/:id/export/draft", authMiddleware, catchAsync(async (req, res) => {
     const user = req.user!;
@@ -936,8 +1062,16 @@ async function startServer() {
       .prepare("SELECT sheet_name, cell, new_value, sequence FROM edits WHERE project_id = ? ORDER BY sequence ASC")
       .all(project.id) as any[];
 
-    // Dựng workbook hoàn chỉnh kết hợp file nền + edits đã commit
-    const { buffer: finalWbBuf } = await buildFinalWorkbookBuffer(baseBuffer, edits);
+    const financialMeta = {
+      otHours: project.ot_hours,
+      otRate: project.ot_rate,
+      vatRate: project.vat_rate,
+      discountAmount: project.discount_amount,
+      financialConfig: project.financial_config,
+    };
+
+    // [P0-01] Dựng workbook hoàn chỉnh kết hợp file nền + edits đã commit + siêu dữ liệu tài chính/OT
+    const { buffer: finalWbBuf } = await buildFinalWorkbookBuffer(baseBuffer, edits, financialMeta);
     const wb = await loadWorkbookFromBuffer(finalWbBuf);
 
     // Áp Watermark chuẩn UC17
@@ -947,6 +1081,46 @@ async function startServer() {
     const safeName = (project.name || "baogia").replace(/\.xlsx$/i, "");
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(safeName)}_BAN_DU_THAO.xlsx"`);
+    res.send(outBuffer);
+  }));
+
+  // [P0-04] Xuất tệp Excel theo chính sách (Export Policy):
+  // Chỉ Admin / Manager khi dự án ở trạng thái 'da_gui' mới được tải bản chính thức không watermark.
+  // Nhân viên (user) hoặc dự án chưa phát hành BẮT BUỘC mang watermark bản nháp (UC17).
+  app.get("/api/projects/:id/export", authMiddleware, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+
+    const baseBuffer = await readProjectFileBuffer(project.id);
+    if (!baseBuffer) return res.status(404).json({ error: "Không tìm thấy file Excel nền của báo giá" });
+
+    const edits = getDb()
+      .prepare("SELECT sheet_name, cell, new_value, sequence FROM edits WHERE project_id = ? ORDER BY sequence ASC")
+      .all(project.id) as any[];
+
+    const financialMeta = {
+      otHours: project.ot_hours,
+      otRate: project.ot_rate,
+      vatRate: project.vat_rate,
+      discountAmount: project.discount_amount,
+      financialConfig: project.financial_config,
+    };
+
+    const { buffer: finalWbBuf } = await buildFinalWorkbookBuffer(baseBuffer, edits, financialMeta);
+    const wb = await loadWorkbookFromBuffer(finalWbBuf);
+
+    const isOfficialAllowed = (user.role === "admin" || user.role === "manager") && project.trang_thai === "da_gui";
+    if (!isOfficialAllowed) {
+      applyDraftWatermarkToWorkbook(wb, "BẢN DỰ THẢO - CHƯA DUYỆT");
+    }
+
+    const outBuffer = Buffer.from(await wb.xlsx.writeBuffer());
+    const safeName = (project.name || "baogia").replace(/\.xlsx$/i, "");
+    const suffix = isOfficialAllowed ? "" : "_BAN_DU_THAO";
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(safeName)}${suffix}.xlsx"`);
     res.send(outBuffer);
   }));
 
@@ -1172,6 +1346,18 @@ async function startServer() {
         .run(project.id, sheetName, cell, val, nextRev, user.username, timestamp);
 
       getDb().prepare("UPDATE projects SET project_revision = project_revision + 1, updated_at = ? WHERE id = ?").run(timestamp, project.id);
+
+      // [P0-01 & UC06] Đồng bộ hai chiều nếu ô chỉnh sửa là ô ánh xạ Giờ OT
+      try {
+        const finCfg = JSON.parse(project.financial_config || "{}");
+        const mapping = finCfg.cellMapping;
+        if (mapping && mapping.otHoursCell && mapping.otHoursCell.toUpperCase() === cell.toUpperCase()) {
+          const parsedH = parseFloat(val);
+          if (!isNaN(parsedH) && parsedH >= 0) {
+            getDb().prepare("UPDATE projects SET ot_hours = ?, updated_at = ? WHERE id = ?").run(parsedH, timestamp, project.id);
+          }
+        }
+      } catch {}
     })();
 
     // 4. Realtime Broadcast tới Room Project sau khi COMMIT thành công (Chương 21 & 22)

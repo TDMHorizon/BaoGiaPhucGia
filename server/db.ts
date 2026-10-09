@@ -71,6 +71,8 @@ export type ProjectRow = {
   discount_amount?: number;
   /** UC05/UC06 - Cấu hình mở rộng tài chính & tổ đội (JSON) */
   financial_config?: string;
+  /** P0-05 - Optimistic concurrency revision riêng cho tài chính */
+  finance_revision?: number;
   /** Không còn dùng. Giữ lại cho tương thích dữ liệu cũ. Xem project_revision và versions.version. */
   version: number;
   /** Tăng mỗi khi dữ liệu làm việc thay đổi (edit, cấu trúc, trạng thái) - dùng cho optimistic concurrency. */
@@ -498,6 +500,13 @@ const MIGRATIONS: Migration[] = [
       addColumnIfMissing("projects", "financial_config", "TEXT NOT NULL DEFAULT '{}'");
     },
   },
+  {
+    id: 9,
+    name: "projects.finance_revision: optimistic concurrency token for financial aggregates (P0-05)",
+    up: () => {
+      addColumnIfMissing("projects", "finance_revision", "INTEGER NOT NULL DEFAULT 1");
+    },
+  },
 ];
 
 function runMigrations() {
@@ -617,6 +626,7 @@ export function projectToJson(p: ProjectRow, memberIds: string[] = [], stats?: P
     vatRate: Number(p.vat_rate ?? 8),
     discountAmount: Number(p.discount_amount ?? 0),
     financialConfig: parsedFinancialConfig,
+    financeRevision: Number(p.finance_revision ?? 1),
     version: p.version ?? 1,
     /** Tăng khi dữ liệu làm việc đổi; client gửi lại dưới tên expectedRevision. */
     projectRevision: p.project_revision,

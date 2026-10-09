@@ -179,6 +179,8 @@ export const QuoteEditorPage: React.FC = () => {
           ...(payload.otRate !== undefined ? { otRate: payload.otRate } : {}),
           ...(payload.vatRate !== undefined ? { vatRate: payload.vatRate } : {}),
           ...(payload.discountAmount !== undefined ? { discountAmount: payload.discountAmount } : {}),
+          ...(payload.financialConfig !== undefined ? { financialConfig: payload.financialConfig } : {}),
+          ...(payload.financeRevision !== undefined ? { financeRevision: payload.financeRevision } : {}),
         };
       });
     };
@@ -273,15 +275,30 @@ export const QuoteEditorPage: React.FC = () => {
     }
   };
 
-  // 5. Export Excel with Disabled Styles
+  // 5. Export Excel with Policy Enforcement [P0-04] and Non-destructive Cloned Workbook [P1-16]
   const handleExportExcel = async () => {
     if (!project || !workbook) return;
+
+    // [P0-04] Kiểm tra thẩm quyền xuất bản chính thức:
+    // Chỉ Admin / Manager khi dự án đã phát hành 'da_gui' mới được xuất file trần không Watermark.
+    // Nếu chưa đủ điều kiện, tự động chuyển sang luồng xuất bản nháp (Draft Export) có watermark UC17.
+    const isOfficialAllowed =
+      (user?.role === "admin" || user?.role === "manager") && project.trangThai === "da_gui";
+
+    if (!isOfficialAllowed) {
+      toast.info("Báo giá chưa phát hành chính thức, tệp xuất tự động mang nhãn Bản Dự Thảo (UC17)!");
+      return handleExportDraftExcel();
+    }
+
     try {
       if (exceljsWorkbook) {
-        // Apply gray style to disabled ranges in export
+        // [P1-16] Clone một đối tượng workbook độc lập, KHÔNG MUTATE workbook state trên React!
+        const exportWb = await cloneExcelJSWorkbook(exceljsWorkbook);
+
+        // Apply gray style to disabled ranges in export clone
         if (disabledRanges && typeof disabledRanges === "object") {
           for (const [sName, cfg] of Object.entries(disabledRanges as any)) {
-            const ws = exceljsWorkbook.getWorksheet(sName);
+            const ws = exportWb.getWorksheet(sName);
             if (!ws) continue;
             const config = cfg as any;
             const disabledFill: any = {
@@ -315,9 +332,9 @@ export const QuoteEditorPage: React.FC = () => {
             }
           }
         }
-        const base64 = await workbookToBase64(exceljsWorkbook);
+        const base64 = await workbookToBase64(exportWb);
         downloadBase64File(base64, project.name?.replace(/\.xlsx$/i, "") || "baogia");
-        toast.success("Đã xuất tệp Excel thành công!");
+        toast.success("Đã xuất tệp Excel chính thức thành công!");
         return;
       }
 

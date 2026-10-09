@@ -140,7 +140,11 @@ export interface QuoteCalculations {
  */
 export function calculateQuote(data: QuoteFormData): QuoteCalculations {
   const subTotalItems = data.items.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
-  const totalOtCost = (data.teamConfig.otHours || 0) * (data.teamConfig.otHourlyRate || 505000);
+  const effectiveOtRate =
+    data.teamConfig.otHourlyRate !== undefined && data.teamConfig.otHourlyRate !== null && !isNaN(data.teamConfig.otHourlyRate)
+      ? data.teamConfig.otHourlyRate
+      : 505000;
+  const totalOtCost = (data.teamConfig.otHours || 0) * effectiveOtRate;
   const totalAllowances = (data.teamConfig.equipmentAllowance || 0) + (data.teamConfig.travelAllowance || 0);
 
   const baseBeforeDiscount = subTotalItems + totalOtCost + totalAllowances;
