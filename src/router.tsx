@@ -8,6 +8,9 @@ import { TemplatesPage } from "./components/pages/TemplatesPage";
 import { UpdateProfile } from "./components/pages/UpdateProfile";
 import { ListHistFilePage } from "./components/pages/ListHistFilePage";
 
+import { AdminDashboard } from "./components/AdminDashboard";
+import { UserDashboard } from "./components/UserDashboard";
+
 export const ROUTES = {
   home: "/",
   management: "/management",
@@ -36,20 +39,18 @@ function LoadingScreen() {
   );
 }
 
-// Root route: Redirect based on authentication & role
+// Root route: Hiển thị Dashboard tổng quan ban đầu của hệ thống theo mục 7.1.2
 function RootRoute() {
   const { user, loading } = useAuth();
 
   if (loading) return <LoadingScreen />;
   if (!user) return <Login />;
 
-  // Admin or Manager goes to Management Overview (UC01)
   if (user.role === "admin" || user.role === "manager") {
-    return <Navigate to={ROUTES.managementOverview} replace />;
+    return <AdminDashboard />;
   }
 
-  // User goes to My Quotes
-  return <Navigate to={ROUTES.quotes} replace />;
+  return <UserDashboard />;
 }
 
 // Protected Route for Admin/Manager (UC01 Workspace)
