@@ -85,16 +85,8 @@ export const api = {
     return request(`/api/projects${query ? `?${query}` : ""}`);
   },
 
-  async getProjectByUserId() {
-    return request("/api/projects/me");
-  },
-
   async getDeletedProjects() {
     return request("/api/projects/deleted");
-  },
-
-  async getDeletedProject(id: string) {
-    return request(`/api/projects/deleted/${encodeURIComponent(id)}`);
   },
 
   async getPendingCount() {
@@ -137,10 +129,56 @@ export const api = {
     });
   },
 
-  async updateProjectFile(id: string, fileBase64: string, sheets?: string[]) {
+  async getMyProjectPermissions(id: string): Promise<{
+    fullAccess: boolean;
+    grants: Array<{ sheetName: string; rangeRef: string; canRead: boolean; canEdit: boolean }>;
+  }> {
+    return request(`/api/projects/${id}/permissions/me`);
+  },
+
+  async getProjectPermissions(projectId: string, userId: string) {
+    return request(`/api/projects/${projectId}/permissions/${userId}`);
+  },
+
+  async getProjectHiddenRanges(projectId: string) {
+    return request(`/api/projects/${projectId}/hidden-ranges`);
+  },
+
+  async createProjectHiddenRange(
+    projectId: string,
+    payload: { sheetName: string; rangeRef: string; userId?: string },
+  ) {
+    return request(`/api/projects/${projectId}/hidden-ranges`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async deleteProjectHiddenRange(projectId: string, hiddenRangeId: string) {
+    return request(`/api/projects/${projectId}/hidden-ranges/${hiddenRangeId}`, { method: "DELETE" });
+  },
+
+  async replaceUserProjectPermissions(
+    projectId: string,
+    userId: string,
+    grants: Array<{ sheetName: string; rangeRef: string; canRead: boolean; canEdit: boolean }>,
+  ) {
+    return request(`/api/projects/${projectId}/permissions/${userId}`, {
+      method: "PUT",
+      body: JSON.stringify({ grants }),
+    });
+  },
+
+  async updateProjectFile(
+    id: string,
+    fileBase64: string,
+    baseRevision: number,
+    sheets?: string[],
+    structureChange?: { sheetName: string; axis: "row" | "column"; action: "insert" | "delete"; index: number },
+  ) {
     return request(`/api/projects/${id}/file`, {
       method: "PUT",
-      body: JSON.stringify({ fileBase64, sheets }),
+      body: JSON.stringify({ fileBase64, sheets, baseRevision, structureChange }),
     });
   },
 
@@ -159,10 +197,10 @@ export const api = {
     return request(`/api/projects/${id}/versions/${version}`);
   },
 
-  async saveEdit(id: string, editData: Record<string, unknown>) {
+  async saveEdit(id: string, editData: Record<string, unknown>, baseRevision: number) {
     return request(`/api/projects/${id}/edits`, {
       method: "POST",
-      body: JSON.stringify(editData),
+      body: JSON.stringify({ ...editData, baseRevision }),
     });
   },
 
@@ -189,6 +227,7 @@ export const api = {
       body: JSON.stringify(payload || {}),
     });
   },
+
   async deleteTemplate(id: string) {
     return request(`/api/templates/${id}`, { method: "DELETE" });
   },

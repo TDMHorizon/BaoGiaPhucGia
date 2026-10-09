@@ -27,6 +27,7 @@ type AdminHomeProps = {
   selectedProject: AdminProject | null;
   onUploadFile: (file: File) => void;
   onSelectProject: (id: string) => void;
+  onOpenProject?: (id: string) => void;
 };
 
 function formatDate(value?: string) {
@@ -36,7 +37,7 @@ function formatDate(value?: string) {
   return date.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
-export function AdminHome({ projects, edits, pendingCount, selectedProject, onUploadFile, onSelectProject }: AdminHomeProps) {
+export function AdminHome({ projects, edits, pendingCount, selectedProject, onUploadFile, onSelectProject, onOpenProject }: AdminHomeProps) {
   const recentProjects = [...projects]
     .sort((left, right) => new Date(right.updatedAt || right.createdAt || 0).getTime() - new Date(left.updatedAt || left.createdAt || 0).getTime())
     .slice(0, 5);
@@ -64,8 +65,36 @@ export function AdminHome({ projects, edits, pendingCount, selectedProject, onUp
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
-              <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4"><div><h3 className="text-base font-bold text-slate-900">Danh sách dự án</h3><p className="mt-1 text-xs text-slate-500">Chọn dự án để mở nội dung Excel.</p></div><span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-bold text-[#0b4f9c]">{projects.length} dự án</span></div>
-              <div className="max-h-[330px] overflow-y-auto custom-scrollbar">{recentProjects.length === 0 ? <p className="px-5 py-8 text-center text-sm text-slate-400">Chưa có dự án nào.</p> : recentProjects.map((project) => <button type="button" key={project.id} onClick={() => onSelectProject(project.id)} className={`flex w-full items-center gap-3 border-b border-slate-100 px-5 py-3 text-left transition-colors last:border-0 hover:bg-blue-50/60 ${selectedProject?.id === project.id ? "bg-blue-50" : ""}`}><div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-100 text-[#0b4f9c]"><FileSpreadsheet className="h-4 w-4" /></div><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-slate-800">{project.name}</p><p className="mt-1 text-[11px] text-slate-400">Cập nhật: {formatDate(project.updatedAt || project.createdAt)}</p></div>{project.trangThai && <StatusBadge status={project.trangThai} />}</button>)}</div>
+              <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4"><div><h3 className="text-base font-bold text-slate-900">Danh sách dự án</h3><p className="mt-1 text-xs text-slate-500">Nhấp đúp (Double-click) để mở trực tiếp trình chỉnh sửa Excel.</p></div><span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-bold text-[#0b4f9c]">{projects.length} dự án</span></div>
+              <div className="max-h-[330px] overflow-y-auto custom-scrollbar">
+                {recentProjects.length === 0 ? (
+                  <p className="px-5 py-8 text-center text-sm text-slate-400">Chưa có dự án nào.</p>
+                ) : (
+                  recentProjects.map((project) => (
+                    <button
+                      type="button"
+                      key={project.id}
+                      onClick={() => onSelectProject(project.id)}
+                      onDoubleClick={() => {
+                        onSelectProject(project.id);
+                        onOpenProject?.(project.id);
+                      }}
+                      className={`flex w-full items-center gap-3 border-b border-slate-100 px-5 py-3 text-left transition-colors last:border-0 hover:bg-blue-50/60 cursor-pointer ${
+                        selectedProject?.id === project.id ? "bg-blue-50" : ""
+                      }`}
+                    >
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-100 text-[#0b4f9c]">
+                        <FileSpreadsheet className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-bold text-slate-800">{project.name}</p>
+                        <p className="mt-1 text-[11px] text-slate-400">Cập nhật: {formatDate(project.updatedAt || project.createdAt)}</p>
+                      </div>
+                      {project.trangThai && <StatusBadge status={project.trangThai} />}
+                    </button>
+                  ))
+                )}
+              </div>
             </div>
           </div>
 

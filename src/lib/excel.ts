@@ -59,9 +59,22 @@ export function getSheetData(workbook: XLSX.WorkBook, sheetName: string) {
 export function applyEditToSheetWithMergeClearing(sheet: XLSX.WorkSheet, cellRef: string, newValue: string) {
   const cell = XLSX.utils.decode_cell(cellRef);
   const valStr = newValue === null || newValue === undefined ? "" : String(newValue);
+  const formula = valStr.startsWith("=") && valStr.length > 1 ? valStr.slice(1) : null;
   const isNum = !isNaN(Number(valStr)) && valStr.trim() !== "";
   const typedVal = isNum ? Number(valStr) : valStr;
-  const typeCode = isNum ? 'n' : 's';
+  const typeCode = formula || isNum ? 'n' : 's';
+  const setValue = (target: XLSX.CellObject) => {
+    target.t = typeCode;
+    if (formula) {
+      target.f = formula;
+      delete target.v;
+    } else {
+      target.v = typedVal;
+      delete target.f;
+    }
+    delete target.w;
+    delete target.r;
+  };
 
   // Find if this cell is part of any merged range
   let foundMerge: any = null;
@@ -78,14 +91,12 @@ export function applyEditToSheetWithMergeClearing(sheet: XLSX.WorkSheet, cellRef
     // Set the master cell (top-left) of the merge
     const masterRef = XLSX.utils.encode_cell(foundMerge.s);
     if (!sheet[masterRef]) {
-      sheet[masterRef] = { t: typeCode, v: typedVal };
+      const target: XLSX.CellObject = { t: typeCode };
+      setValue(target);
+      sheet[masterRef] = target;
     } else {
       const cObj = sheet[masterRef];
-      cObj.t = typeCode;
-      cObj.v = typedVal;
-      delete cObj.w;
-      delete cObj.r;
-      delete cObj.f;
+      setValue(cObj);
     }
 
     // Completely clear all other cells in the merged range to avoid duplicates
@@ -99,14 +110,12 @@ export function applyEditToSheetWithMergeClearing(sheet: XLSX.WorkSheet, cellRef
   } else {
     // Standard unmerged cell edit
     if (!sheet[cellRef]) {
-      sheet[cellRef] = { t: typeCode, v: typedVal };
+      const target: XLSX.CellObject = { t: typeCode };
+      setValue(target);
+      sheet[cellRef] = target;
     } else {
       const cObj = sheet[cellRef];
-      cObj.t = typeCode;
-      cObj.v = typedVal;
-      delete cObj.w;
-      delete cObj.r;
-      delete cObj.f;
+      setValue(cObj);
     }
   }
 }

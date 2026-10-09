@@ -133,20 +133,29 @@ export function getRowHeight(ejWs: any, ws: XLSX.WorkSheet | undefined, r: numbe
 }
 
 export function isCellInRange(cellRef: string, rangeStr: string): boolean {
-  if (!rangeStr) return true; // Empty means all allowed
+  if (!rangeStr?.trim()) return false;
   try {
     const ranges = rangeStr.split(',').map(r => r.trim()).filter(Boolean);
-    if (ranges.length === 0) return true;
+    if (ranges.length === 0) return false;
 
     const cell = XLSX.utils.decode_cell(cellRef);
 
     return ranges.some(rStr => {
+      if (rStr === '*') return true;
+
       // Handle full column ranges like "A:A" or "A:C"
       if (/^[A-Za-z]+:[A-Za-z]+$/.test(rStr)) {
         const [startCol, endCol] = rStr.split(':');
         const sColIdx = XLSX.utils.decode_col(startCol);
         const eColIdx = XLSX.utils.decode_col(endCol);
         return cell.c >= sColIdx && cell.c <= eColIdx;
+      }
+
+      // Handle full row ranges like "1:1" or "1:5"
+      if (/^[1-9]\d*:[1-9]\d*$/.test(rStr)) {
+        const [startRow, endRow] = rStr.split(':').map(Number);
+        return cell.r >= Math.min(startRow, endRow) - 1 &&
+          cell.r <= Math.max(startRow, endRow) - 1;
       }
 
       // Handle single column like "A"

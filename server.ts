@@ -6,18 +6,46 @@ import express from "express";
 import * as XLSX from "xlsx";
 import { createServer as createViteServer } from "vite";
 import path from "path";
-import { initDb, getDb, projectToJson, getProjectMembers, getProjectsWithMembers, setProjectMembers, userCanAccessProject, isProjectLocked, publicUser, type ProjectRow, type UserRow, type TrangThai, type EditRow, type VersionRow, type TemplateRow } from "./server/db";
+import { initDb, getDb, projectToJson, getProjectMembers, setProjectMembers, userCanAccessProject, isProjectLocked, publicUser, setProjectRoleVisibility, getProjectRoleVisibilities, isProjectHiddenForUser, saveWorkbookSnapshot, getLatestWorkbookSnapshot, recordWorkbookCommand, type ProjectRow, type UserRow, type TrangThai, type EditRow, type VersionRow, type TemplateRow } from "./server/db";
+import { logger } from "./server/logger";
 import { authenticateUser, signToken, authMiddleware, requireAdmin, requireAdminOrManager, hashPassword } from "./server/auth";
+import {
+  isCellWithinRange,
+  isValidCellRef,
+  normalizeRangeRef,
+} from "./server/permission-ranges";
+import {
+  parseProjectPermissionGrants,
+  PermissionInputError,
+  createProjectHiddenRange,
+  getHiddenRangesForUser,
+  getUserProjectPermissions,
+  renameProjectSheetPermissions,
+  replaceUserProjectPermissions,
+  shiftProjectSheetPermissions,
+  userCanEditRange,
+  userCanSeeCell,
+} from "./server/permissions";
 import {
   ensureDataDirs,
   saveProjectFile,
   readProjectFile,
+  readProjectWorkbookBuffer,
+  decodeProjectWorkbookBase64,
+  withStagedProjectWorkbook,
   readVersionSnapshot,
   saveTemplateFile,
   readTemplateFile,
   deleteTemplateFile,
-  deleteProjectFile,
 } from "./server/files";
+import { applyCellEditToWorkbookBuffer, getCellEditAffectedRange } from "./server/workbook-edits";
+import { createReadableWorkbookBuffer } from "./server/workbook-access";
+import {
+  commitCellEditRevision,
+  ProjectCellEditForbidden,
+  ProjectEditUnavailable,
+  ProjectRevisionConflict,
+} from "./server/workbook-revisions";
 
 /** Bản gốc không bị ghi đè. User chỉ điền ô được phép rồi tải Excel gửi khách. */
 const USER_TRANSITIONS: Record<string, TrangThai[]> = {
@@ -45,81 +73,75 @@ function newId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function userCanEditCell(project: ProjectRow, sheetName: string, cellRef: string) {
-  let ranges: unknown;
-  try {
-    ranges = project.editable_ranges ? JSON.parse(project.editable_ranges) : {};
-  } catch {
-    return false;
-  }
+const projectWriteTails = new Map<string, Promise<void>>();
 
-  const rangeText = typeof ranges === "string"
-    ? ranges
-    : ranges && typeof ranges === "object"
-      ? ((ranges as Record<string, unknown>)[sheetName] || (ranges as Record<string, unknown>)[""] || "")
-      : "";
-  if (typeof rangeText !== "string" || !rangeText.trim()) return false;
+async function withProjectWriteLock<T>(projectId: string, operation: () => Promise<T>): Promise<T> {
+  const previous = projectWriteTails.get(projectId) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.catch(() => undefined).then(() => gate);
+  projectWriteTails.set(projectId, tail);
+  await previous.catch(() => undefined);
 
   try {
-    const cell = XLSX.utils.decode_cell(cellRef);
-    return rangeText.split(",").some((part) => {
-      const range = part.trim();
-      if (/^[A-Za-z]+:[A-Za-z]+$/.test(range)) {
-        const [start, end] = range.split(":");
-        return cell.c >= XLSX.utils.decode_col(start) && cell.c <= XLSX.utils.decode_col(end);
-      }
-      if (/^[A-Za-z]+$/.test(range)) return cell.c === XLSX.utils.decode_col(range);
-      const decoded = XLSX.utils.decode_range(range);
-      return cell.r >= decoded.s.r && cell.r <= decoded.e.r && cell.c >= decoded.s.c && cell.c <= decoded.e.c;
-    });
-  } catch {
-    return false;
+    return await operation();
+  } finally {
+    release();
+    if (projectWriteTails.get(projectId) === tail) projectWriteTails.delete(projectId);
   }
 }
 
 function loadProject(id: string, includeDeleted = false): ProjectRow | undefined {
   const query = includeDeleted
-    ? "SELECT * FROM projects WHERE id = ? AND isDelete = 1"
-    : "SELECT * FROM projects WHERE id = ? AND isDelete = 0";
+    ? "SELECT * FROM projects WHERE id = ?"
+    : "SELECT * FROM projects WHERE id = ? AND deleted_at IS NULL";
   return getDb().prepare(query).get(id) as ProjectRow | undefined;
 }
 
-async function purgeExpiredDeletedProjects() {
-  const expiredProjects = getDb()
-    .prepare(
-      `SELECT id FROM projects
-       WHERE isDelete = 1
-         AND deleted_at IS NOT NULL
-         AND datetime(deleted_at) <= datetime('now', '-30 days')`
-    )
-    .all() as { id: string }[];
-
-  for (const project of expiredProjects) {
-    await deleteProjectFile(project.id);
-    getDb().prepare("DELETE FROM projects WHERE id = ? AND isDelete = 1").run(project.id);
-  }
-}
-
-async function projectWithFile(p: ProjectRow) {
+async function projectWithFile(p: ProjectRow, user: { id: string; role: string }) {
   const members = getProjectMembers(p.id);
   const json = projectToJson(p, members);
-  const fileBase64 = await readProjectFile(p.id);
-  return { ...json, fileBase64 };
+  if (user.role === "admin") {
+    const fileBase64 = await readProjectFile(p.id);
+    return { ...json, fileBase64 };
+  }
+
+  const role = user.role === "manager" ? "manager" : "user";
+  const grants = role === "manager"
+    ? (JSON.parse(p.sheets || "[]") as string[]).map((sheetName) => ({
+        sheetName,
+        rangeRef: "*",
+        canRead: true,
+        canEdit: true,
+      }))
+    : getUserProjectPermissions(getDb(), p.id, user.id);
+  const source = await readProjectWorkbookBuffer(p.id);
+  const hiddenRanges = getHiddenRangesForUser(getDb(), p.id, {
+    id: user.id,
+    role,
+  });
+  if (role === "manager" && hiddenRanges.length === 0) {
+    return { ...json, fileBase64: await readProjectFile(p.id) };
+  }
+  const readable = await createReadableWorkbookBuffer(source, grants, hiddenRanges);
+  return {
+    ...json,
+    sheets: readable.sheetNames,
+    ...(role === "user" ? { editableRanges: {}, memberIds: [] } : {}),
+    fileBase64: `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${readable.buffer.toString("base64")}`,
+  };
 }
 
-function listSummary(p: ProjectRow, membersByProjectId?: Map<string, string[]>) {
-  const members = membersByProjectId ? membersByProjectId.get(p.id) || [] : getProjectMembers(p.id);
+function listSummary(p: ProjectRow) {
+  const members = getProjectMembers(p.id);
   return projectToJson(p, members);
 }
 
 async function startServer() {
   ensureDataDirs();
   initDb();
-  await purgeExpiredDeletedProjects();
-  const purgeInterval = setInterval(() => {
-    purgeExpiredDeletedProjects().catch((error) => console.error("Failed to purge expired projects", error));
-  }, 24 * 60 * 60 * 1000);
-  purgeInterval.unref();
 
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
@@ -179,18 +201,14 @@ async function startServer() {
     }
   });
 
-  app.patch("/api/users/:id", authMiddleware, (req, res) => {
-    const requester = req.user!;
-    if (requester.role !== "admin" && requester.id !== req.params.id) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
+  app.patch("/api/users/:id", authMiddleware, requireAdmin, (req, res) => {
     const row = getDb().prepare("SELECT * FROM users WHERE id = ?").get(req.params.id) as UserRow | undefined;
     if (!row) return res.status(404).json({ error: "User not found" });
 
     const { username, password, role, active } = req.body || {};
     const nextUsername = username?.trim() || row.username;
-    const nextRole = requester.role === "admin" && (role === "admin" || role === "manager" || role === "user") ? role : row.role;
-    const nextActive = requester.role === "admin" && typeof active === "boolean" ? (active ? 1 : 0) : row.active;
+    const nextRole = role === "admin" || role === "manager" || role === "user" ? role : row.role;
+    const nextActive = typeof active === "boolean" ? (active ? 1 : 0) : row.active;
     const nextHash = password ? hashPassword(password) : row.password_hash;
 
     try {
@@ -218,25 +236,24 @@ async function startServer() {
     const q = String(req.query.q || "").trim().toLowerCase();
     const status = String(req.query.status || "").trim();
     const assignee = String(req.query.assignee || "").trim();
+    const includeHidden = req.query.includeHidden === "true" && user.role === "admin";
 
-    const { projects: rawProjects, membersByProjectId } = getProjectsWithMembers();
+    let rows = getDb().prepare("SELECT * FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC").all() as ProjectRow[];
 
-    let rows = Array.from(
-      new Map(rawProjects.map((p) => [p.id, p])).values()
-    );
+    // Enforce role-based project visibility
+    if (!includeHidden) {
+      rows = rows.filter((p) => !isProjectHiddenForUser(p.id, user));
+    }
 
     if (user.role !== "admin" && user.role !== "manager") {
-      rows = rows.filter((p) => {
-        if (p.nguoi_phu_trach_id === user.id) return true;
-        return (membersByProjectId.get(p.id) || []).includes(user.id);
-      });
+      rows = rows.filter((p) => userCanAccessProject(user, p));
     }
 
     if (status) rows = rows.filter((p) => p.trang_thai === status);
     if (assignee) {
       rows = rows.filter((p) => {
         if (p.nguoi_phu_trach_id === assignee) return true;
-        return (membersByProjectId.get(p.id) || []).includes(assignee);
+        return getProjectMembers(p.id).includes(assignee);
       });
     }
     if (q) {
@@ -246,41 +263,91 @@ async function startServer() {
       });
     }
 
-    res.json(rows.map((p) => listSummary(p, membersByProjectId)));
+    res.json(rows.map((project) => {
+      const summary = listSummary(project);
+      const visibilities = (user.role === "admin" || user.role === "manager")
+        ? getProjectRoleVisibilities(project.id)
+        : [];
+      return user.role === "admin" || user.role === "manager"
+        ? { ...summary, visibilities }
+        : { ...summary, sheets: [], editableRanges: {}, memberIds: [] };
+    }));
+  });
+
+  // Project Visibility API
+  app.get("/api/projects/:id/visibility", authMiddleware, requireAdminOrManager, (req, res) => {
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    const list = getProjectRoleVisibilities(project.id);
+    res.json(list);
+  });
+
+
+  app.put("/api/projects/:id/visibility", authMiddleware, requireAdminOrManager, (req, res) => {
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const body = z.object({
+      role: z.enum(["admin", "manager", "user"]),
+      userId: z.string().nullable().optional(),
+      isHidden: z.boolean(),
+      canView: z.boolean().optional(),
+      canEdit: z.boolean().optional(),
+    }).safeParse(req.body);
+
+    if (!body.success) return res.status(400).json({ error: "Invalid payload" });
+
+    // Only Admin can hide files from Managers; Managers can only hide files from Users
+    if (req.user!.role === "manager" && body.data.role !== "user") {
+      return res.status(403).json({ error: "Manager can only configure visibility for employees (user role)." });
+    }
+
+    setProjectRoleVisibility(project.id, body.data.role, {
+      userId: body.data.userId || null,
+      isHidden: body.data.isHidden,
+      canView: body.data.canView,
+      canEdit: body.data.canEdit,
+      hiddenBy: req.user!.id,
+    });
+
+    logger.audit("UPDATE_PROJECT_VISIBILITY", {
+      userId: req.user!.id,
+      role: req.user!.role,
+      projectId: project.id,
+      payload: body.data,
+    });
+
+    res.json({ success: true, visibilities: getProjectRoleVisibilities(project.id) });
+  });
+
+  // Project Snapshot API (Runtime SSOT Persistence)
+  app.post("/api/projects/:id/snapshot", authMiddleware, catchAsync(async (req, res) => {
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const { snapshotJson, version } = req.body || {};
+    if (!snapshotJson) return res.status(400).json({ error: "Missing snapshotJson" });
+
+    const ver = typeof version === "number" ? version : project.version;
+    saveWorkbookSnapshot(project.id, ver, typeof snapshotJson === "string" ? snapshotJson : JSON.stringify(snapshotJson), req.user!.id);
+
+    logger.info("WORKBOOK_SNAPSHOT", "SAVE_SNAPSHOT_SUCCESS", { projectId: project.id, version: ver });
+    res.json({ success: true, version: ver });
+  }));
+
+  app.get("/api/projects/:id/snapshot", authMiddleware, (req, res) => {
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const snapshot = getLatestWorkbookSnapshot(project.id);
+    res.json({ snapshotJson: snapshot });
   });
 
   app.get("/api/projects/pending-count", authMiddleware, requireAdminOrManager, (_req, res) => {
     const row = getDb()
-      .prepare("SELECT COUNT(*) as c FROM projects WHERE isDelete = 0 AND trang_thai IN ('dang_lam', 'cho_duyet')")
+      .prepare("SELECT COUNT(*) as c FROM projects WHERE deleted_at IS NULL AND trang_thai IN ('dang_lam', 'cho_duyet')")
       .get() as { c: number };
     res.json({ count: row.c });
-  });
-
-
-  app.get("/api/projects/me", authMiddleware, (req, res) => {
-    const user = req.user!;
-    const q = String(req.query.q || "").trim().toLowerCase();
-    const status = String(req.query.status || "").trim();
-
-    const { projects, membersByProjectId } = getProjectsWithMembers();
-
-    const uniqueProjects = Array.from(
-      new Map(projects.map((p) => [p.id, p])).values()
-    );
-
-    const rows = uniqueProjects.filter((project) => {
-      const isAssigned = project.nguoi_phu_trach_id === user.id
-        || (membersByProjectId.get(project.id) || []).includes(user.id);
-
-      if (!isAssigned) return false;
-      if (status && project.trang_thai !== status) return false;
-      if (!q) return true;
-
-      const haystack = `${project.name} ${project.so_bao_gia} ${project.ten_khach_hang} ${project.ghi_chu}`.toLowerCase();
-      return haystack.includes(q);
-    });
-
-    res.json(rows.map((project) => listSummary(project, membersByProjectId)));
   });
 
   app.post("/api/projects", authMiddleware, catchAsync(async (req, res) => {
@@ -329,26 +396,20 @@ async function startServer() {
     await saveProjectFile(id, fileBase64);
 
     const project = loadProject(id)!;
-    res.json(await projectWithFile(project));
+    res.json(await projectWithFile(project, user));
   }));
 
   app.get("/api/projects/deleted", authMiddleware, requireAdminOrManager, (_req, res) => {
-    const { projects: rows, membersByProjectId } = getProjectsWithMembers(true);
-    res.json(rows.map((p) => listSummary(p, membersByProjectId)));
+    const rows = getDb().prepare("SELECT * FROM projects WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC").all() as ProjectRow[];
+    res.json(rows.map(listSummary));
   });
-
-  app.get("/api/projects/deleted/:id", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
-    const project = loadProject(req.params.id, true);
-    if (!project) return res.status(404).json({ error: "Deleted project not found" });
-    res.json(await projectWithFile(project));
-  }));
 
   app.get("/api/projects/:id", authMiddleware, catchAsync(async (req, res) => {
     const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
-    res.json(await projectWithFile(project));
+    res.json(await projectWithFile(project, user));
   }));
 
   app.patch("/api/projects/:id", authMiddleware, catchAsync(async (req, res) => {
@@ -388,24 +449,23 @@ async function startServer() {
       )
       .run(name, soBaoGia, tenKhachHang, nguoiPhuTrachId, ghiChu, editableRanges, sheets, now(), project.id);
 
-    res.json(await projectWithFile(loadProject(project.id)!));
+    res.json(await projectWithFile(loadProject(project.id)!, user));
   }));
 
   app.delete("/api/projects/:id", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
-    const deletedAt = now();
-    getDb().prepare("UPDATE projects SET isDelete = 1, deleted_at = ?, updated_at = ? WHERE id = ?").run(deletedAt, deletedAt, project.id);
-    const permanentlyDeletedAt = new Date(Date.parse(deletedAt) + 30 * 24 * 60 * 60 * 1000).toISOString();
-    res.json({ ok: true, isDelete: true, deletedAt, permanentlyDeletedAt });
+    if (project.deleted_at) return res.status(400).json({ error: "Project already deleted" });
+    getDb().prepare("UPDATE projects SET deleted_at = ?, updated_at = ? WHERE id = ?").run(now(), now(), project.id);
+    res.json({ ok: true, deletedAt: now() });
   }));
 
   app.post("/api/projects/:id/restore", authMiddleware, requireAdminOrManager, (req, res) => {
     const project = loadProject(req.params.id, true);
     if (!project) return res.status(404).json({ error: "Project not found" });
-    if (!project.isDelete) return res.status(400).json({ error: "Project is not deleted" });
+    if (!project.deleted_at) return res.status(400).json({ error: "Project is not deleted" });
     const restoredAt = now();
-    getDb().prepare("UPDATE projects SET isDelete = 0, deleted_at = NULL, updated_at = ? WHERE id = ?").run(restoredAt, project.id);
+    getDb().prepare("UPDATE projects SET deleted_at = NULL, updated_at = ? WHERE id = ?").run(restoredAt, project.id);
     res.json(listSummary(loadProject(project.id)!));
   });
 
@@ -420,31 +480,291 @@ async function startServer() {
     res.json({ success: true });
   }));
 
-  // Cập nhật file dự án (Admin, Manager hoặc Nhân viên được phân công)
-  app.put("/api/projects/:id/file", authMiddleware, catchAsync(async (req, res) => {
+  app.get("/api/projects/:id/permissions/me", authMiddleware, (req, res) => {
     const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
-    if (user.role !== "admin" && user.role !== "manager" && !userCanAccessProject(user, project)) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
-    if (user.role !== "admin" && user.role !== "manager" && isProjectLocked(project.trang_thai)) {
-      return res.status(403).json({ error: "Project is locked" });
-    }
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
 
-    const { fileBase64, sheets } = req.body || {};
-    if (!fileBase64) return res.status(400).json({ error: "Missing file" });
-
-    saveProjectFile(project.id, fileBase64);
-    if (sheets) {
-      getDb()
-        .prepare("UPDATE projects SET sheets = ?, updated_at = ? WHERE id = ?")
-        .run(JSON.stringify(sheets), now(), project.id);
-    } else {
-      getDb().prepare("UPDATE projects SET updated_at = ? WHERE id = ?").run(now(), project.id);
+    if (user.role === "admin" || user.role === "manager") {
+      return res.json({ fullAccess: true, grants: [] });
     }
 
-    res.json(await projectWithFile(loadProject(project.id)!));
+    const grants = getUserProjectPermissions(getDb(), project.id, user.id);
+    res.json({ fullAccess: false, grants });
+  });
+
+  app.get(
+    "/api/projects/:id/permissions/:userId",
+    authMiddleware,
+    requireAdminOrManager,
+    (req, res) => {
+      const project = loadProject(req.params.id);
+      if (!project) return res.status(404).json({ error: "Project not found" });
+      const targetUser = getDb()
+        .prepare("SELECT id, role FROM users WHERE id = ?")
+        .get(req.params.userId) as Pick<UserRow, "id" | "role"> | undefined;
+      if (!targetUser || targetUser.role !== "user") {
+        return res.status(404).json({ error: "Employee not found" });
+      }
+      res.json({ userId: targetUser.id, grants: getUserProjectPermissions(getDb(), project.id, targetUser.id) });
+    },
+  );
+
+  app.get("/api/projects/:id/hidden-ranges", authMiddleware, requireAdminOrManager, (req, res) => {
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    const rows = getDb().prepare(`
+      SELECT id, sheet_name AS sheetName, range_ref AS rangeRef,
+        hidden_by_user_id AS hiddenByUserId, hidden_by_role AS hiddenByRole,
+        hidden_for_user_id AS hiddenForUserId, created_at AS createdAt
+      FROM project_hidden_ranges
+      WHERE project_id = ? AND (? = 'admin' OR hidden_by_user_id = ?)
+      ORDER BY sheet_name, range_ref
+    `).all(project.id, req.user!.role, req.user!.id);
+    res.json(rows);
+  });
+
+  app.post("/api/projects/:id/hidden-ranges", authMiddleware, requireAdminOrManager, (req, res) => {
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    const body = z.object({
+      sheetName: z.string().trim().min(1),
+      rangeRef: z.string().trim().min(1),
+      userId: z.string().trim().min(1).optional(),
+    }).safeParse(req.body);
+    if (!body.success) return res.status(400).json({ error: "Invalid hidden-range payload." });
+
+    const sheets = z.array(z.string()).safeParse(JSON.parse(project.sheets || "[]"));
+    if (!sheets.success || !sheets.data.includes(body.data.sheetName)) {
+      return res.status(400).json({ error: "Unknown worksheet." });
+    }
+
+    let rangeRef: string;
+    try {
+      rangeRef = normalizeRangeRef(body.data.rangeRef);
+    } catch (error) {
+      if (error instanceof RangeError) return res.status(400).json({ error: error.message });
+      throw error;
+    }
+
+    let hiddenForUserId: string | null = null;
+    if (body.data.userId) {
+      const target = getDb()
+        .prepare("SELECT id, role, active FROM users WHERE id = ?")
+        .get(body.data.userId) as Pick<UserRow, "id" | "role" | "active"> | undefined;
+      if (!target || target.role !== "user" || !target.active) {
+        return res.status(400).json({ error: "Specific hidden ranges can only target active employees." });
+      }
+      hiddenForUserId = target.id;
+    }
+
+    try {
+      const id = createProjectHiddenRange(getDb(), {
+        projectId: project.id,
+        sheetName: body.data.sheetName,
+        rangeRef,
+        hiddenByUserId: req.user!.id,
+        hiddenByRole: req.user!.role as "admin" | "manager",
+        hiddenForUserId,
+        createdAt: now(),
+      });
+      res.status(201).json({ id, sheetName: body.data.sheetName, rangeRef, hiddenForUserId });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("UNIQUE constraint failed")) {
+        return res.status(409).json({ error: "This hidden range already exists." });
+      }
+      throw error;
+    }
+  });
+
+  app.delete(
+    "/api/projects/:id/hidden-ranges/:hiddenRangeId",
+    authMiddleware,
+    requireAdminOrManager,
+    (req, res) => {
+      const project = loadProject(req.params.id);
+      if (!project) return res.status(404).json({ error: "Project not found" });
+      const result = getDb().prepare(`
+        DELETE FROM project_hidden_ranges
+        WHERE id = ? AND project_id = ?
+          AND (? = 'admin' OR hidden_by_user_id = ?)
+      `).run(req.params.hiddenRangeId, project.id, req.user!.role, req.user!.id);
+      if (!result.changes) return res.status(404).json({ error: "Hidden range not found." });
+      res.json({ success: true });
+    },
+  );
+
+  app.put(
+    "/api/projects/:id/permissions/:userId",
+    authMiddleware,
+    requireAdminOrManager,
+    (req, res) => {
+      const project = loadProject(req.params.id);
+      if (!project) return res.status(404).json({ error: "Project not found" });
+
+      const targetUser = getDb()
+        .prepare("SELECT id, role, active FROM users WHERE id = ?")
+        .get(req.params.userId) as Pick<UserRow, "id" | "role" | "active"> | undefined;
+      if (!targetUser) return res.status(404).json({ error: "User not found" });
+      if (targetUser.role !== "user" || !targetUser.active) {
+        return res.status(400).json({ error: "Permissions can only be assigned to active employees." });
+      }
+
+      const sheetNames = z.array(z.string()).safeParse(JSON.parse(project.sheets || "[]"));
+      if (!sheetNames.success) {
+        return res.status(500).json({ error: "Project sheet metadata is invalid." });
+      }
+
+      let grants;
+      try {
+        grants = parseProjectPermissionGrants(req.body?.grants);
+      } catch (error) {
+        if (error instanceof PermissionInputError) {
+          return res.status(400).json({ error: error.message });
+        }
+        throw error;
+      }
+
+      const knownSheetNames = new Set(sheetNames.data);
+      if (grants.some((grant) => !knownSheetNames.has(grant.sheetName))) {
+        return res.status(400).json({ error: "A permission grant references an unknown sheet." });
+      }
+
+      const grantCount = replaceUserProjectPermissions(getDb(), {
+        projectId: project.id,
+        userId: targetUser.id,
+        grantedBy: req.user!.id,
+        grants,
+      });
+      res.json({ success: true, userId: targetUser.id, grantCount });
+    },
+  );
+
+  // Chỉ admin được cập nhật file gốc (cấu trúc sheet). Nhân viên không ghi đè.
+  app.put("/api/projects/:id/file", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const body = z.object({
+      fileBase64: z.string().min(1),
+      sheets: z.array(z.string()).optional(),
+      baseRevision: z.number().int().min(1),
+      structureChange: z.object({
+        sheetName: z.string().trim().min(1),
+        axis: z.enum(["row", "column"]),
+        action: z.enum(["insert", "delete"]),
+        index: z.number().int().min(1).max(1_048_576),
+      }).refine(
+        (change) => change.axis !== "column" || change.index <= 16_384,
+        "Column index exceeds Excel's limit.",
+      ).optional(),
+    }).safeParse(req.body);
+    if (!body.success) return res.status(400).json({ error: "Invalid workbook save payload." });
+
+    try {
+      const result = await withProjectWriteLock(project.id, async () => {
+        const current = loadProject(project.id);
+        if (!current) return { status: 404 as const, error: "Project not found" };
+        if (current.version !== body.data.baseRevision) {
+          return {
+            status: 409 as const,
+            error: "The workbook has changed. Reload it before saving.",
+            currentRevision: current.version,
+          };
+        }
+
+        const nextRevision = current.version + 1;
+        const updatedAt = now();
+        const stagedWorkbook = decodeProjectWorkbookBase64(body.data.fileBase64);
+        const save = await withStagedProjectWorkbook(
+          current.id,
+          stagedWorkbook,
+          (promote, restore) => {
+            const transaction = getDb().transaction(() => {
+              const latest = loadProject(current.id);
+              if (!latest) throw new ProjectEditUnavailable("Project not found.");
+              if (latest.version !== body.data.baseRevision) {
+                throw new ProjectRevisionConflict(latest.version);
+              }
+
+              promote();
+              try {
+                const nextSheets = body.data.sheets ?? JSON.parse(latest.sheets || "[]") as string[];
+                const previousSheets = JSON.parse(latest.sheets || "[]") as string[];
+                const removedSheets = previousSheets.filter((sheet) => !nextSheets.includes(sheet));
+                const addedSheets = nextSheets.filter((sheet) => !previousSheets.includes(sheet));
+                const updatedAt = now();
+
+                if (removedSheets.length === 1 && addedSheets.length === 1 && previousSheets.length === nextSheets.length) {
+                  renameProjectSheetPermissions(
+                    getDb(),
+                    current.id,
+                    removedSheets[0],
+                    addedSheets[0],
+                    updatedAt,
+                  );
+                }
+
+                if (body.data.structureChange) {
+                  shiftProjectSheetPermissions(
+                    getDb(),
+                    current.id,
+                    body.data.structureChange.sheetName,
+                    body.data.structureChange,
+                    updatedAt,
+                  );
+                }
+
+                const update = getDb().prepare(`
+                  UPDATE projects
+                  SET sheets = ?, version = ?, updated_at = ?
+                  WHERE id = ? AND version = ?
+                `).run(
+                  JSON.stringify(nextSheets),
+                  nextRevision,
+                  updatedAt,
+                  current.id,
+                  body.data.baseRevision,
+                );
+                if (update.changes !== 1) {
+                  const newest = loadProject(current.id);
+                  throw new ProjectRevisionConflict(newest?.version ?? body.data.baseRevision);
+                }
+              } catch (error) {
+                restore();
+                throw error;
+              }
+            });
+
+            try {
+              transaction.immediate();
+              return { revision: nextRevision };
+            } catch (error) {
+              restore();
+              throw error;
+            }
+          },
+        );
+        return { status: 200 as const, ...save };
+      });
+
+      if (result.status !== 200) {
+        return res.status(result.status).json({
+          error: result.error,
+          ...("currentRevision" in result ? { currentRevision: result.currentRevision } : {}),
+        });
+      }
+      res.json({ success: true, revision: result.revision });
+    } catch (error) {
+      if (error instanceof ProjectRevisionConflict) {
+        return res.status(409).json({ error: error.message, currentRevision: error.currentRevision });
+      }
+      if (error instanceof ProjectEditUnavailable && error.message === "Project not found.") {
+        return res.status(404).json({ error: "Project not found" });
+      }
+      throw error;
+    }
   }));
 
   // Status workflow
@@ -469,7 +789,7 @@ async function startServer() {
       .prepare("UPDATE projects SET trang_thai = ?, updated_at = ? WHERE id = ?")
       .run(nextStatus, now(), project.id);
 
-    res.json(await projectWithFile(loadProject(project.id)!));
+    res.json(await projectWithFile(loadProject(project.id)!, user));
   }));
 
   // Versions
@@ -504,11 +824,37 @@ async function startServer() {
     const version = Number(req.params.version);
     const fileBase64 = await readVersionSnapshot(project.id, version);
     if (!fileBase64) return res.status(404).json({ error: "Version not found" });
-    res.json({ version, fileBase64 });
+    if (user.role === "admin") {
+      return res.json({ version, fileBase64 });
+    }
+
+    const isManager = user.role === "manager";
+    const grants = isManager
+      ? (JSON.parse(project.sheets || "[]") as string[]).map((sheetName) => ({
+          sheetName,
+          rangeRef: "*",
+          canRead: true,
+          canEdit: true,
+        }))
+      : getUserProjectPermissions(getDb(), project.id, user.id);
+    const hiddenRanges = getHiddenRangesForUser(getDb(), project.id, user);
+    if (isManager && hiddenRanges.length === 0) {
+      return res.json({ version, fileBase64 });
+    }
+    const readable = await createReadableWorkbookBuffer(
+      decodeProjectWorkbookBase64(fileBase64),
+      grants,
+      hiddenRanges,
+    );
+    res.json({
+      version,
+      sheets: readable.sheetNames,
+      fileBase64: `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${readable.buffer.toString("base64")}`,
+    });
   }));
 
   // Edits
-  app.post("/api/projects/:id/edits", authMiddleware, (req, res) => {
+  app.post("/api/projects/:id/edits", authMiddleware, catchAsync(async (req, res) => {
     const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
@@ -517,39 +863,100 @@ async function startServer() {
       return res.status(403).json({ error: "Project is locked" });
     }
 
-    const { sheetName, cell, oldValue, newValue } = req.body || {};
-    const id = newId();
-    const timestamp = now();
-    const safeUserId = user?.id || "unknown";
-    const safeUsername = user?.username || "Admin";
-    const safeSheetName = sheetName || "";
-    const safeCell = cell || "";
-    if (user.role !== "admin" && user.role !== "manager" && !userCanEditCell(project, safeSheetName, safeCell)) {
-      return res.status(403).json({ error: "You do not have permission to edit this cell" });
-    }
-    const safeOldValue = oldValue || "";
-    const safeNewValue = newValue || "";
-    getDb()
-      .prepare(
-        `INSERT INTO edits (id, project_id, user_id, username, sheet_name, cell, old_value, new_value, timestamp)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(id, project.id, user.id, user.username, sheetName, cell, oldValue ?? "", newValue ?? "", timestamp);
+    const body = z.object({
+      sheetName: z.string().trim().min(1),
+      cell: z.string().refine(isValidCellRef, "Invalid cell reference."),
+      newValue: z.string(),
+      baseRevision: z.number().int().min(1),
+    }).safeParse(req.body);
+    if (!body.success) return res.status(400).json({ error: "Invalid edit payload." });
 
-    getDb().prepare("UPDATE projects SET updated_at = ? WHERE id = ?").run(timestamp, project.id);
+    const sheetName = body.data.sheetName;
+    const cell = normalizeRangeRef(body.data.cell);
+    return withProjectWriteLock(project.id, async () => {
+      const current = loadProject(project.id);
+      if (!current) return res.status(404).json({ error: "Project not found" });
+      if (!userCanAccessProject(user, current)) return res.status(403).json({ error: "Forbidden" });
+      if (user.role === "user" && isProjectLocked(current.trang_thai)) {
+        return res.status(403).json({ error: "Project is locked" });
+      }
+      if (current.version !== body.data.baseRevision) {
+        return res.status(409).json({
+          error: "The workbook has changed. Reload it before saving.",
+          currentRevision: current.version,
+        });
+      }
 
-    res.json({
-      id,
-      projectId: project.id,
-      userId: user.id,
-      username: user.username,
-      sheetName,
-      cell,
-      oldValue,
-      newValue,
-      timestamp,
+      const sheetNames = z.array(z.string()).safeParse(JSON.parse(current.sheets || "[]"));
+      if (!sheetNames.success || !sheetNames.data.includes(sheetName)) {
+        return res.status(400).json({ error: "Unknown worksheet." });
+      }
+      try {
+        const sourceWorkbook = await readProjectWorkbookBuffer(current.id);
+        const affectedRange = await getCellEditAffectedRange(sourceWorkbook, sheetName, cell);
+        if (
+          user.role === "user" &&
+          !userCanEditRange(getDb(), user.id, current.id, sheetName, affectedRange)
+        ) {
+          return res.status(403).json({ error: "You do not have edit permission for the full affected cell range." });
+        }
+        const { buffer: editedWorkbook, oldValue } = await applyCellEditToWorkbookBuffer(
+          sourceWorkbook,
+          sheetName,
+          cell,
+          body.data.newValue,
+        );
+        const timestamp = now();
+        const saved = await withStagedProjectWorkbook(
+          current.id,
+          editedWorkbook,
+          (promote, restore) => commitCellEditRevision(
+            getDb(),
+            {
+              projectId: current.id,
+              user,
+              sheetName,
+              cell,
+              affectedRange,
+              oldValue,
+              newValue: body.data.newValue,
+              baseRevision: body.data.baseRevision,
+              timestamp,
+            },
+            promote,
+            restore,
+          ),
+        );
+
+        return res.json({
+          id: saved.id,
+          projectId: saved.projectId,
+          userId: saved.user.id,
+          username: saved.user.username,
+          sheetName: saved.sheetName,
+          cell: saved.cell,
+          oldValue: saved.oldValue,
+          newValue: saved.newValue,
+          baseRevision: saved.baseRevision,
+          revision: saved.revision,
+          timestamp: saved.timestamp,
+        });
+      } catch (error) {
+        if (error instanceof ProjectRevisionConflict) {
+          return res.status(409).json({ error: error.message, currentRevision: error.currentRevision });
+        }
+        if (error instanceof ProjectCellEditForbidden) {
+          return res.status(403).json({ error: error.message });
+        }
+        if (error instanceof ProjectEditUnavailable) {
+          if (error.message === "Project not found.") return res.status(404).json({ error: "Project not found" });
+          if (error.message === "Forbidden.") return res.status(403).json({ error: "Forbidden" });
+          if (error.message === "Project is locked.") return res.status(403).json({ error: error.message });
+        }
+        throw error;
+      }
     });
-  });
+  }));
 
   app.get("/api/projects/:id/edits", authMiddleware, (req, res) => {
     const user = req.user!;
@@ -558,14 +965,22 @@ async function startServer() {
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
 
     let rows: EditRow[] = [];
-    if (user.role === "admin" || user.role === "manager") {
+    if (user.role === "admin") {
       rows = getDb()
         .prepare("SELECT * FROM edits WHERE project_id = ? ORDER BY timestamp DESC")
         .all(project.id) as EditRow[];
+    } else if (user.role === "manager") {
+      rows = (getDb()
+        .prepare("SELECT * FROM edits WHERE project_id = ? ORDER BY timestamp DESC")
+        .all(project.id) as EditRow[])
+        .filter((edit) => userCanSeeCell(getDb(), user, project.id, edit.sheet_name, edit.cell));
     } else {
       rows = getDb()
         .prepare("SELECT * FROM edits WHERE project_id = ? AND user_id = ? ORDER BY timestamp DESC")
         .all(project.id, user.id) as EditRow[];
+      rows = rows.filter((edit) =>
+        userCanSeeCell(getDb(), user, project.id, edit.sheet_name, edit.cell),
+      );
     }
 
     res.json(
@@ -578,6 +993,8 @@ async function startServer() {
         cell: e.cell,
         oldValue: e.old_value,
         newValue: e.new_value,
+        baseRevision: e.base_revision,
+        revision: e.revision,
         timestamp: e.timestamp,
       }))
     );
@@ -645,7 +1062,7 @@ async function startServer() {
         ts
       );
     await saveProjectFile(id, fileBase64);
-    res.json(await projectWithFile(loadProject(id)!));
+    res.json(await projectWithFile(loadProject(id)!, user));
   }));
 
   app.delete("/api/templates/:id", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {

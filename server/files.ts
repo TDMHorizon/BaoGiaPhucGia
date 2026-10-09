@@ -1,6 +1,7 @@
 import fs from "fs";
 import fsPromises from "fs/promises";
 import path from "path";
+import { randomUUID } from "node:crypto";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const FILES_DIR = path.join(DATA_DIR, "files");
@@ -25,6 +26,60 @@ function toDataUrl(buf: Buffer): string {
 
 export function projectFilePath(id: string) {
   return path.join(FILES_DIR, `${id}.xlsx`);
+}
+
+export function decodeProjectWorkbookBase64(fileBase64: string): Buffer {
+  return stripDataUrl(fileBase64);
+}
+
+export async function readProjectWorkbookBuffer(id: string): Promise<Buffer> {
+  return fsPromises.readFile(projectFilePath(id));
+}
+
+export async function withStagedProjectWorkbook<T>(
+  id: string,
+  workbook: Buffer,
+  commit: (promote: () => void, restore: () => void) => T,
+): Promise<T> {
+  ensureDataDirs();
+  return withStagedFileReplacement(projectFilePath(id), workbook, commit);
+}
+
+export async function withStagedFileReplacement<T>(
+  targetPath: string,
+  workbook: Buffer,
+  commit: (promote: () => void, restore: () => void) => T,
+): Promise<T> {
+  const temporaryPath = `${targetPath}.${randomUUID()}.tmp`;
+  const backupPath = `${targetPath}.${randomUUID()}.bak`;
+  const targetExisted = fs.existsSync(targetPath);
+  let promoted = false;
+
+  await fsPromises.writeFile(temporaryPath, workbook);
+
+  const restore = () => {
+    if (!promoted) return;
+    if (targetExisted) fs.copyFileSync(backupPath, targetPath);
+    else fs.unlinkSync(targetPath);
+    promoted = false;
+  };
+
+  const promote = () => {
+    if (targetExisted) fs.copyFileSync(targetPath, backupPath);
+    fs.renameSync(temporaryPath, targetPath);
+    promoted = true;
+  };
+
+  try {
+    return commit(promote, restore);
+  } catch (error) {
+    restore();
+    throw error;
+  } finally {
+    for (const temporary of [temporaryPath, backupPath]) {
+      if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+    }
+  }
 }
 
 export async function saveProjectFile(id: string, fileBase64: string) {

@@ -14,8 +14,8 @@ type UserLayoutProps = {
   onTabChange: (tab: string) => void;
   onMobileOpenChange: (open: boolean) => void;
   onToggleNavigation: () => void;
-  onProfile: () => void;
   onLogout: () => void;
+  onProfile?: () => void;
   children: ReactNode;
 };
 
@@ -29,8 +29,8 @@ export function UserLayout({
   onTabChange,
   onMobileOpenChange,
   onToggleNavigation,
-  onProfile,
   onLogout,
+  onProfile,
   children,
 }: UserLayoutProps) {
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
@@ -157,7 +157,7 @@ export function UserLayout({
                     type="button"
                     onClick={() => {
                       setIsProfileMenuOpen(false);
-                      onProfile();
+                      onProfile?.();
                     }}
                     className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium text-slate-700 hover:bg-blue-50 hover:text-[#0b4f9c]"
                   >
