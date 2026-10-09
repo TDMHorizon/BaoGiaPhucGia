@@ -1,10 +1,10 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { FolderOpen, Settings, Users, FileText, Undo, Plus, Minus, Search, Filter, RotateCcw } from "lucide-react";
+import { FolderOpen, Settings, Users, FileText, Undo, Plus, Minus, Search, Filter, RotateCcw, Download, Printer } from "lucide-react";
 import { api } from "../lib/api";
-import { fileToBase64, parseExcel, getSheetData, applyEditsToWorkbook } from "../lib/excel";
-import { SpreadsheetViewer } from "./SpreadsheetViewer";
-import { insertRowWithExcelJS, deleteRowWithExcelJS, insertColWithExcelJS, deleteColWithExcelJS, loadExcelJSWorkbook, updateMergedCellInExcelJS } from "../lib/exceljs-helper";
+import { fileToBase64, parseExcel, getSheetData, applyEditsToWorkbook, downloadBase64File } from "../lib/excel";
+import { UniverSpreadsheetAdmin} from "./SpreadsheetViewer/UniverSpreadsheetAdmin";
+import { insertRowWithExcelJS, deleteRowWithExcelJS, insertColWithExcelJS, deleteColWithExcelJS, loadExcelJSWorkbook, updateMergedCellInExcelJS, workbookToBase64 } from "../lib/exceljs-helper";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
@@ -24,6 +24,8 @@ import { useAuth } from "../lib/auth";
 import { AdminHeader, AdminSidebar } from "../layout/AdminLayout";
 import { AdminHome } from "./pages/AdminHome";
 import { ROUTES } from "../router";
+import { convertToUniverWorkbook } from "../lib/excelToUniver";
+import { syncUniverToExcelJS } from "../layout/mapperUniverToExcel";
 
 export function AdminDashboard() {
   const { user, logout } = useAuth();
@@ -60,6 +62,13 @@ export function AdminDashboard() {
   const [history, setHistory] = useState<string[]>([]);
   const [dragStart, setDragStart] = useState<{ r: number; c: number } | null>(null);
   const [dragEnd, setDragEnd] = useState<{ r: number; c: number } | null>(null);
+  const [univerSnapshot, setUniverSnapshot] = useState<any | null>(null);
+  const [univerAPI, setUniverAPI] = useState<any | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [isCellEditDialogOpen, setIsCellEditDialogOpen] = useState(false);
+  const [editingCellInfo, setEditingCellInfo] = useState<{ sheetName: string; cellRef: string; r: number; c: number; value: string } | null>(null);
+  const [editCellValue, setEditCellValue] = useState("");
+  const [lastSelectedCell, setLastSelectedCell] = useState<{ sheetName: string; cellRef: string; value: string; r: number; c: number } | null>(null);
 
   const pushToHistory = (fileBase64: string) => {
     setHistory(prev => [...prev, fileBase64]);
@@ -130,6 +139,7 @@ export function AdminDashboard() {
         }
       });
       setExceljsWorkbook(ejWb);
+      setUniverSnapshot(convertToUniverWorkbook(updatedWb, ejWb, ranges));
       return { wb: updatedWb, ejWb };
     } catch (e) {
       console.error("Failed to load workbook states", e);
@@ -161,12 +171,14 @@ export function AdminDashboard() {
     setEdits(projectEdits);
 
     try {
-      const { wb } = await updateWorkbookStateAndExcelJS(project.fileBase64, projectEdits);
+      const { wb, ejWb } = await updateWorkbookStateAndExcelJS(project.fileBase64, projectEdits);
       if (wb.SheetNames.length > 0) {
         setActiveSheet(wb.SheetNames[0]);
         setSheetData(getSheetData(wb, wb.SheetNames[0]));
+        setUniverSnapshot(convertToUniverWorkbook(wb, ejWb, project.editableRanges));
       }
     } catch (e) {
+      console.error("Lỗi khi tải dữ liệu bảng tính dự án:", e);
     }
   };
 
@@ -190,16 +202,116 @@ export function AdminDashboard() {
     setSheetData(getSheetData(workbook, sheetName));
   };
 
-  const appendRange = (rangePart: string) => {
-    const currentRange = ranges[activeSheet] || "";
-    const parts = currentRange.split(",").map((r: string) => r.trim()).filter(Boolean);
-    if (parts.includes(rangePart)) {
-      setRanges({ ...ranges, [activeSheet]: parts.filter((r: string) => r !== rangePart).join(", ") });
-    } else {
-      setRanges({ ...ranges, [activeSheet]: [...parts, rangePart].join(", ") });
+  const applyRangeHighlightInUniver = (sheetName: string, rangePart: string) => {
+    if (!univerAPI || !rangePart) return;
+    try {
+      const activeWb = univerAPI.getActiveWorkbook?.();
+      const ws = activeWb?.getSheetByName?.(sheetName) || activeWb?.getActiveSheet?.();
+      if (ws) {
+        if (/^[A-Za-z]+:[A-Za-z]+$/.test(rangePart) || /^[A-Za-z]+$/.test(rangePart)) {
+          const fRange = ws.getRange?.(rangePart);
+          if (fRange && fRange.setBackgroundColor) {
+            fRange.setBackgroundColor("#e6f9ed");
+          }
+        } else {
+          const decoded = XLSX.utils.decode_range(rangePart);
+          const fRange = ws.getRange?.(
+            decoded.s.r,
+            decoded.s.c,
+            decoded.e.r - decoded.s.r + 1,
+            decoded.e.c - decoded.s.c + 1
+          );
+          if (fRange && fRange.setBackgroundColor) {
+            fRange.setBackgroundColor("#e6f9ed");
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Could not set range background color in Univer:", err);
     }
   };
 
+  const handleRangeSelect = async (sheetName: string, rangePart: string) => {
+    if (!selectedProject || !rangePart) return;
+
+    // Tô xanh lá cây nhạt ngay lập tức trên Univer
+    applyRangeHighlightInUniver(sheetName, rangePart);
+
+    // Track ô được chọn gần nhất
+    const firstCellRef = rangePart.split(":")[0];
+    try {
+      const decoded = XLSX.utils.decode_cell(firstCellRef);
+      const currentSheetData = workbook ? getSheetData(workbook, sheetName) : [];
+      const currentVal = currentSheetData[decoded.r]?.[decoded.c] ?? "";
+      setLastSelectedCell({ sheetName, cellRef: firstCellRef, value: String(currentVal), r: decoded.r, c: decoded.c });
+    } catch {}
+
+    // Cập nhật state và kết nối API backend để lưu vùng chỉnh sửa
+    const currentRange = ranges[sheetName] || "";
+    const parts = currentRange.split(",").map((r: string) => r.trim()).filter(Boolean);
+    if (!parts.includes(rangePart)) {
+      const updatedParts = [...parts, rangePart];
+      const newRangeStr = updatedParts.join(", ");
+      const updatedRanges = { ...ranges, [sheetName]: newRangeStr };
+      setRanges(updatedRanges);
+      setSelectedProject((prev: any) => prev ? { ...prev, editableRanges: updatedRanges } : null);
+
+      try {
+        await api.updateRanges(selectedProject.id, updatedRanges);
+        toast.success(`Đã cấp quyền sửa ô/vùng ${rangePart} (Tô xanh lá cây nhạt) cho nhân viên`, {
+          duration: 2000,
+        });
+      } catch (err) {
+        console.error("Lỗi khi lưu phạm vi chỉnh sửa:", err);
+      }
+    }
+  };
+
+  const handleCellDoubleClick = (sheetName: string, cellRef: string, currentValue: string, r: number, c: number) => {
+    setEditingCellInfo({ sheetName, cellRef, value: currentValue, r, c });
+    setEditCellValue(currentValue);
+    setIsCellEditDialogOpen(true);
+  };
+
+  const handleSaveCellModal = async () => {
+    if (!editingCellInfo) return;
+    const { r, c, sheetName, cellRef } = editingCellInfo;
+    setIsCellEditDialogOpen(false);
+
+    // Cập nhật giá trị ô vào Univer ngay lập tức
+    if (univerAPI) {
+      try {
+        const activeWb = univerAPI.getActiveWorkbook?.();
+        const ws = activeWb?.getSheetByName?.(sheetName) || activeWb?.getActiveSheet?.();
+        ws?.getRange?.(r, c)?.setValue?.(editCellValue);
+      } catch {}
+    }
+
+    await handleCellEdit(r, c, editCellValue, sheetName);
+  };
+
+  const handleClearRanges = async (sheetName = activeSheet) => {
+    if (!selectedProject) return;
+    const updatedRanges = { ...ranges, [sheetName]: "" };
+    setRanges(updatedRanges);
+    setSelectedProject((prev: any) => prev ? { ...prev, editableRanges: updatedRanges } : null);
+
+    try {
+      await api.updateRanges(selectedProject.id, updatedRanges);
+      if (workbook) {
+        const univerData = convertToUniverWorkbook(workbook, exceljsWorkbook, updatedRanges);
+        setUniverSnapshot(univerData);
+      }
+      toast.success(`Đã xóa vùng cấp quyền sửa trên sheet "${sheetName}"`);
+    } catch (err) {
+      console.error("Lỗi khi xóa vùng cấp quyền sửa:", err);
+      toast.error("Không thể xóa vùng cấp quyền sửa");
+    }
+  };
+
+  const appendRange = async (rangePart: string, sheetName = activeSheet) => {
+    await handleRangeSelect(sheetName, rangePart);
+  };
 
   const handleCellMouseDown = (r: number, c: number) => {
     setDragStart({ r, c });
@@ -260,28 +372,29 @@ export function AdminDashboard() {
       toast.error("Không thể hoàn tác!");
     }
   };
-  const handleCellEdit = async (r: number, c: number, newValue: string) => {
+  const handleCellEdit = async (r: number, c: number, newValue: string, sheetNameOverride = activeSheet) => {
     if (!workbook || !selectedProject) return;
 
     pushToHistory(selectedProject.fileBase64);
 
     const cellRef = XLSX.utils.encode_cell({ r, c });
-    const sheetName = activeSheet;
+    const sheetName = sheetNameOverride;
+    const currentSheetData = getSheetData(workbook, sheetName);
 
     const newEdit = {
       sheetName,
       cell: cellRef,
-      oldValue: sheetData[r][c] || "",
+      oldValue: currentSheetData[r]?.[c] || "",
       newValue: newValue || "",
       username: user?.username || "Admin",
       timestamp: new Date().toISOString()
     };
 
     try {
-      const newSheetData = [...sheetData];
+      const newSheetData = [...currentSheetData];
       if (!newSheetData[r]) newSheetData[r] = [];
       newSheetData[r][c] = newValue;
-      setSheetData(newSheetData);
+      if (sheetName === activeSheet) setSheetData(newSheetData);
 
 
       await api.saveEdit(selectedProject.id, newEdit);
@@ -310,6 +423,12 @@ export function AdminDashboard() {
       toast.error("Lỗi khi lưu dữ liệu! Vui lòng nhấn F12 để xem chi tiết.");
     }
     
+  };
+
+  const handleUniverCellChange = async (sheetName: string, cellRef: string, newValue: string | number) => {
+    if (!workbook || !selectedProject) return;
+    const { r, c } = XLSX.utils.decode_cell(cellRef);
+    await handleCellEdit(r, c, String(newValue ?? ""), sheetName);
   };
   const handleAddRow = async () => {
     if (!workbook || !selectedProject) return;
@@ -469,6 +588,30 @@ export function AdminDashboard() {
       toast.success("Đã cập nhật phạm vi chỉnh sửa thành công!");
     } catch (error) {
       toast.error("Không thể cập nhật phạm vi chỉnh sửa!");
+    }
+  };
+
+  const handleExportExcel = async () => {
+    if (!selectedProject || !exceljsWorkbook) return;
+    setIsExporting(true);
+    try {
+      const snapshot = univerAPI?.getActiveWorkbook?.()?.save?.() || univerSnapshot;
+      if (snapshot) syncUniverToExcelJS(snapshot, exceljsWorkbook);
+      const base64 = await workbookToBase64(exceljsWorkbook);
+      const filename = selectedProject.name?.replace(/\.xlsx$/i, "") || "BaoGia";
+      downloadBase64File(base64, filename);
+      toast.success("Đã tải Excel với nội dung và định dạng hiện tại.");
+    } catch (error) {
+      console.error(error);
+      toast.error("Không thể tải file Excel.");
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleExportPdf = () => {
+    if (!selectedProject || !printProjectAsPdf(selectedProject, sheetData, activeSheet)) {
+      toast.error("Không thể mở cửa sổ xuất PDF.");
     }
   };
 
@@ -704,6 +847,37 @@ export function AdminDashboard() {
                     </Dialog>
                     <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Cài đặt & Logs</div>
                   </div>
+
+                  <div className="w-px h-14 bg-slate-200 mx-2" />
+                  <div className="flex flex-col items-center shrink-0">
+                    <div className="flex h-14 items-center gap-2">
+                      <StatusWorkflow
+                        project={selectedProject}
+                        role="admin"
+                        onUpdated={(project) => { setSelectedProject(project); loadProjects(); }}
+                      />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleExportExcel}
+                        disabled={isExporting}
+                        className="h-8 gap-1.5 rounded-lg border-emerald-200 text-emerald-700 hover:bg-emerald-50 font-bold px-3"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        <span className="text-xs">Tải Excel</span>
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleExportPdf}
+                        className="h-8 gap-1.5 rounded-lg border-rose-200 text-rose-700 hover:bg-rose-50 font-bold px-3"
+                      >
+                        <Printer className="h-3.5 w-3.5" />
+                        <span className="text-xs">Tải PDF</span>
+                      </Button>
+                    </div>
+                    <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Trạng thái & xuất file</div>
+                  </div>
                   
                   <div className="w-px h-14 bg-slate-200 mx-2" />
                   <div className="flex flex-col items-center">
@@ -806,49 +980,78 @@ export function AdminDashboard() {
           </div>
         ) : (
           <div className="flex-1 bg-white shadow-xl rounded-xl border border-slate-300 flex flex-col overflow-hidden">
-            <div className="bg-slate-100 border-b flex px-2 pt-2 gap-1 overflow-x-auto shrink-0 custom-scrollbar">
-              {selectedProject.sheets?.map((sheet: string) => (
-                <button
-                  key={sheet}
-                  onClick={() => handleTabChange(sheet)}
-                  className={`px-4 py-2 text-xs font-bold rounded-t-lg transition-colors border border-b-0 ${activeSheet === sheet ? "bg-white text-indigo-700 border-slate-300 relative translate-y-[1px]" : "bg-slate-200 text-slate-600 hover:bg-slate-300 border-transparent"}`}
-                >
-                  {sheet}
-                </button>
-              ))}
-            </div>
-            <div 
-              className="flex-1 overflow-hidden flex flex-col relative"
-              onMouseUp={handleCellMouseUp}
-              onMouseLeave={() => { if (dragStart) handleCellMouseUp(); }}
-            >
-              <SpreadsheetViewer
-                  workbook={workbook}
-                  exceljsWorkbook={exceljsWorkbook}
-                  sheetData={sheetData}
-                  activeSheet={activeSheet}
-                  mode="admin"
-                  editableRange={ranges[activeSheet] || ""}
-                  selectedRange={(() => {
-                    if (!dragStart || !dragEnd) return "";
-                    const r1 = Math.min(dragStart.r, dragEnd.r);
-                    const r2 = Math.max(dragStart.r, dragEnd.r);
-                    const c1 = Math.min(dragStart.c, dragEnd.c);
-                    const c2 = Math.max(dragStart.c, dragEnd.c);
-                    return `${XLSX.utils.encode_cell({ r: r1, c: c1 })}:${XLSX.utils.encode_cell({ r: r2, c: c2 })}`;
-                  })()}
-                  previewLimit={previewLimit}
+            <div className="flex-1 overflow-hidden flex flex-col relative">
+              {univerSnapshot ? (
+                  <UniverSpreadsheetAdmin
+                      key={selectedProject.id}
+                      initialData={univerSnapshot}
+                      activeSheet={activeSheet}
+                      mode="admin"
+                      editableRange={ranges[activeSheet] || ""}
+                      onReady={(api) => setUniverAPI(api)}
 
-                  onColumnClick={handleColumnClick}
-                  onRowClick={handleRowClick}
-                  onCellMouseDown={handleCellMouseDown}
-                  onCellMouseEnter={handleCellMouseEnter}
-                  onCellEdit={handleCellEdit}
-              />
+                      // Xử lý Double Click -> Mở Dialog sửa nội dung ô
+                      onCellDoubleClick={(sheetName, cellRef, value, r, c) => {
+                        handleCellDoubleClick(sheetName, cellRef, value, r, c);
+                      }}
+
+                      // Xử lý Single Click/Kéo chuột -> Lưu API cấp quyền
+                      onRangeSelect={(sheetName, range) => {
+                        if (sheetName !== activeSheet) setActiveSheet(sheetName);
+                        appendRange(range, sheetName);
+                      }}
+
+                      className="w-full h-full min-h-[580px]"
+                  />
+              ) : (
+                <div className="flex h-full items-center justify-center text-slate-400 font-semibold text-sm">
+                  Đang chuẩn bị bảng tính Univer...
+                </div>
+              )}
             </div>
-            <div className="bg-slate-50 border-t px-4 py-1.5 shrink-0 flex justify-between items-center text-[11px] text-slate-500 font-medium">
-              <span>Đang hiển thị {previewLimit === -1 ? sheetData.length : Math.min(previewLimit, sheetData.length)} / {sheetData.length} dòng.</span>
-              <span>Click chữ cái cột để bật/tắt quyền sửa.</span>
+            <div className="bg-slate-50 border-t px-4 py-2 shrink-0 flex flex-wrap justify-between items-center text-xs text-slate-600 gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold text-emerald-800 flex items-center gap-1.5 text-xs">
+                  <span className="inline-block w-3.5 h-3.5 rounded-xs bg-[#e6f9ed] border border-[#34d399] shadow-2xs"></span>
+                  Vùng cấp quyền sửa ({activeSheet || "Sheet"}):
+                </span>
+                <span className="font-mono font-bold text-slate-800 bg-white px-2.5 py-0.5 rounded-md border border-slate-200 text-xs shadow-2xs">
+                  {ranges[activeSheet] || "(Chưa chọn - Click/kéo để chọn)"}
+                </span>
+                {ranges[activeSheet] && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleClearRanges(activeSheet)}
+                    className="h-6 px-2 text-[11px] font-bold text-red-600 hover:bg-red-50 hover:text-red-700"
+                  >
+                    Xóa vùng quyền sửa
+                  </Button>
+                )}
+                {lastSelectedCell && (
+                  <div className="flex items-center gap-1.5 pl-2 border-l border-slate-200">
+                    <span className="text-[11px] text-slate-500">Ô:</span>
+                    <span className="font-mono font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded text-[11px]">
+                      {lastSelectedCell.cellRef}
+                    </span>
+                    <Button
+                      size="sm"
+                      onClick={() => handleCellDoubleClick(lastSelectedCell.sheetName, lastSelectedCell.cellRef, lastSelectedCell.value, lastSelectedCell.r, lastSelectedCell.c)}
+                      className="h-6 px-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold rounded-md"
+                    >
+                      Sửa ô này
+                    </Button>
+                  </div>
+                )}
+              </div>
+              <div className="text-slate-500 text-[11px] font-medium flex items-center gap-2">
+                <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                  ✓ Bấm ô/kéo vùng = Tô xanh lá cây nhạt & Lưu API
+                </span>
+                <span className="text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200">
+                  ✓ Double-click = Sửa ô & Lưu API
+                </span>
+              </div>
             </div>
           </div>
         )}
@@ -857,6 +1060,58 @@ export function AdminDashboard() {
         )}
          </main>
       </div>
+
+      {/* DIALOG CHỈNH SỬA Ô EXCEL KHI DOUBLE-CLICK HOẶC BẤM SỬA */}
+      <Dialog open={isCellEditDialogOpen} onOpenChange={setIsCellEditDialogOpen}>
+        <DialogContent className="sm:max-w-md w-full rounded-2xl p-6 bg-white shadow-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-base font-bold text-slate-800 flex items-center gap-2">
+              <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-emerald-100 text-emerald-700 text-xs font-mono font-bold">
+                {editingCellInfo?.cellRef}
+              </span>
+              Chỉnh sửa nội dung ô ({editingCellInfo?.sheetName})
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2 mt-2">
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold uppercase tracking-wider text-slate-600">Nội dung ô</label>
+              <textarea
+                autoFocus
+                value={editCellValue}
+                onChange={(e) => setEditCellValue(e.target.value)}
+                placeholder="Nhập nội dung mới cho ô tính..."
+                className="w-full min-h-[100px] p-3 rounded-xl border-2 border-emerald-500/80 bg-emerald-50/20 text-slate-900 text-sm font-medium focus:outline-none focus:ring-4 focus:ring-emerald-500/20 resize-y"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.ctrlKey || e.metaKey || !e.shiftKey)) {
+                    e.preventDefault();
+                    handleSaveCellModal();
+                  }
+                }}
+              />
+              <p className="text-[11px] text-slate-400">
+                Nhấn <strong>Enter</strong> để lưu ngay lên hệ thống và file Excel.
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsCellEditDialogOpen(false)}
+                className="rounded-xl h-9 text-xs font-semibold text-slate-600"
+              >
+                Hủy
+              </Button>
+              <Button
+                type="button"
+                onClick={handleSaveCellModal}
+                className="rounded-xl h-9 px-5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-sm"
+              >
+                Lưu & Cập nhật API
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

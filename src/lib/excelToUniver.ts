@@ -1,5 +1,7 @@
 import * as XLSX from "xlsx";
 import type ExcelJS from "exceljs";
+import { isCellInRange } from "./utils-excel";
+export { syncUniverToExcelJS, colorToArgb } from "../layout/mapperUniverToExcel";
 
 export interface UniverSheetData {
   id: string;
@@ -28,19 +30,25 @@ const MIN_COL_WIDTH = 150; // Comfortable minimum column width
 
 /**
  * Converts SheetJS and ExcelJS workbooks into a rich Univer JSON snapshot.
+ * Highlights granted editable cells in clean green (#e6f9ed) for visual clarity.
  * Dynamically computes row heights and column widths so text is never cramped or truncated.
- * Applies word-wrap and vertical centering for ultra-clear readability.
  */
 export function convertToUniverWorkbook(
   workbook: XLSX.WorkBook,
-  exceljsWb?: ExcelJS.Workbook | null
+  exceljsWb?: ExcelJS.Workbook | null,
+  editableRanges?: Record<string, string> | string | null
 ): UniverWorkbookData {
   const sheetOrder: string[] = [];
   const sheets: Record<string, UniverSheetData> = {};
 
-  workbook.SheetNames.forEach((sheetName, index) => {
-    const sheetId = `sheet_${index + 1}`;
+  workbook.SheetNames.forEach((sheetName) => {
+    const sheetId = sheetName;
     sheetOrder.push(sheetId);
+
+    const rangeStr =
+      typeof editableRanges === "string"
+        ? editableRanges
+        : editableRanges?.[sheetName] || "";
 
     const ws = workbook.Sheets[sheetName];
     const rawData = ws ? XLSX.utils.sheet_to_json<any[]>(ws, { header: 1, defval: "" }) : [];
@@ -75,6 +83,8 @@ export function convertToUniverWorkbook(
             if (lines.length > rowMaxLines) rowMaxLines = lines.length;
 
             const isHeaderRow = r === 0;
+            const cellRef = XLSX.utils.encode_cell({ r, c });
+            const isEditable = rangeStr ? isCellInRange(cellRef, rangeStr) : false;
 
             cellData[r][c] = {
               v: isNum ? Number(val) : strVal,
@@ -83,12 +93,61 @@ export function convertToUniverWorkbook(
                 tb: 3, // WrapStrategy.WRAP (Wrap text within cell)
                 vt: 2, // VerticalAlign.MIDDLE (Center text vertically)
                 ...(isHeaderRow ? { bl: 1 } : {}), // Bold for header row
+                ...(isEditable
+                  ? {
+                      bg: { rgb: "#e6f9ed" }, // Modern emerald green highlight for permitted cells
+                      cl: { rgb: "#065f46" }, // Dark emerald text for contrast
+                      bd: {
+                        t: { s: 1, cl: { rgb: "#34d399" } },
+                        b: { s: 1, cl: { rgb: "#34d399" } },
+                        l: { s: 1, cl: { rgb: "#34d399" } },
+                        r: { s: 1, cl: { rgb: "#34d399" } },
+                      },
+                    }
+                  : {}),
               },
             };
           }
         });
       }
     });
+
+    // Populate empty cells that fall inside editable ranges with green background highlight
+    if (rangeStr) {
+      try {
+        const ranges = rangeStr.split(",").map((r) => r.trim()).filter(Boolean);
+        ranges.forEach((rStr) => {
+          if (!/^[A-Za-z]+:[A-Za-z]+$/.test(rStr) && !/^[A-Za-z]+$/.test(rStr)) {
+            try {
+              const decoded = XLSX.utils.decode_range(rStr);
+              for (let r = decoded.s.r; r <= decoded.e.r; r++) {
+                if (!cellData[r]) cellData[r] = {};
+                for (let c = decoded.s.c; c <= decoded.e.c; c++) {
+                  if (!cellData[r][c]) {
+                    cellData[r][c] = {
+                      v: "",
+                      t: 1,
+                      s: {
+                        tb: 3,
+                        vt: 2,
+                        bg: { rgb: "#e6f9ed" },
+                        cl: { rgb: "#065f46" },
+                        bd: {
+                          t: { s: 1, cl: { rgb: "#34d399" } },
+                          b: { s: 1, cl: { rgb: "#34d399" } },
+                          l: { s: 1, cl: { rgb: "#34d399" } },
+                          r: { s: 1, cl: { rgb: "#34d399" } },
+                        },
+                      },
+                    };
+                  }
+                }
+              }
+            } catch {}
+          }
+        });
+      } catch {}
+    }
 
     // Extract formulas from SheetJS worksheet
     if (ws && ws["!ref"]) {
@@ -242,7 +301,7 @@ export function convertToUniverWorkbook(
   });
 
   return {
-    id: `univer_wb_${Date.now()}`,
+    id: "univer_main_workbook",
     name: workbook.SheetNames[0] || "BaoGia",
     appVersion: "3.0.0",
     sheetOrder,

@@ -3,6 +3,7 @@ import { catchAsync } from "./server/utils/catchAsync";
 import { z } from "zod";
 import { validate } from "./server/middlewares/validate";
 import express from "express";
+import * as XLSX from "xlsx";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { initDb, getDb, projectToJson, getProjectMembers, getProjectsWithMembers, setProjectMembers, userCanAccessProject, isProjectLocked, publicUser, type ProjectRow, type UserRow, type TrangThai, type EditRow, type VersionRow, type TemplateRow } from "./server/db";
@@ -42,6 +43,38 @@ function now() {
 
 function newId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function userCanEditCell(project: ProjectRow, sheetName: string, cellRef: string) {
+  let ranges: unknown;
+  try {
+    ranges = project.editable_ranges ? JSON.parse(project.editable_ranges) : {};
+  } catch {
+    return false;
+  }
+
+  const rangeText = typeof ranges === "string"
+    ? ranges
+    : ranges && typeof ranges === "object"
+      ? ((ranges as Record<string, unknown>)[sheetName] || (ranges as Record<string, unknown>)[""] || "")
+      : "";
+  if (typeof rangeText !== "string" || !rangeText.trim()) return false;
+
+  try {
+    const cell = XLSX.utils.decode_cell(cellRef);
+    return rangeText.split(",").some((part) => {
+      const range = part.trim();
+      if (/^[A-Za-z]+:[A-Za-z]+$/.test(range)) {
+        const [start, end] = range.split(":");
+        return cell.c >= XLSX.utils.decode_col(start) && cell.c <= XLSX.utils.decode_col(end);
+      }
+      if (/^[A-Za-z]+$/.test(range)) return cell.c === XLSX.utils.decode_col(range);
+      const decoded = XLSX.utils.decode_range(range);
+      return cell.r >= decoded.s.r && cell.r <= decoded.e.r && cell.c >= decoded.s.c && cell.c <= decoded.e.c;
+    });
+  } catch {
+    return false;
+  }
 }
 
 function loadProject(id: string, includeDeleted = false): ProjectRow | undefined {
@@ -491,6 +524,9 @@ async function startServer() {
     const safeUsername = user?.username || "Admin";
     const safeSheetName = sheetName || "";
     const safeCell = cell || "";
+    if (user.role !== "admin" && user.role !== "manager" && !userCanEditCell(project, safeSheetName, safeCell)) {
+      return res.status(403).json({ error: "You do not have permission to edit this cell" });
+    }
     const safeOldValue = oldValue || "";
     const safeNewValue = newValue || "";
     getDb()

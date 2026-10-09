@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { api } from "../lib/api";
 import { parseExcel, getSheetData, applyEditsToWorkbook, downloadBase64File } from "../lib/excel";
-import { isCellInRange } from "../lib/utils-excel";
+import { isCellInEditableRange, isCellInRange } from "../lib/utils-excel";
 
 import {
   loadExcelJSWorkbook,
@@ -16,7 +16,6 @@ import {
 } from "../lib/exceljs-helper";
 import { convertToUniverWorkbook } from "../lib/excelToUniver";
 import { UniverSpreadsheet } from "./SpreadsheetViewer/UniverSpreadsheet";
-import { SpreadsheetViewer } from "./SpreadsheetViewer";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
@@ -58,13 +57,26 @@ function getEditableRange(project: any, sheetName: string): string {
   if (!project?.editableRanges) return "";
 
   try {
-    const ranges =
-      typeof project.editableRanges === "string"
-        ? JSON.parse(project.editableRanges)
-        : project.editableRanges;
-    return typeof ranges?.[sheetName] === "string" ? ranges[sheetName] : "";
-  } catch {
+    let ranges = project.editableRanges;
+    if (typeof ranges === "string") {
+      ranges = ranges.trim().startsWith("{") ? JSON.parse(ranges) : { [sheetName]: ranges };
+    }
+    if (typeof ranges === "string") return ranges;
+    if (ranges && typeof ranges === "object") {
+      if (typeof ranges[sheetName] === "string" && ranges[sheetName].trim()) {
+        return ranges[sheetName].trim();
+      }
+      if (typeof ranges[""] === "string" && ranges[""].trim()) {
+        return ranges[""].trim();
+      }
+      const keys = Object.keys(ranges);
+      if (keys.length === 1 && typeof ranges[keys[0]] === "string") {
+        return ranges[keys[0]].trim();
+      }
+    }
     return "";
+  } catch {
+    return typeof project.editableRanges === "string" ? project.editableRanges : "";
   }
 }
 
@@ -85,14 +97,13 @@ export function UserDashboard() {
   const [workbook, setWorkbook] = useState<XLSX.WorkBook | null>(null);
   const [exceljsWorkbook, setExceljsWorkbook] = useState<any | null>(null);
   const [univerSnapshot, setUniverSnapshot] = useState<any | null>(null);
+  const [univerAPI, setUniverAPI] = useState<any | null>(null);
   const [sheetData, setSheetData] = useState<any[][]>([]);
   const [activeSheet, setActiveSheet] = useState<string>("");
   const [edits, setEdits] = useState<any[]>([]);
   const [history, setHistory] = useState<string[]>([]); // undo history with base64 backups
   const [selectedColumn, setSelectedColumn] = useState<number | null>(null);
   const [previewLimit, setPreviewLimit] = useState<number>(55);
-  const [viewEngine, setViewEngine] = useState<"standard" | "univer">("standard");
-  // const [univerAPI, setUniverAPI] = useState<FUniver | null>(null);
   // Row / Col insert & delete inputs
   const [rowInsertIndex, setRowInsertIndex] = useState<string>("");
   const [colInsertIndex, setColInsertIndex] = useState<string>("");
@@ -185,7 +196,7 @@ export function UserDashboard() {
       setActiveSheet(firstSheet);
       setSheetData(firstSheet ? getSheetData(updatedWb, firstSheet) : []);
 
-      const univerData = convertToUniverWorkbook(updatedWb, ejWb);
+      const univerData = convertToUniverWorkbook(updatedWb, ejWb, project.editableRanges);
       setUniverSnapshot(univerData);
 
       setIsDialogOpen(false);
@@ -209,6 +220,22 @@ export function UserDashboard() {
     const data = getSheetData(wb, sheetName);
     setSheetData(data);
     setSelectedColumn(null);
+
+    if (univerAPI) {
+      try {
+        const activeWb = univerAPI.getActiveWorkbook?.();
+        const allSheets = activeWb?.getSheets?.() || [];
+        const targetSheet =
+          activeWb?.getSheetByName?.(sheetName) ||
+          activeWb?.getSheetBySheetId?.(sheetName) ||
+          allSheets.find((s: any) => s.getSheetName?.() === sheetName || s.getSheetId?.() === sheetName);
+        if (targetSheet && activeWb?.setActiveSheet) {
+          activeWb.setActiveSheet(targetSheet);
+        }
+      } catch (err) {
+        console.warn("Could not switch Univer active sheet:", err);
+      }
+    }
   };
 
   const updateWorkbookStateAndExcelJS = async (base64: string, applyEditsList: any[] = []) => {
@@ -225,7 +252,7 @@ export function UserDashboard() {
         }
       });
       setExceljsWorkbook(ejWb);
-      const univerData = convertToUniverWorkbook(updatedWb, ejWb);
+      const univerData = convertToUniverWorkbook(updatedWb, ejWb, selectedProject?.editableRanges);
       setUniverSnapshot(univerData);
       return { wb: updatedWb, ejWb };
     } catch (e) {
@@ -240,12 +267,34 @@ export function UserDashboard() {
 
     if (locked) {
       toast.error("Báo giá đã khóa, không thể chỉnh sửa.");
+      if (univerAPI) {
+        try {
+          const ws = workbook.Sheets[sheetName];
+          const cellObj = ws ? ws[cellRef] : null;
+          const origVal = cellObj && cellObj.v !== undefined && cellObj.v !== null ? cellObj.v : "";
+          const activeWb = univerAPI.getActiveWorkbook?.();
+          const sheet = activeWb?.getSheetByName?.(sheetName) || activeWb?.getActiveSheet?.();
+          const decoded = XLSX.utils.decode_cell(cellRef);
+          sheet?.getRange?.(decoded.r, decoded.c)?.setValue?.(origVal);
+        } catch {}
+      }
       return;
     }
 
     const rangeStr = getEditableRange(selectedProject, sheetName);
-    if (!isCellInRange(cellRef, rangeStr)) {
-      toast.error(`Bạn không có quyền sửa ô ${cellRef} (Vùng cho phép: ${rangeStr || "Không có"})`);
+    if (!isCellInEditableRange(cellRef, rangeStr)) {
+      toast.error(`Bạn không có quyền sửa ô ${cellRef} (Vùng được cấp quyền: ${rangeStr || "Không có"})`);
+      if (univerAPI) {
+        try {
+          const ws = workbook.Sheets[sheetName];
+          const cellObj = ws ? ws[cellRef] : null;
+          const origVal = cellObj && cellObj.v !== undefined && cellObj.v !== null ? cellObj.v : "";
+          const activeWb = univerAPI.getActiveWorkbook?.();
+          const sheet = activeWb?.getSheetByName?.(sheetName) || activeWb?.getActiveSheet?.();
+          const decoded = XLSX.utils.decode_cell(cellRef);
+          sheet?.getRange?.(decoded.r, decoded.c)?.setValue?.(origVal);
+        } catch {}
+      }
       return;
     }
 
@@ -286,7 +335,22 @@ export function UserDashboard() {
         setSheetData(getSheetData(workbook, sheetName));
       }
 
-      const newUniverData = convertToUniverWorkbook(workbook, exceljsWorkbook);
+      // Sync live cell value to Univer if active
+      if (univerAPI) {
+        try {
+          const activeWb = univerAPI.getActiveWorkbook?.();
+          const ws = activeWb?.getSheetByName?.(sheetName) || activeWb?.getActiveSheet?.();
+          const { r: row, c: col } = XLSX.utils.decode_cell(cellRef);
+          const fRange = ws?.getRange?.(row, col);
+          if (fRange?.setValue) {
+            fRange.setValue(strNewVal);
+          }
+        } catch (err) {
+          console.warn("Could not sync cell to Univer:", err);
+        }
+      }
+
+      const newUniverData = convertToUniverWorkbook(workbook, exceljsWorkbook, selectedProject?.editableRanges);
       setUniverSnapshot(newUniverData);
 
       toast.success(`Đã lưu ô ${cellRef}: ${strNewVal}`);
@@ -553,10 +617,26 @@ export function UserDashboard() {
     if (!selectedProject || !exceljsWorkbook) return;
     setIsExporting(true);
     try {
+      // Synchronize latest styling, font colors, background colors, and values from Univer
+      let currentSnapshot = univerSnapshot;
+      if (univerAPI) {
+        try {
+          const activeWb = univerAPI.getActiveWorkbook?.();
+          const snap = activeWb?.save?.() || activeWb?.getSnapshot?.();
+          if (snap) currentSnapshot = snap;
+        } catch (e) {
+          console.warn("Could not retrieve active workbook snapshot from API:", e);
+        }
+      }
+
+      if (currentSnapshot) {
+        syncUniverToExcelJS(currentSnapshot, exceljsWorkbook);
+      }
+
       const base64 = await workbookToBase64(exceljsWorkbook);
       const filename = selectedProject.name?.replace(/\.xlsx$/i, "") || "BaoGia";
       downloadBase64File(base64, filename);
-      toast.success("Đã tải tệp Excel thành công (đầy đủ định dạng & các ô bạn chỉnh sửa).");
+      toast.success("Đã tải tệp Excel thành công (đầy đủ màu sắc, định dạng & nội dung).");
     } catch (e) {
       console.error(e);
       toast.error("Không thể xuất tệp Excel!");
@@ -776,36 +856,8 @@ export function UserDashboard() {
                       <option value="all">Tất cả</option>
                     </select>
                   </div>
-
-                  {/* View Engine switcher */}
-                  <div className="inline-flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200">
-                    <button
-                      type="button"
-                      onClick={() => setViewEngine("standard")}
-                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
-                        viewEngine === "standard"
-                          ? "bg-white text-[#0b4f9c] shadow-xs"
-                          : "text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      <Table className="h-3 w-3" />
-                      <span>Bảng tính</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setViewEngine("univer")}
-                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
-                        viewEngine === "univer"
-                          ? "bg-white text-[#0b4f9c] shadow-xs"
-                          : "text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      <Sparkles className="h-3 w-3 text-[#0b4f9c]" />
-                      <span>Univer</span>
-                    </button>
-                  </div>
                 </div>
-                <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-bold">Chế độ xem</div>
+                <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-bold">Giới hạn xem</div>
               </div>
 
               <div className="w-px h-14 bg-slate-200 mx-1 shrink-0 self-center" />
@@ -875,72 +927,41 @@ export function UserDashboard() {
               </div>
             ) : (
               <div className="flex-1 bg-white shadow-xl rounded-xl border border-slate-300 flex flex-col overflow-hidden">
-                {/* View Engine 1: Standard Spreadsheet (Matching Admin with Sheet Tabs) */}
-                {viewEngine === "standard" && (
-                  <>
-                    {/* Sheet Tabs */}
-                    <div className="bg-slate-100 border-b flex px-2 pt-2 gap-1 overflow-x-auto shrink-0 custom-scrollbar">
-                      {selectedProject.sheets?.map((sheet: string) => (
-                        <button
-                          key={sheet}
-                          onClick={() => handleTabChange(sheet)}
-                          className={`px-4 py-2 text-xs font-bold rounded-t-lg transition-colors border border-b-0 ${
-                            activeSheet === sheet
-                              ? "bg-white text-[#0b4f9c] border-slate-300 relative translate-y-[1px]"
-                              : "bg-slate-200 text-slate-600 hover:bg-slate-300 border-transparent"
-                          }`}
-                        >
-                          {sheet}
-                        </button>
-                      ))}
-                    </div>
+                {/* Multi-Sheet Tabs Bar visible for both Standard and Univer views */}
+                <div className="bg-slate-100 border-b flex px-2 pt-2 gap-1 overflow-x-auto shrink-0 custom-scrollbar">
+                  {selectedProject.sheets?.map((sheet: string) => (
+                    <button
+                      key={sheet}
+                      onClick={() => handleTabChange(sheet)}
+                      className={`px-4 py-2 text-xs font-bold rounded-t-lg transition-colors border border-b-0 ${
+                        activeSheet === sheet
+                          ? "bg-white text-[#0b4f9c] border-slate-300 relative translate-y-[1px] shadow-2xs"
+                          : "bg-slate-200 text-slate-600 hover:bg-slate-300 border-transparent"
+                      }`}
+                    >
+                      {sheet}
+                    </button>
+                  ))}
+                </div>
 
-                    {/* Spreadsheet Canvas */}
-                    <div className="flex-1 overflow-hidden flex flex-col relative">
-                      <SpreadsheetViewer
-                        workbook={workbook}
-                        exceljsWorkbook={exceljsWorkbook}
-                        sheetData={sheetData}
-                        activeSheet={activeSheet}
-                        mode="user"
-                        locked={locked}
-                        editableRange={getEditableRange(selectedProject, activeSheet)}
-                        selectedColumn={selectedColumn}
-                        previewLimit={previewLimit}
-                        onColumnClick={(i) => setSelectedColumn(selectedColumn === i ? null : i)}
-                        onCellEdit={handleStandardCellEdit}
-                      />
-                    </div>
-
-                    {/* Bottom Status Bar */}
-                    <div className="bg-slate-50 border-t px-4 py-1.5 shrink-0 flex justify-between items-center text-[11px] text-slate-500 font-medium">
-                      <span>
-                        Đang hiển thị {previewLimit === -1 ? sheetData.length : Math.min(previewLimit, sheetData.length)} /{" "}
-                        {sheetData.length} dòng.
-                      </span>
-                      <span>
-                        {currentEditableRange ? (
-                          <span className="text-emerald-700 font-semibold">
-                            Các ô màu xanh ({currentEditableRange}) được phép chỉnh sửa.
-                          </span>
-                        ) : (
-                          "Không có vùng ô nào được cấp quyền sửa ở sheet này."
-                        )}
-                      </span>
-                    </div>
-                  </>
-                )}
-
-                {/* View Engine 2: Univer Spreadsheet */}
-                {viewEngine === "univer" && (
+                {/* Univer Spreadsheet View (Exclusive & High-Performance) */}
+                <div className="flex-1 w-full h-full overflow-hidden flex flex-col relative">
                   <div className="flex-1 w-full h-full overflow-hidden relative">
                     {univerSnapshot ? (
                       <UniverSpreadsheet
                         key={selectedProject.id}
                         initialData={univerSnapshot}
+                        activeSheet={activeSheet}
+                        mode="user"
                         locked={locked}
+                        editableRange={currentEditableRange}
+                        onReady={(api) => setUniverAPI(api)}
                         onCellChange={handleUniverCellChange}
-                        className="w-full h-full min-h-[580px]"
+                        onSheetChange={handleTabChange}
+                        onDataChange={(snapshot) => {
+                          setUniverSnapshot(snapshot);
+                        }}
+                        className="w-full h-full min-h-[560px]"
                       />
                     ) : (
                       <div className="flex h-full items-center justify-center text-slate-400 font-semibold text-sm">
@@ -948,7 +969,26 @@ export function UserDashboard() {
                       </div>
                     )}
                   </div>
-                )}
+
+                  <div className="bg-slate-50 border-t px-4 py-1.5 shrink-0 flex justify-between items-center text-[11px] text-slate-600 font-medium">
+                    <span>
+                      {locked ? (
+                        <span className="text-amber-700 font-bold">Báo giá đã khóa, chế độ chỉ xem.</span>
+                      ) : (
+                        "Double-click vào ô được cấp quyền để chỉnh sửa văn bản/dữ liệu."
+                      )}
+                    </span>
+                    <span>
+                      {currentEditableRange ? (
+                        <span className="text-emerald-700 font-bold">
+                          Vùng ô bạn được phép sửa ({activeSheet}): {currentEditableRange}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400 italic">Không có vùng ô nào được mở quyền sửa ở sheet này.</span>
+                      )}
+                    </span>
+                  </div>
+                </div>
               </div>
             )}
           </div>
