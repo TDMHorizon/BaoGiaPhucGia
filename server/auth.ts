@@ -163,13 +163,42 @@ export function checkCellPermission(
   sheetName: string,
   cell: string
 ): { allowed: boolean; reason?: string } {
-  // Admin và Manager có toàn quyền sửa/xóa mọi ô trên mọi sheet
-  if (user.role === "admin" || user.role === "manager") {
+  // 1. Admin có toàn quyền sửa/xóa mọi ô trên mọi sheet
+  if (user.role === "admin") {
     return { allowed: true };
   }
 
-  // Đối với Nhân viên (user):
-  // 1. Kiểm tra trạng thái dự án (phải là dang_lam) và user phải được phân công
+  // Parse cấu hình tài chính & phân vùng ô (nếu có)
+  let finCfg: any = {};
+  try {
+    finCfg = project.financial_config ? JSON.parse(project.financial_config) : {};
+  } catch {
+    finCfg = {};
+  }
+  const financialRanges: Record<string, string> = finCfg.financialRanges || {};
+  const finSheetRange = financialRanges[sheetName];
+  const isFinancialCell = finSheetRange ? isCellInRange(cell, finSheetRange) : false;
+
+  // Lấy vùng kỹ thuật (khối lượng)
+  const projectRanges: Record<string, string> = JSON.parse(project.editable_ranges || "{}");
+  const techSheetRange = projectRanges[sheetName];
+  const isTechnicalCell = techSheetRange ? isCellInRange(cell, techSheetRange) : false;
+
+  // 2. Phân quyền cho Kế toán (Manager) - UC05 & UC04
+  if (user.role === "manager") {
+    // Tình huống 10 (UC05): Kế toán KHÔNG ĐƯỢC PHÉP sửa ô khối lượng kỹ thuật
+    if (isTechnicalCell && !isFinancialCell) {
+      return {
+        allowed: false,
+        reason: "Kế toán không có quyền chỉnh sửa số liệu khối lượng kỹ thuật (UC04/UC05).",
+      };
+    }
+    // Kế toán được phép sửa các ô tài chính (đơn giá, VAT, chiết khấu, phụ cấp)
+    return { allowed: true };
+  }
+
+  // 3. Phân quyền cho Nhân viên kỹ thuật (User) - UC04 & UC05 & UC06
+  // Kiểm tra trạng thái dự án (phải là dang_lam) và user phải được phân công
   if (!canEditProjectCells(user, toPermProject(project))) {
     return {
       allowed: false,
@@ -177,7 +206,19 @@ export function checkCellPermission(
     };
   }
 
-  // 2. Kiểm tra quyền riêng theo nhân viên trong project_member_permissions (Chương 11)
+  // Tình huống 09 (UC05): Nhân viên kỹ thuật KHÔNG ĐƯỢC PHÉP sửa ô đơn giá, VAT, chiết khấu
+  if (isFinancialCell) {
+    // Ngoại lệ: Nếu ô này được ánh xạ cụ thể là ô số giờ OT (UC06) thì nhân viên được sửa
+    const isOtHoursCell = finCfg.cellMapping?.otHoursCell && finCfg.cellMapping.otHoursCell.toUpperCase() === cell.toUpperCase();
+    if (!isOtHoursCell) {
+      return {
+        allowed: false,
+        reason: "Nhân viên kỹ thuật không có quyền chỉnh sửa đơn giá, thuế VAT hoặc chiết khấu tài chính (UC05).",
+      };
+    }
+  }
+
+  // Kiểm tra quyền riêng theo nhân viên trong project_member_permissions (Chương 11)
   const customRanges = getMemberCustomRanges(project.id, user.id, sheetName);
   if (customRanges !== null) {
     if (!isCellInRange(cell, customRanges)) {
@@ -189,10 +230,13 @@ export function checkCellPermission(
     return { allowed: true };
   }
 
-  // 3. Nếu không có cấu hình riêng, kiểm tra theo editableRanges chung của project
-  const projectRanges: Record<string, string> = JSON.parse(project.editable_ranges || "{}");
-  const sheetRange = projectRanges[sheetName];
-  if (!sheetRange || !isCellInRange(cell, sheetRange)) {
+  // Nếu không có cấu hình riêng, kiểm tra theo editableRanges chung của project
+  if (!techSheetRange || !isCellInRange(cell, techSheetRange)) {
+    // Cho phép sửa nếu là ô số giờ OT đã được ánh xạ cho nhân viên
+    const isOtHoursCell = finCfg.cellMapping?.otHoursCell && finCfg.cellMapping.otHoursCell.toUpperCase() === cell.toUpperCase();
+    if (isOtHoursCell) {
+      return { allowed: true };
+    }
     return {
       allowed: false,
       reason: `Ô ${cell} trên sheet "${sheetName}" nằm ngoài phạm vi được phép chỉnh sửa của báo giá này.`,

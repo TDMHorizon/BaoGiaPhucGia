@@ -375,8 +375,101 @@ async function main() {
   assert(lockedEditRes.status === 403, "Dự án đã gửi khách nhưng vẫn cho user sửa OT");
   ok("Tình huống 18: Báo giá đã khóa/đã gửi khách -> Chặn người dùng sửa OT & Tài chính!");
 
+  // Mở lại dự án để kiểm thử phân quyền ô chi tiết (Cell Level RBAC - UC04/UC05/UC06)
+  await api(`/api/projects/${projectId}/status`, {
+    method: "POST",
+    token: adminToken,
+    body: { trangThai: "dang_lam", note: "Mở lại để kiểm thử nâng cao" },
+  });
+
+  console.log("\n--- [NÂNG CAO] PHÂN QUYỀN CẤP Ô VÀ ĐỒNG BỘ MAPPING Ô EXCEL ---");
+
+  // Cấu hình vùng kỹ thuật B10:B20 và vùng tài chính E10:E25, ánh xạ C25 là ô Giờ OT
+  await api(`/api/projects/${projectId}`, {
+    method: "PATCH",
+    token: adminToken,
+    body: {
+      editableRanges: { "Báo giá địa hình": "B10:B20" },
+      financialConfig: {
+        financialRanges: { "Báo giá địa hình": "E10:E25" },
+        cellMapping: {
+          sheetName: "Báo giá địa hình",
+          otHoursCell: "C25",
+          otAmountCell: "E25",
+          vatRateCell: "E28",
+          discountCell: "E29",
+        },
+      },
+    },
+  });
+
+  // Tình huống 19: Kế toán cố sửa ô khối lượng kỹ thuật B12 (ngoài vùng tài chính) -> Phải từ chối HTTP 403 (UC05 TC10)
+  const mgrTechEditRes = await api(`/api/projects/${projectId}/edits`, {
+    method: "POST",
+    token: mgrToken,
+    body: {
+      sheetName: "Báo giá địa hình",
+      cell: "B12",
+      newValue: "50",
+    },
+  });
+  assert(mgrTechEditRes.status === 403, "Kế toán không bị chặn khi sửa ô khối lượng kỹ thuật B12");
+  ok("Tình huống 19: Kế toán cố sửa ô khối lượng kỹ thuật B12 -> Backend từ chối HTTP 403 (UC05 TC10)!");
+
+  // Tình huống 20: Nhân viên kỹ thuật cố sửa ô đơn giá tài chính E15 -> Phải từ chối HTTP 403 (UC05 TC09)
+  const userFinEditRes = await api(`/api/projects/${projectId}/edits`, {
+    method: "POST",
+    token: userToken,
+    body: {
+      sheetName: "Báo giá địa hình",
+      cell: "E15",
+      newValue: "2500000",
+    },
+  });
+  assert(userFinEditRes.status === 403, "Nhân viên kỹ thuật không bị chặn khi sửa ô tài chính E15");
+  ok("Tình huống 20: Nhân viên kỹ thuật cố sửa ô đơn giá tài chính E15 -> Backend từ chối HTTP 403 (UC05 TC09)!");
+
+  // Tình huống 21: Nhân viên sửa ô C25 được ánh xạ làm ô số giờ OT -> Thành công và ghi vào edits table (UC06 & UC13)
+  const userOtCellRes = await api(`/api/projects/${projectId}/edits`, {
+    method: "POST",
+    token: userToken,
+    body: {
+      sheetName: "Báo giá địa hình",
+      cell: "C25",
+      newValue: "6.5",
+    },
+  });
+  assert(userOtCellRes.ok, "Nhân viên không sửa được ô OT C25 đã được ánh xạ");
+  assert(userOtCellRes.data.newValue === "6.5", "Giá trị ô OT C25 lưu không đúng");
+  assert(userOtCellRes.data.revision >= 1, "Revision không được tăng");
+  ok("Tình huống 21: Nhân viên sửa ô C25 (ánh xạ Giờ OT) -> Thành công, ghi nhận audit edits và revision (UC06 & UC13)!");
+
+  // Tình huống 22: Tải Excel nháp từ endpoint GET /api/projects/:id/export/draft
+  console.log("\n--- [UC17] KIỂM THỬ ENDPOINT SERVER DRAFT EXPORT (GET /export/draft) ---");
+  // 1. User chưa được phân công tải thử
+  const unauthExportRes = await fetch(`http://localhost:3000/api/projects/${projectId}/export/draft`, {
+    headers: { Authorization: `Bearer ${user2Token}` },
+  });
+  assert(unauthExportRes.status === 403, "User ngoài dự án tải được file draft trái phép");
+  ok("Tình huống 22a: Chống IDOR - Người dùng ngoài dự án bị chặn HTTP 403 khi tải bản nháp");
+
+  // 2. User được phân công tải
+  const authExportRes = await fetch(`http://localhost:3000/api/projects/${projectId}/export/draft`, {
+    headers: { Authorization: `Bearer ${userToken}` },
+  });
+  assert(authExportRes.status === 200, "User phân công không tải được draft export");
+  const arrayBuf = await authExportRes.arrayBuffer();
+  assert(arrayBuf.byteLength > 0, "Buffer export rỗng");
+
+  const serverExportWb = new ExcelJS.Workbook();
+  await serverExportWb.xlsx.load(Buffer.from(arrayBuf));
+  const sWs = serverExportWb.worksheets[0];
+  assert(sWs !== undefined, "Worksheet không tồn tại trong file server export");
+  assert(sWs.headerFooter.oddHeader.includes("BẢN DỰ THẢO - CHƯA DUYỆT"), "Header file export không có watermark");
+  ok("Tình huống 22b: Endpoint server GET /export/draft xuất file .xlsx có watermark nháp A4 hợp lệ 100%!");
+
   console.log("\n======================================================================");
-  console.log("🎉 TẤT CẢ 18 TÌNH HUỐNG KIỂM THỬ CHO UC06, UC05, UC17 ĐỀU ĐẠT 100%!");
+  console.log("🎉 TẤT CẢ 22 TÌNH HUỐNG KIỂM THỬ CHO UC06, UC05, UC17 ĐỀU ĐẠT 100%!");
   console.log("======================================================================\n");
 }
 

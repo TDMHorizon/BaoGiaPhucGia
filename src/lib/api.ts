@@ -203,6 +203,19 @@ export const api = {
     return request(`/api/projects/${id}/file`);
   },
 
+  async downloadDraftExcel(id: string): Promise<Blob> {
+    const res = await fetch(`/api/projects/${id}/export/draft`, {
+      headers: {
+        Authorization: `Bearer ${getToken()}`,
+      },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: "Không thể xuất bản nháp" }));
+      throw new Error(err.error || "Không thể xuất bản nháp");
+    }
+    return res.blob();
+  },
+
   async updateProjectMembers(id: string, payload: { memberIds: string[]; nguoiPhuTrachId?: string | null }) {
     return request(`/api/projects/${id}/members`, {
       method: "PUT",

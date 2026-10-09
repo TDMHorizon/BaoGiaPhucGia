@@ -68,6 +68,12 @@ interface EditorInspectorProps {
   onRefreshData?: () => void;
   onOpenAssignModal?: () => void;
   onUpdateFinancial?: (payload: any) => Promise<void>;
+  onCellEdit?: (
+    sheetName: string,
+    cell: string,
+    newValue: any,
+    options?: { expectedRevision?: number; batch?: boolean }
+  ) => Promise<void>;
   onClose: () => void;
 }
 
@@ -86,6 +92,7 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
   onRefreshData,
   onOpenAssignModal,
   onUpdateFinancial,
+  onCellEdit,
   onClose,
 }) => {
   const isAdmin = userRole === "admin";
@@ -107,6 +114,19 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
   const [travelAllowance, setTravelAllowance] = useState<number>(
     Number(project?.financialConfig?.travelAllowance ?? 0)
   );
+  const [cellMapping, setCellMapping] = useState<{
+    sheetName?: string;
+    otHoursCell?: string;
+    otAmountCell?: string;
+    vatRateCell?: string;
+    discountCell?: string;
+  }>({
+    sheetName: project?.financialConfig?.cellMapping?.sheetName || currentSheet,
+    otHoursCell: project?.financialConfig?.cellMapping?.otHoursCell || "",
+    otAmountCell: project?.financialConfig?.cellMapping?.otAmountCell || "",
+    vatRateCell: project?.financialConfig?.cellMapping?.vatRateCell || "",
+    discountCell: project?.financialConfig?.cellMapping?.discountCell || "",
+  });
   const [isSavingFinance, setIsSavingFinance] = useState(false);
 
   // Sync state when project updates
@@ -118,6 +138,9 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
       setDiscountAmount(Number(project.discountAmount ?? 0));
       setEquipmentAllowance(Number(project.financialConfig?.equipmentAllowance ?? 0));
       setTravelAllowance(Number(project.financialConfig?.travelAllowance ?? 0));
+      if (project.financialConfig?.cellMapping) {
+        setCellMapping(project.financialConfig.cellMapping);
+      }
     }
   }, [project]);
 
@@ -159,7 +182,7 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
     }
   };
 
-  // UC06 & UC05: Save OT and Financial Data
+  // UC06 & UC05: Save OT and Financial Data with cell synchronization
   const handleSaveFinancial = async () => {
     if (isLockedStatus(project?.trangThai)) {
       toast.error("Báo giá đã bị khóa/đã phát hành, không thể chỉnh sửa!");
@@ -172,6 +195,49 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
 
     try {
       setIsSavingFinance(true);
+
+      const targetSheet = cellMapping.sheetName || currentSheet;
+
+      // 1. Đồng bộ vào ô bảng tính thật (spreadsheet cells) qua onCellEdit:
+      // Điều này ghi vết vào bảng `edits` (UC13), kiểm tra OCC (UC12), tăng revision ô
+      // và phát sự kiện cell.updated realtime cho tất cả người dùng khác đang mở dự án.
+      if (onCellEdit) {
+        // UC06: Đồng bộ giờ OT vào ô bảng tính (Nhân viên & Kế toán)
+        if (cellMapping.otHoursCell) {
+          try {
+            await onCellEdit(targetSheet, cellMapping.otHoursCell.trim().toUpperCase(), otHours);
+          } catch (e: any) {
+            console.warn("[Inspector] onCellEdit otHoursCell:", e);
+          }
+        }
+        if (cellMapping.otAmountCell) {
+          try {
+            await onCellEdit(targetSheet, cellMapping.otAmountCell.trim().toUpperCase(), totalOtCost);
+          } catch (e: any) {
+            console.warn("[Inspector] onCellEdit otAmountCell:", e);
+          }
+        }
+
+        // UC05: Đồng bộ các ô tài chính vào bảng tính (Kế toán & Admin)
+        if (canEditFinancial) {
+          if (cellMapping.vatRateCell) {
+            try {
+              await onCellEdit(targetSheet, cellMapping.vatRateCell.trim().toUpperCase(), vatRate);
+            } catch (e: any) {
+              console.warn("[Inspector] onCellEdit vatRateCell:", e);
+            }
+          }
+          if (cellMapping.discountCell) {
+            try {
+              await onCellEdit(targetSheet, cellMapping.discountCell.trim().toUpperCase(), discountAmount);
+            } catch (e: any) {
+              console.warn("[Inspector] onCellEdit discountCell:", e);
+            }
+          }
+        }
+      }
+
+      // 2. Cập nhật metadata dự án (projects table)
       const payload: any = {
         otHours: Number(otHours),
       };
@@ -184,6 +250,18 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
           ...(project?.financialConfig || {}),
           equipmentAllowance: Number(equipmentAllowance),
           travelAllowance: Number(travelAllowance),
+          cellMapping: {
+            ...cellMapping,
+            sheetName: targetSheet,
+          },
+        };
+      } else {
+        payload.financialConfig = {
+          ...(project?.financialConfig || {}),
+          cellMapping: {
+            ...(project?.financialConfig?.cellMapping || cellMapping),
+            sheetName: targetSheet,
+          },
         };
       }
 
@@ -193,7 +271,7 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
         await api.updateProject(projectId, payload);
         onRefreshData?.();
       }
-      toast.success("Đã lưu dữ liệu Tài chính & Giờ làm thêm OT thành công!");
+      toast.success("Đã đồng bộ và lưu dữ liệu Tài chính & OT vào bảng tính thành công!");
     } catch (err: any) {
       toast.error(err?.message || "Lỗi lưu dữ liệu tài chính/OT");
     } finally {
@@ -641,8 +719,146 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
               </div>
               <p className="text-[11px] text-emerald-800 leading-relaxed">
                 Đặc tả <strong>UC06</strong> (Giờ OT chuẩn 505.000đ/h) & <strong>UC05</strong> (Đơn giá, thuế VAT, chiết khấu).
-                Dữ liệu được lưu bền vững vào dự án và đồng bộ realtime.
+                Dữ liệu được đồng bộ vào các ô bảng tính Excel, lưu bền vững và cập nhật realtime.
               </p>
+            </div>
+
+            {/* BLOCK 0: Ánh Xạ Ô Bảng Tính Excel (Cell Mapping - UC06 & UC05) */}
+            <div className="rounded-xl border border-blue-200 bg-blue-50/50 p-3 shadow-2xs space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+                  <FiSliders className="h-3.5 w-3.5 text-[#105CB3]" />
+                  <span>Ánh Xạ Ô Bảng Tính Excel</span>
+                </span>
+                <span className="text-[10px] text-slate-500 font-mono">
+                  Sheet: {cellMapping.sheetName || currentSheet}
+                </span>
+              </div>
+
+              {/* Quick map from selected cell */}
+              {cellDetails?.coord && (
+                <div className="rounded-lg border border-blue-100 bg-white p-2 text-[11px] space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-600">
+                      Ô đang chọn: <strong className="font-mono text-[#105CB3] font-bold">{cellDetails.coord}</strong>
+                    </span>
+                    <span className="text-[10px] text-slate-400">Gán nhanh:</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCellMapping((prev) => ({
+                          ...prev,
+                          otHoursCell: cellDetails.coord,
+                          sheetName: currentSheet,
+                        }))
+                      }
+                      className="rounded bg-blue-100 px-2 py-0.5 text-[10px] font-semibold text-blue-700 hover:bg-blue-200 transition-colors"
+                    >
+                      + Ô Giờ OT
+                    </button>
+                    {canEditFinancial && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCellMapping((prev) => ({
+                              ...prev,
+                              otAmountCell: cellDetails.coord,
+                              sheetName: currentSheet,
+                            }))
+                          }
+                          className="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-slate-200 transition-colors"
+                        >
+                          + Ô Tiền OT
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCellMapping((prev) => ({
+                              ...prev,
+                              vatRateCell: cellDetails.coord,
+                              sheetName: currentSheet,
+                            }))
+                          }
+                          className="rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-200 transition-colors"
+                        >
+                          + Ô Thuế VAT
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCellMapping((prev) => ({
+                              ...prev,
+                              discountCell: cellDetails.coord,
+                              sheetName: currentSheet,
+                            }))
+                          }
+                          className="rounded bg-rose-100 px-2 py-0.5 text-[10px] font-semibold text-rose-700 hover:bg-rose-200 transition-colors"
+                        >
+                          + Ô Chiết khấu
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Direct Coordinate Inputs */}
+              <div className="grid grid-cols-2 gap-2 text-[11px]">
+                <div>
+                  <label className="text-[10px] text-slate-500 block mb-0.5 font-medium">Ô Giờ OT:</label>
+                  <input
+                    type="text"
+                    value={cellMapping.otHoursCell || ""}
+                    onChange={(e) =>
+                      setCellMapping((prev) => ({ ...prev, otHoursCell: e.target.value.toUpperCase() }))
+                    }
+                    placeholder="VD: C25"
+                    className="w-full rounded border border-slate-200 bg-white px-2 py-1 font-mono text-xs font-semibold text-slate-800 focus:border-[#105CB3] focus:outline-hidden"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-500 block mb-0.5 font-medium">Ô Tiền OT:</label>
+                  <input
+                    type="text"
+                    disabled={!canEditFinancial}
+                    value={cellMapping.otAmountCell || ""}
+                    onChange={(e) =>
+                      setCellMapping((prev) => ({ ...prev, otAmountCell: e.target.value.toUpperCase() }))
+                    }
+                    placeholder="VD: E25"
+                    className="w-full rounded border border-slate-200 bg-white px-2 py-1 font-mono text-xs font-semibold text-slate-800 disabled:bg-slate-100 focus:border-[#105CB3] focus:outline-hidden"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-500 block mb-0.5 font-medium">Ô Thuế VAT:</label>
+                  <input
+                    type="text"
+                    disabled={!canEditFinancial}
+                    value={cellMapping.vatRateCell || ""}
+                    onChange={(e) =>
+                      setCellMapping((prev) => ({ ...prev, vatRateCell: e.target.value.toUpperCase() }))
+                    }
+                    placeholder="VD: E28"
+                    className="w-full rounded border border-slate-200 bg-white px-2 py-1 font-mono text-xs font-semibold text-slate-800 disabled:bg-slate-100 focus:border-emerald-600 focus:outline-hidden"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-500 block mb-0.5 font-medium">Ô Chiết khấu:</label>
+                  <input
+                    type="text"
+                    disabled={!canEditFinancial}
+                    value={cellMapping.discountCell || ""}
+                    onChange={(e) =>
+                      setCellMapping((prev) => ({ ...prev, discountCell: e.target.value.toUpperCase() }))
+                    }
+                    placeholder="VD: E29"
+                    className="w-full rounded border border-slate-200 bg-white px-2 py-1 font-mono text-xs font-semibold text-slate-800 disabled:bg-slate-100 focus:border-emerald-600 focus:outline-hidden"
+                  />
+                </div>
+              </div>
             </div>
 
             {/* BLOCK 1: UC06 - Nhập giờ làm thêm OT */}

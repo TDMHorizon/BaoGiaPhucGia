@@ -248,6 +248,16 @@ export const QuoteEditorPage: React.FC = () => {
         const ws = exceljsWorkbook.getWorksheet(sheetName);
         if (ws) updateMergedCellInExcelJS(ws, cell, newValue);
       }
+
+      // Tự động đồng bộ số giờ OT nếu ô vừa sửa là ô được ánh xạ cho OT (UC06)
+      const mapping = project?.financialConfig?.cellMapping;
+      if (mapping?.otHoursCell && mapping.otHoursCell.toUpperCase() === cell.toUpperCase()) {
+        const parsedHours = parseFloat(String(newValue));
+        if (!isNaN(parsedHours) && parsedHours >= 0) {
+          setProject((prev: any) => (prev ? { ...prev, otHours: parsedHours } : prev));
+          api.updateProject(projectId, { otHours: parsedHours }).catch(() => {});
+        }
+      }
     } catch (e: any) {
       console.error("Save edit error:", e);
       if (e?.status === 409) {
@@ -322,8 +332,27 @@ export const QuoteEditorPage: React.FC = () => {
 
   // UC17: Export Excel nháp có Watermark chìm và Header in ấn A4
   const handleExportDraftExcel = async () => {
-    if (!project || !workbook) return;
+    if (!project) return;
     try {
+      // 1. Thử tải trực tiếp từ backend pipeline (replays all committed edits từ SQLite + watermark)
+      try {
+        const blob = await api.downloadDraftExcel(projectId!);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        const safeName = (project.name || "baogia").replace(/\.xlsx$/i, "");
+        a.download = `${safeName}_BAN_DU_THAO.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        toast.success("Đã xuất tệp Excel Nháp có Watermark 'BẢN DỰ THẢO - CHƯA DUYỆT' (UC17)!");
+        return;
+      } catch (backendErr) {
+        console.warn("Backend draft export failed, falling back to client-side ExcelJS:", backendErr);
+      }
+
+      // 2. Fallback sang client-side ExcelJS nếu backend không khả dụng
       if (exceljsWorkbook) {
         // Clone workbook độc lập để bảo toàn trạng thái nguyên bản
         const clonedWb = await cloneExcelJSWorkbook(exceljsWorkbook);
@@ -656,6 +685,7 @@ export const QuoteEditorPage: React.FC = () => {
             onRefreshData={loadProjectData}
             onOpenAssignModal={() => setIsAssignModalOpen(true)}
             onUpdateFinancial={handleUpdateFinancial}
+            onCellEdit={handleCellEdit}
             onClose={() => setIsInspectorOpen(false)}
           />
         )}

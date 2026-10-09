@@ -50,6 +50,7 @@ import {
   ensureDataDirs,
   saveProjectFile,
   readProjectFile,
+  readProjectFileBuffer,
   readVersionSnapshot,
   saveTemplateFile,
   readTemplateFile,
@@ -57,6 +58,8 @@ import {
   deleteProjectFiles,
   toDataUrl,
 } from "./server/files";
+import { buildFinalWorkbookBuffer, loadWorkbookFromBuffer } from "./server/services/excelService";
+import { applyDraftWatermarkToWorkbook } from "./src/lib/exceljs-helper";
 import * as XLSX from "xlsx";
 
 /** Bản gốc không bị ghi đè. User chỉ điền ô được phép rồi tải Excel gửi khách. */
@@ -914,6 +917,37 @@ async function startServer() {
     const fileBase64 = await readProjectFile(project.id);
     if (!fileBase64) return res.status(404).json({ error: "File báo giá không tồn tại" });
     res.json({ id: project.id, fileBase64 });
+  }));
+
+  // UC17: Xuất tệp Excel Nháp có Watermark "BẢN DỰ THẢO - CHƯA DUYỆT"
+  // Kết hợp workbook nền + toàn bộ edits đã commit trong SQLite, áp Watermark in ấn A4 & background, trả về .xlsx
+  // TUYỆT ĐỐI KHÔNG GHI ĐÈ FILE NỀN data/files/{id}.xlsx VÀ KHÔNG TẠO EDIT GIẢ TRÁI PHÉP.
+  app.get("/api/projects/:id/export/draft", authMiddleware, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+
+    const baseBuffer = await readProjectFileBuffer(project.id);
+    if (!baseBuffer) return res.status(404).json({ error: "Không tìm thấy file Excel nền của báo giá" });
+
+    // Lấy toàn bộ edit đã được chấp nhận theo thứ tự sequence tăng dần (cũ -> mới)
+    const edits = getDb()
+      .prepare("SELECT sheet_name, cell, new_value, sequence FROM edits WHERE project_id = ? ORDER BY sequence ASC")
+      .all(project.id) as any[];
+
+    // Dựng workbook hoàn chỉnh kết hợp file nền + edits đã commit
+    const { buffer: finalWbBuf } = await buildFinalWorkbookBuffer(baseBuffer, edits);
+    const wb = await loadWorkbookFromBuffer(finalWbBuf);
+
+    // Áp Watermark chuẩn UC17
+    applyDraftWatermarkToWorkbook(wb, "BẢN DỰ THẢO - CHƯA DUYỆT");
+
+    const outBuffer = Buffer.from(await wb.xlsx.writeBuffer());
+    const safeName = (project.name || "baogia").replace(/\.xlsx$/i, "");
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(safeName)}_BAN_DU_THAO.xlsx"`);
+    res.send(outBuffer);
   }));
 
   // Versions
