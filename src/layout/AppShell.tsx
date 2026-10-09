@@ -42,10 +42,20 @@ export const AppShell: React.FC<AppShellProps> = ({
 
   const currentRole: Role = (user?.role as Role) || "user";
 
+  // Helper kiểm tra chính xác item có match route hiện tại hay không (tránh /quotes/trash kích hoạt nhầm /quotes)
+  const isPathMatching = (targetPath: string, currentPath: string) => {
+    const cleanCurrent = currentPath.split("?")[0].replace(/\/$/, "");
+    const cleanTarget = targetPath.replace(/\/$/, "");
+    if (cleanTarget === "/quotes") {
+      return cleanCurrent === "/quotes";
+    }
+    return cleanCurrent === cleanTarget || cleanCurrent.startsWith(`${cleanTarget}/`);
+  };
+
   // Auto-expand group if current route is within it
   useEffect(() => {
     NAVIGATION_CONFIG.forEach((group) => {
-      if (group.children?.some((child) => location.pathname.startsWith(child.path))) {
+      if (group.children?.some((child) => isPathMatching(child.path, location.pathname))) {
         setExpandedGroups((prev) => ({ ...prev, [group.id]: true }));
       }
     });
@@ -172,7 +182,7 @@ export const AppShell: React.FC<AppShellProps> = ({
             // Group with children
             const isGroupExpanded = expandedGroups[group.id] ?? false;
             const isChildActive = filteredChildren?.some((c) =>
-              location.pathname.startsWith(c.path)
+              isPathMatching(c.path, location.pathname)
             );
 
             return (
@@ -207,7 +217,7 @@ export const AppShell: React.FC<AppShellProps> = ({
                   <div className="ml-4 space-y-1 border-l border-white/20 pl-2">
                     {filteredChildren.map((child) => {
                       const ChildIcon = child.icon;
-                      const isChildCurrent = location.pathname === child.path;
+                      const isChildCurrent = isPathMatching(child.path, location.pathname);
 
                       return (
                         <Link

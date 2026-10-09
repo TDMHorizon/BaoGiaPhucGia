@@ -18,7 +18,7 @@ import { api } from "../../lib/api";
 import { getSheetData, parseExcel } from "../../lib/excel";
 import { useAuth } from "../../lib/auth";
 import { ROUTES } from "../../router";
-import { AdminHeader, AdminSidebar } from "../../layout/AdminLayout";
+import { AppShell } from "../../layout/AppShell";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 
@@ -55,17 +55,13 @@ function getExcelColumnName(colIndex: number): string {
 }
 
 export function ListHistFilePage() {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [projects, setProjects] = useState<DeletedProject[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [page, setPage] = useState(1);
   const [isLoading, setIsLoading] = useState(true);
   const [restoringId, setRestoringId] = useState<string | null>(null);
-  const [isMobileOpen, setIsMobileOpen] = useState(false);
-  const [isCollapsed, setIsCollapsed] = useState(false);
-  const [isQuotesExpanded, setIsQuotesExpanded] = useState(false);
-  const [isAccountsExpanded, setIsAccountsExpanded] = useState(true);
 
   // Preview Modal States
   const [previewProject, setPreviewProject] = useState<DeletedProject | null>(null);
@@ -187,46 +183,13 @@ export function ListHistFilePage() {
 
   if (!user || (user.role !== "admin" && user.role !== "manager")) return null;
 
-  const goHome = () => navigate(ROUTES.home);
-
   return (
-    <div className="flex min-h-screen bg-[#f4f8ff] text-slate-900">
-      <AdminSidebar
-        userRole={user.role}
-        mainTab="admin"
-        pendingCount={0}
-        isMobileOpen={isMobileOpen}
-        isCollapsed={isCollapsed}
-        isQuotesExpanded={isQuotesExpanded}
-        isAccountsExpanded={isAccountsExpanded}
-        selectedProject={null}
-        onMainTabChange={goHome}
-        onMobileOpenChange={setIsMobileOpen}
-        onQuotesExpandedChange={() => setIsQuotesExpanded((expanded) => !expanded)}
-        onAccountsExpandedChange={() => setIsAccountsExpanded((expanded) => !expanded)}
-        onProjectDialogOpen={goHome}
-        onTemplateDialogOpen={goHome}
-        onAccountManagement={() => user.role === "admin" ? navigate(ROUTES.accountManagement) : goHome()}
-        onDeletedProjectsOpen={() => undefined}
-        onLogout={logout}
-      />
-
-      <div className="flex min-w-0 flex-1 flex-col">
-        <AdminHeader
-          selectedProject={null}
-          username={user.username}
-          canManageAccounts={user.role === "admin"}
-          onToggleNavigation={() => {
-            if (window.innerWidth >= 768) setIsCollapsed((collapsed) => !collapsed);
-            else setIsMobileOpen(true);
-          }}
-          onAccountManagement={() => user.role === "admin" ? navigate(ROUTES.profile) : goHome()}
-          onLogout={logout}
-        />
-
-        <main className="min-w-0 flex-1 overflow-auto px-4 py-6 sm:px-6 lg:px-8">
-          <div className="mx-auto max-w-7xl">
-            <div className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+    <AppShell
+      title="Thùng Rác • Kho Lưu Trữ Báo Giá Tạm Thời"
+      subtitle="Các file báo giá đã xóa được lưu trữ an toàn trong 30 ngày trước khi xóa vĩnh viễn"
+    >
+      <div className="mx-auto max-w-7xl space-y-6">
+        <div className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
               <div className="flex items-center gap-3">
                 <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-100 text-amber-700 shadow-sm">
                   <Archive className="h-6 w-6" />
@@ -379,10 +342,8 @@ export function ListHistFilePage() {
               </div>
             </section>
           </div>
-        </main>
-      </div>
 
-      {/* Modal Xem trước nội dung Excel */}
+          {/* Modal Xem trước nội dung Excel */}
       {previewProject && (
         <div
           className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/65 backdrop-blur-xs p-2 sm:p-4 lg:p-6"
@@ -605,6 +566,6 @@ export function ListHistFilePage() {
           </section>
         </div>
       )}
-    </div>
+    </AppShell>
   );
 }
