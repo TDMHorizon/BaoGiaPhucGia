@@ -111,6 +111,8 @@ export interface SpreadsheetViewerProps {
   selectedRange?: string;
   selectedColumn?: number | null;
   previewLimit?: number;
+  onSelectionChange?: (rangeStr: string) => void;
+  focusRange?: string;
   onColumnClick?: (colIndex: number) => void;
   onRowClick?: (rowIndex: number) => void;
   onCellEdit?: (r: number, c: number, newValue: string) => void;
@@ -129,6 +131,8 @@ export function SpreadsheetViewer({
   mode,
   locked = false,
   editableRange = '',
+  onSelectionChange,
+  focusRange,
   onCellEdit,
   onCellMouseDown,
   onToggleLock,
@@ -307,6 +311,7 @@ export function SpreadsheetViewer({
           );
 
           setCurrentSelectionStr(normalized.selectionStr);
+          onSelectionChange?.(normalized.selectionStr);
           if (mode === 'admin') onCellMouseDown?.(normalized.masterCell.row, normalized.masterCell.column);
 
           // Read cell value or formula for Formula Bar
@@ -439,6 +444,34 @@ export function SpreadsheetViewer({
       console.warn('Failed to switch sheet:', e);
     }
   }, [activeSheet, isReady]);
+
+  // Focus Range when requested
+  useEffect(() => {
+    if (!focusRange || !isReady || !univerAPIRef.current) return;
+    try {
+      const fWorkbook = univerAPIRef.current.getActiveWorkbook();
+      const currentWs = fWorkbook?.getActiveSheet();
+      if (!currentWs) return;
+
+      const firstPart = focusRange.split(/[,;\n]/)[0]?.trim();
+      if (!firstPart) return;
+
+      const parts = firstPart.split(':');
+      const start = XLSX.utils.decode_cell(parts[0].trim());
+      const end = parts.length > 1 ? XLSX.utils.decode_cell(parts[1].trim()) : start;
+      const r1 = Math.min(start.r, end.r);
+      const r2 = Math.max(start.r, end.r);
+      const c1 = Math.min(start.c, end.c);
+      const c2 = Math.max(start.c, end.c);
+
+      const range = currentWs.getRange(r1, c1, r2 - r1 + 1, c2 - c1 + 1);
+      if (range) {
+        currentWs.setActiveRange(range);
+      }
+    } catch (err) {
+      console.warn('Failed to focus range on Univer sheet:', err);
+    }
+  }, [focusRange, activeSheet, isReady]);
 
   // Formula Bar Value Commit
   const handleFormulaBarCommit = (val: string) => {

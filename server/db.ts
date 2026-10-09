@@ -158,6 +158,36 @@ export function createPermissionSchema(database: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_workbook_commands_project_ver
       ON workbook_commands(project_id, version);
+
+    -- BẢNG PHÂN QUYỀN ĐỌC & SỬA ĐA SHEET CHUẨN HÓA (PROJECT PERMISSIONS)
+    CREATE TABLE IF NOT EXISTS project_permissions (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      sheet_name TEXT NOT NULL,
+      access_type TEXT NOT NULL CHECK(access_type IN ('read', 'edit')),
+      range_ref TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_proj_perm_lookup 
+      ON project_permissions(project_id, user_id, sheet_name, access_type);
+
+    -- BẢNG LƯU VẾT AUDIT LOG PHÂN QUYỀN (PERMISSION AUDIT LOGS)
+    CREATE TABLE IF NOT EXISTS project_permission_audit_logs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      changed_by TEXT NOT NULL,
+      action TEXT NOT NULL,
+      old_grants TEXT,
+      new_grants TEXT,
+      created_at TEXT NOT NULL
+    );
   `);
 }
 
@@ -490,4 +520,99 @@ export function recordWorkbookCommand(
     now
   );
 }
+
+export interface ProjectPermissionRecord {
+  id: string;
+  project_id: string;
+  user_id: string;
+  sheet_name: string;
+  access_type: 'read' | 'edit';
+  range_ref: string;
+  created_at: string;
+  updated_at: string;
+  created_by: string;
+}
+
+export interface PermissionGrantInput {
+  sheetName: string;
+  accessType: 'read' | 'edit';
+  rangeRef: string;
+}
+
+export function replaceProjectPermissions(
+  projectId: string,
+  userId: string,
+  grants: PermissionGrantInput[],
+  adminId: string
+) {
+  const database = getDb();
+  const now = new Date().toISOString();
+
+  const transaction = database.transaction(() => {
+    // 1. Fetch old grants for audit log
+    const oldGrants = database
+      .prepare("SELECT * FROM project_permissions WHERE project_id = ? AND user_id = ?")
+      .all(projectId, userId);
+
+    // 2. Delete existing grants
+    database
+      .prepare("DELETE FROM project_permissions WHERE project_id = ? AND user_id = ?")
+      .run(projectId, userId);
+
+    // 3. Insert new grants
+    const insertStmt = database.prepare(`
+      INSERT INTO project_permissions (id, project_id, user_id, sheet_name, access_type, range_ref, created_at, updated_at, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const g of grants) {
+      if (!g.sheetName || !g.rangeRef) continue;
+      const permId = `${projectId}_${userId}_${g.sheetName}_${g.accessType}_${g.rangeRef}`;
+      insertStmt.run(permId, projectId, userId, g.sheetName, g.accessType, g.rangeRef, now, now, adminId);
+    }
+
+    // 4. Record audit log
+    const auditId = `audit_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    database.prepare(`
+      INSERT INTO project_permission_audit_logs (id, project_id, user_id, changed_by, action, old_grants, new_grants, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      auditId,
+      projectId,
+      userId,
+      adminId,
+      'REPLACE_ALL',
+      JSON.stringify(oldGrants),
+      JSON.stringify(grants),
+      now
+    );
+  });
+
+  transaction();
+}
+
+export function getProjectPermissions(projectId: string, userId: string): ProjectPermissionRecord[] {
+  return getDb()
+    .prepare("SELECT * FROM project_permissions WHERE project_id = ? AND user_id = ?")
+    .all(projectId, userId) as ProjectPermissionRecord[];
+}
+
+export function getProjectPermissionsMap(projectId: string, userId: string): Record<string, { read: string[]; edit: string[] }> {
+  const rows = getProjectPermissions(projectId, userId);
+  const map: Record<string, { read: string[]; edit: string[] }> = {};
+
+  for (const row of rows) {
+    if (!map[row.sheet_name]) {
+      map[row.sheet_name] = { read: [], edit: [] };
+    }
+    if (row.access_type === 'edit') {
+      map[row.sheet_name].edit.push(row.range_ref);
+    } else if (row.access_type === 'read') {
+      map[row.sheet_name].read.push(row.range_ref);
+    }
+  }
+
+  return map;
+}
+
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { FolderOpen, Settings, Users, FileText, Undo, Plus, Minus, Search, Filter, RotateCcw } from "lucide-react";
+import { FolderOpen, Settings, Users, FileText, Undo, Plus, Minus, Search, Filter, RotateCcw, ShieldCheck, Target, Eye, Layers } from "lucide-react";
 import { api } from "../lib/api";
 import { fileToBase64, parseExcel, getSheetData, applyEditsToWorkbook } from "../lib/excel";
 import { SpreadsheetViewer } from "./SpreadsheetViewer";
@@ -23,6 +23,8 @@ import { useAuth } from "../lib/auth";
 import { AdminHeader, AdminSidebar } from "../layout/AdminLayout";
 import { AdminHome } from "./pages/AdminHome";
 import { ProjectWriteQueue } from "../lib/project-write-queue";
+import { useUserPermissions } from "../hooks/useUserPermissions";
+import { ProjectPermissionsModal } from "./ProjectPermissionsModal";
 
 type PermissionRangesBySheet = Record<string, { read: string; edit: string }>;
 
@@ -100,10 +102,29 @@ export function AdminDashboard() {
   const writeQueue = useRef(new ProjectWriteQueue());
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const pendingEditsRef = useRef<Array<{sheetName: string; cell: string; oldValue: string; newValue: string}>>([]);
+  const [activeSheet, setActiveSheet] = useState<string>("");
   const [ranges, setRanges] = useState<any>({});
-  const [permissionUsers, setPermissionUsers] = useState<any[]>([]);
-  const [permissionUserId, setPermissionUserId] = useState("");
-  const [permissionRanges, setPermissionRanges] = useState<PermissionRangesBySheet>({});
+  const [isPermissionsModalOpen, setIsPermissionsModalOpen] = useState(false);
+  const [currentSelectionStr, setCurrentSelectionStr] = useState("A1");
+  const [focusRange, setFocusRange] = useState("");
+
+  const permissionsHook = useUserPermissions({
+    projectId: selectedProject?.id,
+    sheets: selectedProject?.sheets || [],
+    activeSheet,
+    onSwitchSheet: (sheet) => handleTabChange(sheet),
+    onFocusSpreadsheetRange: (rangeStr) => setFocusRange(rangeStr),
+  });
+
+  const {
+    permissionUsers,
+    permissionUserId,
+    setPermissionUserId,
+    permissionRanges,
+    setPermissionRanges,
+    savePermissions: handleSavePermissions,
+  } = permissionsHook;
+
   const [hiddenRanges, setHiddenRanges] = useState<any[]>([]);
   const [hiddenRangeSheet, setHiddenRangeSheet] = useState("");
   const [hiddenRangeInput, setHiddenRangeInput] = useState("");
@@ -128,7 +149,6 @@ export function AdminDashboard() {
   const [workbook, setWorkbook] = useState<XLSX.WorkBook | null>(null);
   const [exceljsWorkbook, setExceljsWorkbook] = useState<any | null>(null);
   const [sheetData, setSheetData] = useState<any[][]>([]);
-  const [activeSheet, setActiveSheet] = useState<string>("");
   const [previewLimit, setPreviewLimit] = useState<number>(55);
   const [rowInsertIndex, setRowInsertIndex] = useState<string>("");
   const [colInsertIndex, setColInsertIndex] = useState<string>("");
@@ -147,54 +167,6 @@ export function AdminDashboard() {
   useEffect(() => {
     loadProjects();
   }, [searchQ, filterStatus]);
-
-  useEffect(() => {
-    api.getActiveUsers()
-      .then((users: any[]) => {
-        setPermissionUsers(users);
-        setPermissionUserId((current) => current || users[0]?.id || "");
-      })
-      .catch((error: unknown) => {
-        console.error("Failed to load employees for permissions", error);
-        toast.error(error instanceof Error ? error.message : "Không thể tải danh sách nhân viên.");
-      });
-  }, []);
-
-  useEffect(() => {
-    if (!selectedProject || !permissionUserId) {
-      setPermissionRanges({});
-      return;
-    }
-
-    let cancelled = false;
-    setPermissionRanges({});
-    api.getProjectPermissions(selectedProject.id, permissionUserId)
-      .then((response: any) => {
-        if (cancelled) return;
-        const next: PermissionRangesBySheet = {};
-        for (const sheet of selectedProject.sheets || []) next[sheet] = { read: "", edit: "" };
-        for (const grant of response.grants || []) {
-          const current = next[grant.sheetName] ?? { read: "", edit: "" };
-          const field = grant.canEdit ? "edit" : "read";
-          const range = current[field].split(",").map((part) => part.trim()).filter(Boolean);
-          if (!range.includes(grant.rangeRef)) range.push(grant.rangeRef);
-          current[field] = range.join(", ");
-          if (grant.canEdit && !current.read.split(",").map((part) => part.trim()).includes(grant.rangeRef)) {
-            current.read = [...current.read.split(",").map((part) => part.trim()).filter(Boolean), grant.rangeRef].join(", ");
-          }
-          next[grant.sheetName] = current;
-        }
-        setPermissionRanges(next);
-        setRanges(Object.fromEntries(Object.entries(next).map(([sheet, values]) => [sheet, values.edit])));
-      })
-      .catch((error: unknown) => {
-        if (cancelled) return;
-        console.error("Failed to load employee project permissions", error);
-        toast.error(error instanceof Error ? error.message : "Không thể tải quyền nhân viên.");
-      });
-
-    return () => { cancelled = true; };
-  }, [selectedProject?.id, permissionUserId, selectedProject?.sheets]);
 
   useEffect(() => {
     if (!selectedProject) {
@@ -824,40 +796,6 @@ export function AdminDashboard() {
     }
   };
 
-  const handleSavePermissions = async () => {
-    if (!selectedProject || !permissionUserId) return;
-    try {
-      const grants = new Map<string, { sheetName: string; rangeRef: string; canRead: boolean; canEdit: boolean }>();
-      for (const [sheetName, values] of Object.entries(permissionRanges) as [string, { read: string; edit: string }][]) {
-        const readRanges = values.read.split(/[,;\n]/).map((range) => range.trim()).filter(Boolean);
-        const editRanges = values.edit.split(/[,;\n]/).map((range) => range.trim()).filter(Boolean);
-        for (const [rangeText, canEdit] of [
-          ...readRanges.map((range) => [range, false] as const),
-          ...editRanges.map((range) => [range, true] as const),
-        ]) {
-          const rangeRef = normalizePermissionRange(rangeText);
-          const key = `${sheetName}\u0000${rangeRef}`;
-          const existing = grants.get(key);
-          grants.set(key, {
-            sheetName,
-            rangeRef,
-            canRead: true,
-            canEdit: canEdit || existing?.canEdit || false,
-          });
-        }
-      }
-
-      await api.replaceUserProjectPermissions(
-        selectedProject.id,
-        permissionUserId,
-        [...grants.values()],
-      );
-      toast.success("Đã cập nhật quyền đọc và sửa cho nhân viên.");
-    } catch (error) {
-      console.error("Failed to save employee permissions", error);
-      toast.error(error instanceof Error ? error.message : "Không thể cập nhật quyền nhân viên.");
-    }
-  };
 
   const handleAddHiddenRange = async () => {
     if (!selectedProject || !hiddenRangeSheet || !hiddenRangeInput.trim()) return;
@@ -1059,6 +997,20 @@ export function AdminDashboard() {
               ) : (
                 <>
                   <div className="flex flex-col items-center">
+                    <Button
+                      variant="ghost"
+                      onClick={() => setIsPermissionsModalOpen(true)}
+                      className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-indigo-50"
+                    >
+                      <ShieldCheck className="w-6 h-6 text-indigo-600" strokeWidth={1.5} />
+                      <span className="text-[10px] font-medium leading-none">Phân quyền</span>
+                    </Button>
+                    <div className="text-[9px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">Quyền hạn</div>
+                  </div>
+
+                  <div className="w-px h-14 bg-slate-200 mx-1" />
+
+                  <div className="flex flex-col items-center">
                     <Dialog>
                       <DialogTrigger render={<Button variant="ghost" className="h-14 w-20 flex flex-col gap-1 rounded-sm hover:bg-amber-50" />}>
                           <Settings className="w-6 h-6 text-amber-600" strokeWidth={1.5} />
@@ -1086,6 +1038,15 @@ export function AdminDashboard() {
                                 <Button onClick={handleSavePermissions} disabled={!permissionUserId} size="sm" className="h-6 text-[10px] bg-indigo-600 hover:bg-indigo-700 px-2 font-bold">Lưu</Button>
                               </CardHeader>
                               <CardContent className="p-3 space-y-2.5">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => setIsPermissionsModalOpen(true)}
+                                  className="w-full text-xs h-8 bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100 font-semibold gap-1.5"
+                                >
+                                  <Target className="w-4 h-4 text-indigo-600" />
+                                  Mở Bảng Chọn Vùng Trực Quan (Visual Picker)
+                                </Button>
                                 <select
                                   value={permissionUserId}
                                   onChange={(event) => setPermissionUserId(event.target.value)}
@@ -1357,6 +1318,8 @@ export function AdminDashboard() {
                   activeSheet={activeSheet}
                   mode="admin"
                   editableRange={ranges[activeSheet] || ""}
+                  onSelectionChange={(sel) => setCurrentSelectionStr(sel)}
+                  focusRange={focusRange}
                   selectedRange={(() => {
                     if (!dragStart || !dragEnd) return "";
                     const r1 = Math.min(dragStart.r, dragEnd.r);
@@ -1389,8 +1352,22 @@ export function AdminDashboard() {
       </div>
           </>
         )}
-         </main>
+        </main>
       </div>
+
+      {selectedProject && (
+        <ProjectPermissionsModal
+          open={isPermissionsModalOpen}
+          onOpenChange={setIsPermissionsModalOpen}
+          projectName={selectedProject.name}
+          sheets={selectedProject.sheets || []}
+          activeSheet={activeSheet}
+          currentSelectionStr={currentSelectionStr}
+          permissionsHook={permissionsHook}
+          onSwitchSheet={handleTabChange}
+          onFocusRange={(range) => setFocusRange(range)}
+        />
+      )}
     </div>
   );
 };

@@ -11,6 +11,7 @@ import {
 import { extractCellSearchText } from "../src/components/SpreadsheetViewer/components/FindReplaceModal";
 import { extractCellValueForSort } from "../src/components/SpreadsheetViewer/utils/sortEngine";
 import { setProjectRoleVisibility, isProjectHiddenForUser, getProjectRoleVisibilities } from "../server/db";
+import { PermissionEngine } from "../src/lib/permissionEngine";
 import ExcelJS from "exceljs";
 import Database from "better-sqlite3";
 import path from "path";
@@ -248,6 +249,33 @@ async function runAllVerifications() {
       masterCellMerged: "A1:E1",
       hasFormula: true,
     });
+  }
+
+  // PHASE P7: PERMISSION ENGINE & VISUAL RANGE PICKER
+  {
+    // Case 1: Normalizing ranges
+    assert(PermissionEngine.normalizeRange("a1:d10") === "A1:D10", "PermissionEngine normalizes 'a1:d10' to 'A1:D10'", "PHASE_P7");
+    assert(PermissionEngine.normalizeRange("c5") === "C5", "PermissionEngine normalizes single cell 'c5' to 'C5'", "PHASE_P7");
+    assert(PermissionEngine.normalizeRange("a:d") === "A:D", "PermissionEngine normalizes full columns 'a:d' to 'A:D'", "PHASE_P7");
+    assert(PermissionEngine.normalizeRange("5:10") === "5:10", "PermissionEngine normalizes full rows '5:10' to '5:10'", "PHASE_P7");
+
+    // Case 2: Multi-range parsing
+    const grants = PermissionEngine.parseMultiRange("A1:D10, F5:H10, K1");
+    assert(grants.length === 3, "PermissionEngine parses 3 multi-ranges", "PHASE_P7", { grants });
+
+    // Case 3: Cell containment checks
+    assert(PermissionEngine.isCellInRange("B5", "A1:D10") === true, "Cell B5 is in range A1:D10", "PHASE_P7");
+    assert(PermissionEngine.isCellInRange("E5", "A1:D10") === false, "Cell E5 is NOT in range A1:D10", "PHASE_P7");
+    assert(PermissionEngine.isCellInRange("B50", "B:B") === true, "Cell B50 is in full column B:B", "PHASE_P7");
+    assert(PermissionEngine.isCellInRange("C5", "5:5") === true, "Cell C5 is in full row 5:5", "PHASE_P7");
+
+    // Case 4: Edit implies Read rule (Edit is subset of Read)
+    const canReadEditCell = PermissionEngine.canReadCell("B5", "A1:B2", "B3:B10");
+    assert(canReadEditCell === true, "PermissionEngine: Edit range implies Read access (Cell in Edit range is readable)", "PHASE_P7");
+
+    // Case 5: canEditCell checks
+    assert(PermissionEngine.canEditCell("B5", "A1:D10") === true, "PermissionEngine: canEditCell B5 in A1:D10 is true", "PHASE_P7");
+    assert(PermissionEngine.canEditCell("Z100", "A1:D10") === false, "PermissionEngine: canEditCell Z100 outside edit range is false", "PHASE_P7");
   }
 
   console.log("\n=======================================================");

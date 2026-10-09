@@ -57,13 +57,38 @@ export function runMigration() {
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       );
 
-      CREATE INDEX IF NOT EXISTS idx_workbook_commands_project_ver
-        ON workbook_commands(project_id, version);
+      CREATE TABLE IF NOT EXISTS project_permissions (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        sheet_name TEXT NOT NULL,
+        access_type TEXT NOT NULL CHECK(access_type IN ('read', 'edit')),
+        range_ref TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_proj_perm_lookup 
+        ON project_permissions(project_id, user_id, sheet_name, access_type);
+
+      CREATE TABLE IF NOT EXISTS project_permission_audit_logs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        changed_by TEXT NOT NULL,
+        action TEXT NOT NULL,
+        old_grants TEXT,
+        new_grants TEXT,
+        created_at TEXT NOT NULL
+      );
     `);
 
     logger.info("MIGRATION", "DATABASE_MIGRATION_SUCCESS", { status: "OK" });
     logger.testVerification("PHASE_P0", "Database Schema Migration", true, {
-      tablesCreated: ["project_role_visibility", "workbook_snapshots", "workbook_commands"],
+      tablesCreated: ["project_role_visibility", "workbook_snapshots", "workbook_commands", "project_permissions", "project_permission_audit_logs"],
     });
     return true;
   } catch (error) {
