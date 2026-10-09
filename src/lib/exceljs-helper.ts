@@ -205,3 +205,97 @@ export function updateMergedCellInExcelJS(ws: any, cellRef: string, value: any) 
     cell.value = typedVal;
   }
 }
+
+/**
+ * UC17: Tạo ảnh PNG Watermark chữ chìm "BẢN DỰ THẢO - CHƯA DUYỆT"
+ * Sử dụng HTML5 Canvas để tạo ảnh có độ trong suốt và xoay nghiêng chuẩn xác.
+ */
+export function createDraftWatermarkImageBase64(text = "BẢN DỰ THẢO - CHƯA DUYỆT"): string {
+  if (typeof document === "undefined") {
+    // 1x1 transparent PNG fallback if running outside DOM
+    return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = 650;
+  canvas.height = 420;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return "";
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.save();
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate((-32 * Math.PI) / 180);
+
+  // Viền khung cảnh báo bản nháp
+  ctx.strokeStyle = "rgba(239, 68, 68, 0.28)";
+  ctx.lineWidth = 4;
+  ctx.strokeRect(-280, -45, 560, 90);
+
+  // Chữ watermark chính
+  ctx.font = "bold 32px 'Segoe UI', Arial, sans-serif";
+  ctx.fillStyle = "rgba(220, 38, 38, 0.24)";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, 0, -8);
+
+  // Phụ đề ngày xuất & mã bảo mật
+  ctx.font = "italic 13px 'Segoe UI', Arial, sans-serif";
+  ctx.fillStyle = "rgba(100, 116, 139, 0.35)";
+  ctx.fillText("PHÚC GIA SURVEY - BẢN THẢO NỘI BỘ KHÔNG CÓ GIÁ TRỊ PHÁP LÝ", 0, 22);
+
+  ctx.restore();
+  return canvas.toDataURL("image/png");
+}
+
+/**
+ * UC17: Áp dụng Watermark dự thảo vào tất cả các Worksheet trong ExcelJS Workbook
+ * Bao gồm hình nền chìm (background watermark) và Header/Footer in ấn A4.
+ */
+export function applyDraftWatermarkToWorkbook(
+  workbook: ExcelJS.Workbook,
+  watermarkText = "BẢN DỰ THẢO - CHƯA DUYỆT"
+): void {
+  const dataUrl = createDraftWatermarkImageBase64(watermarkText);
+  let imageId: number | undefined;
+  if (dataUrl) {
+    const cleanBase64 = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
+    try {
+      imageId = workbook.addImage({
+        base64: cleanBase64,
+        extension: "png",
+      });
+    } catch (err) {
+      console.warn("[ExcelJS] Không thể nhúng ảnh watermark vào workbook:", err);
+    }
+  }
+
+  workbook.eachSheet((ws) => {
+    // 1. Áp watermark ảnh nền chìm toàn bộ bảng tính
+    if (imageId !== undefined) {
+      try {
+        ws.addBackgroundImage(imageId);
+      } catch (err) {
+        console.warn("[ExcelJS] Không thể đặt addBackgroundImage cho sheet:", ws.name, err);
+      }
+    }
+
+    // 2. Cấu hình Header & Footer in ấn A4 chuẩn (bắt buộc theo đặc tả UC17)
+    ws.headerFooter.oddHeader = `&C&"Arial,Bold"&22&KDC2626 *** ${watermarkText} ***`;
+    ws.headerFooter.evenHeader = `&C&"Arial,Bold"&22&KDC2626 *** ${watermarkText} ***`;
+    ws.headerFooter.oddFooter = `&R&"Arial,Italic"&10&K64748B Báo giá Phúc Gia - ${watermarkText} | Trang &P/&N`;
+    ws.headerFooter.evenFooter = `&R&"Arial,Italic"&10&K64748B Báo giá Phúc Gia - ${watermarkText} | Trang &P/&N`;
+
+    // 3. Đảm bảo hiển thị lưới khi in
+    ws.pageSetup.showGridLines = true;
+  });
+}
+
+/**
+ * Clone một workbook độc lập để tránh làm bẩn workbook gốc đang mở trên editor
+ */
+export async function cloneExcelJSWorkbook(workbook: ExcelJS.Workbook): Promise<ExcelJS.Workbook> {
+  const buffer = await workbook.xlsx.writeBuffer();
+  const cloned = new ExcelJS.Workbook();
+  await cloned.xlsx.load(buffer as any);
+  return cloned;
+}

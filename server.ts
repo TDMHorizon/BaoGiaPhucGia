@@ -556,6 +556,11 @@ async function startServer() {
       return res.status(403).json({ error: "Forbidden" });
     }
 
+    // Kiểm tra trạng thái khóa (trừ Admin có quyền can thiệp đặc biệt)
+    if (user.role !== "admin" && isProjectLocked(project.trang_thai)) {
+      return res.status(403).json({ error: "Báo giá đang ở trạng thái khóa/đã phát hành, không thể chỉnh sửa!" });
+    }
+
     const body = req.body || {};
     let name = project.name;
     let soBaoGia = project.so_bao_gia;
@@ -564,6 +569,60 @@ async function startServer() {
     let ghiChu = project.ghi_chu;
     let editableRanges = project.editable_ranges;
     let sheets = project.sheets;
+    let otHours = Number(project.ot_hours ?? 0);
+    let otRate = Number(project.ot_rate ?? 505000);
+    let vatRate = Number(project.vat_rate ?? 8);
+    let discountAmount = Number(project.discount_amount ?? 0);
+    let financialConfig = project.financial_config ?? "{}";
+
+    // UC06: Nhập giờ OT (Nhân viên được phân công, Manager, Admin đều được phép nhập)
+    if (body.otHours !== undefined) {
+      const parsedOt = Number(body.otHours);
+      if (isNaN(parsedOt) || parsedOt < 0) {
+        return res.status(400).json({ error: "Số giờ làm thêm OT phải là số lớn hơn hoặc bằng 0" });
+      }
+      otHours = parsedOt;
+    }
+
+    // UC06: Đơn giá OT định mức - chỉ Admin hoặc Manager được cấu hình (mặc định 505.000 VNĐ/giờ)
+    if (body.otRate !== undefined) {
+      if (user.role === "user") {
+        return res.status(403).json({ error: "Nhân viên kỹ thuật không có quyền thay đổi đơn giá OT định mức (UC06)!" });
+      }
+      const parsedRate = Number(body.otRate);
+      if (isNaN(parsedRate) || parsedRate < 0) {
+        return res.status(400).json({ error: "Đơn giá OT định mức phải là số >= 0" });
+      }
+      otRate = parsedRate;
+    }
+
+    // UC05: Phân quyền cấp trường tài chính (VAT, Chiết khấu, Phụ cấp)
+    // Nhân viên kỹ thuật (user) KHÔNG ĐƯỢC PHÉP sửa các trường tài chính - trả về 403 Forbidden!
+    if (body.vatRate !== undefined || body.discountAmount !== undefined || body.financialConfig !== undefined) {
+      if (user.role === "user") {
+        return res.status(403).json({
+          error: "Nhân viên kỹ thuật không có quyền sửa đơn giá, thuế VAT hoặc chiết khấu tài chính (UC05)!",
+        });
+      }
+      if (body.vatRate !== undefined) {
+        const parsedVat = Number(body.vatRate);
+        if (isNaN(parsedVat) || parsedVat < 0 || parsedVat > 100) {
+          return res.status(400).json({ error: "Thuế suất VAT phải là số từ 0% đến 100%" });
+        }
+        vatRate = parsedVat;
+      }
+      if (body.discountAmount !== undefined) {
+        const parsedDiscount = Number(body.discountAmount);
+        if (isNaN(parsedDiscount) || parsedDiscount < 0) {
+          return res.status(400).json({ error: "Chiết khấu phải là số >= 0" });
+        }
+        discountAmount = parsedDiscount;
+      }
+      if (body.financialConfig !== undefined) {
+        financialConfig =
+          typeof body.financialConfig === "string" ? body.financialConfig : JSON.stringify(body.financialConfig);
+      }
+    }
 
     if (user.role === "admin" || user.role === "manager") {
       if (body.name !== undefined) name = body.name;
@@ -603,13 +662,33 @@ async function startServer() {
     getDb()
       .prepare(
         `UPDATE projects SET name = ?, so_bao_gia = ?, ten_khach_hang = ?, nguoi_phu_trach_id = ?,
-         ghi_chu = ?, editable_ranges = ?, sheets = ?, updated_at = ? WHERE id = ?`
+         ghi_chu = ?, editable_ranges = ?, sheets = ?, ot_hours = ?, ot_rate = ?, vat_rate = ?,
+         discount_amount = ?, financial_config = ?, updated_at = ? WHERE id = ?`
       )
-      .run(name, soBaoGia, tenKhachHang, nguoiPhuTrachId, ghiChu, editableRanges, sheets, now(), project.id);
+      .run(
+        name,
+        soBaoGia,
+        tenKhachHang,
+        nguoiPhuTrachId,
+        ghiChu,
+        editableRanges,
+        sheets,
+        otHours,
+        otRate,
+        vatRate,
+        discountAmount,
+        financialConfig,
+        now(),
+        project.id
+      );
 
     io.to(`project:${project.id}`).emit("project.updated", {
       projectId: project.id,
       updatedBy: user.username,
+      otHours,
+      otRate,
+      vatRate,
+      discountAmount,
     });
 
     res.json(await projectWithFile(loadProject(project.id)!));

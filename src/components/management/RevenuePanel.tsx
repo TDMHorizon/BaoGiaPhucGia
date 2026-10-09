@@ -35,18 +35,6 @@ export const RevenuePanel: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Disclaimer Banner per Textbook Spec */}
-      <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-4 text-xs text-amber-900 shadow-xs flex items-start gap-3">
-        <FiInfo className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
-        <div className="space-y-1">
-          <p className="font-bold">Quy định xác thực nguồn dữ liệu tài chính (Chương III - UC01)</p>
-          <p className="text-amber-800 leading-relaxed">
-            Dữ liệu tài chính hiển thị dưới đây là <strong>giá trị dự toán/báo giá kỹ thuật</strong> từ các hồ sơ trắc địa.
-            Hệ thống chưa kết nối cổng hóa đơn điện tử hoặc thanh toán kế toán thực thu, do đó không hiển thị chỉ tiêu
-            lợi nhuận/doanh số giả định để đảm bảo tính minh bạch theo chuẩn kiểm toán.
-          </p>
-        </div>
-      </div>
 
       {/* Financial Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

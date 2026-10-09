@@ -61,6 +61,16 @@ export type ProjectRow = {
   nguoi_phu_trach_id: string | null;
   trang_thai: TrangThai;
   ghi_chu: string;
+  /** UC06 - Nhập OT: Số giờ làm thêm (>= 0) */
+  ot_hours?: number;
+  /** UC06 - Đơn giá OT chuẩn: mặc định 505.000 VNĐ/giờ */
+  ot_rate?: number;
+  /** UC05 - Thuế suất VAT (0, 8, 10, ...) */
+  vat_rate?: number;
+  /** UC05 - Chiết khấu (VNĐ) */
+  discount_amount?: number;
+  /** UC05/UC06 - Cấu hình mở rộng tài chính & tổ đội (JSON) */
+  financial_config?: string;
   /** Không còn dùng. Giữ lại cho tương thích dữ liệu cũ. Xem project_revision và versions.version. */
   version: number;
   /** Tăng mỗi khi dữ liệu làm việc thay đổi (edit, cấu trúc, trạng thái) - dùng cho optimistic concurrency. */
@@ -477,6 +487,17 @@ const MIGRATIONS: Migration[] = [
       addColumnIfMissing("projects", "disabled_ranges", "TEXT NOT NULL DEFAULT '{}'");
     },
   },
+  {
+    id: 8,
+    name: "projects.financial_and_ot: ot_hours, ot_rate, vat_rate, discount_amount, financial_config (UC06, UC05)",
+    up: () => {
+      addColumnIfMissing("projects", "ot_hours", "REAL NOT NULL DEFAULT 0");
+      addColumnIfMissing("projects", "ot_rate", "REAL NOT NULL DEFAULT 505000");
+      addColumnIfMissing("projects", "vat_rate", "REAL NOT NULL DEFAULT 8");
+      addColumnIfMissing("projects", "discount_amount", "REAL NOT NULL DEFAULT 0");
+      addColumnIfMissing("projects", "financial_config", "TEXT NOT NULL DEFAULT '{}'");
+    },
+  },
 ];
 
 function runMigrations() {
@@ -573,6 +594,12 @@ export function getProjectStats(project: ProjectRow): ProjectStats {
 
 export function projectToJson(p: ProjectRow, memberIds: string[] = [], stats?: ProjectStats) {
   const s = stats ?? getProjectStats(p);
+  let parsedFinancialConfig = {};
+  try {
+    parsedFinancialConfig = p.financial_config ? JSON.parse(p.financial_config) : {};
+  } catch {
+    parsedFinancialConfig = {};
+  }
   return {
     id: p.id,
     name: p.name,
@@ -585,6 +612,11 @@ export function projectToJson(p: ProjectRow, memberIds: string[] = [], stats?: P
     memberIds,
     trangThai: normalizeTrangThai(p.trang_thai),
     ghiChu: p.ghi_chu,
+    otHours: Number(p.ot_hours ?? 0),
+    otRate: Number(p.ot_rate ?? 505000),
+    vatRate: Number(p.vat_rate ?? 8),
+    discountAmount: Number(p.discount_amount ?? 0),
+    financialConfig: parsedFinancialConfig,
     version: p.version ?? 1,
     /** Tăng khi dữ liệu làm việc đổi; client gửi lại dưới tên expectedRevision. */
     projectRevision: p.project_revision,

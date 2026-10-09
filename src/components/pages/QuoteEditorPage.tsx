@@ -6,7 +6,13 @@ import { toast } from "sonner";
 import { api } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
 import { getSocket, joinProjectRoom } from "../../lib/socket";
-import { loadExcelJSWorkbook, workbookToBase64, updateMergedCellInExcelJS } from "../../lib/exceljs-helper";
+import {
+  loadExcelJSWorkbook,
+  workbookToBase64,
+  updateMergedCellInExcelJS,
+  cloneExcelJSWorkbook,
+  applyDraftWatermarkToWorkbook,
+} from "../../lib/exceljs-helper";
 import { getSheetData, applyEditsToWorkbook, downloadBase64File } from "../../lib/excel";
 import { isCellDisabled } from "../../lib/utils-excel";
 import { SpreadsheetViewer } from "../SpreadsheetViewer";
@@ -163,14 +169,30 @@ export const QuoteEditorPage: React.FC = () => {
       toast.success(`Quản trị viên đã khôi phục vùng tại sheet ${payload.sheetName}`);
     };
 
+    const handleProjectUpdated = (payload: any) => {
+      if (payload.projectId !== projectId) return;
+      setProject((prev: any) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          ...(payload.otHours !== undefined ? { otHours: payload.otHours } : {}),
+          ...(payload.otRate !== undefined ? { otRate: payload.otRate } : {}),
+          ...(payload.vatRate !== undefined ? { vatRate: payload.vatRate } : {}),
+          ...(payload.discountAmount !== undefined ? { discountAmount: payload.discountAmount } : {}),
+        };
+      });
+    };
+
     socket.on("cell.updated", handleCellUpdated);
     socket.on("range.disabled", handleRangeDisabled);
     socket.on("range.enabled", handleRangeEnabled);
+    socket.on("project.updated", handleProjectUpdated);
 
     return () => {
       socket.off("cell.updated", handleCellUpdated);
       socket.off("range.disabled", handleRangeDisabled);
       socket.off("range.enabled", handleRangeEnabled);
+      socket.off("project.updated", handleProjectUpdated);
     };
   }, [projectId, activeSheet, workbook, exceljsWorkbook]);
 
@@ -296,6 +318,75 @@ export const QuoteEditorPage: React.FC = () => {
     } catch (e: any) {
       toast.error("Lỗi xuất file: " + e?.message);
     }
+  };
+
+  // UC17: Export Excel nháp có Watermark chìm và Header in ấn A4
+  const handleExportDraftExcel = async () => {
+    if (!project || !workbook) return;
+    try {
+      if (exceljsWorkbook) {
+        // Clone workbook độc lập để bảo toàn trạng thái nguyên bản
+        const clonedWb = await cloneExcelJSWorkbook(exceljsWorkbook);
+
+        // Áp dụng định dạng vùng vô hiệu hóa logic (UC04 T10)
+        if (disabledRanges && typeof disabledRanges === "object") {
+          for (const [sName, cfg] of Object.entries(disabledRanges as any)) {
+            const ws = clonedWb.getWorksheet(sName);
+            if (!ws) continue;
+            const config = cfg as any;
+            const disabledFill: any = {
+              type: "pattern",
+              pattern: "solid",
+              fgColor: { argb: "FF64748B" },
+            };
+            if (Array.isArray(config.rows)) {
+              for (const r of config.rows) {
+                try {
+                  const row = ws.getRow(Number(r));
+                  if (row) row.eachCell({ includeEmpty: true }, (c) => (c.fill = disabledFill));
+                } catch {}
+              }
+            }
+            if (Array.isArray(config.columns)) {
+              for (const col of config.columns) {
+                try {
+                  const column = ws.getColumn(String(col));
+                  if (column) column.eachCell({ includeEmpty: true }, (c) => (c.fill = disabledFill));
+                } catch {}
+              }
+            }
+            if (Array.isArray(config.cells)) {
+              for (const cRef of config.cells) {
+                try {
+                  const cell = ws.getCell(String(cRef));
+                  if (cell) cell.fill = disabledFill;
+                } catch {}
+              }
+            }
+          }
+        }
+
+        // UC17: Áp Watermark "BẢN DỰ THẢO - CHƯA DUYỆT"
+        applyDraftWatermarkToWorkbook(clonedWb, "BẢN DỰ THẢO - CHƯA DUYỆT");
+
+        const base64 = await workbookToBase64(clonedWb);
+        const baseName = project.name?.replace(/\.xlsx$/i, "") || "baogia";
+        downloadBase64File(base64, `${baseName}_BAN_DU_THAO`);
+        toast.success("Đã xuất tệp Excel Nháp có Watermark 'BẢN DỰ THẢO - CHƯA DUYỆT' (UC17)!");
+        return;
+      }
+
+      toast.error("Không tìm thấy dữ liệu bảng tính để tạo bản dự thảo");
+    } catch (e: any) {
+      toast.error("Lỗi xuất bản dự thảo: " + e?.message);
+    }
+  };
+
+  // UC06 & UC05: Handler cập nhật OT & Tài chính
+  const handleUpdateFinancial = async (payload: any) => {
+    if (!projectId) return;
+    const updated = await api.updateProject(projectId, payload);
+    setProject(updated);
   };
 
   // 6. Admin Actions: Disable / Enable row, col, cell
@@ -473,6 +564,7 @@ export const QuoteEditorPage: React.FC = () => {
         userRole={user?.role}
         onBack={() => navigate("/quotes")}
         onExportExcel={handleExportExcel}
+        onExportDraftExcel={handleExportDraftExcel}
         onToggleInspector={() => setIsInspectorOpen((prev) => !prev)}
         isInspectorOpen={isInspectorOpen}
         onDisableSelectedRow={handleDisableRow}
@@ -559,9 +651,11 @@ export const QuoteEditorPage: React.FC = () => {
             members={assignedMembers}
             nguoiPhuTrachName={nguoiPhuTrach?.fullName || nguoiPhuTrach?.username}
             editsHistory={edits}
+            project={project}
             onUpdateRanges={(updated) => setRanges(updated)}
             onRefreshData={loadProjectData}
             onOpenAssignModal={() => setIsAssignModalOpen(true)}
+            onUpdateFinancial={handleUpdateFinancial}
             onClose={() => setIsInspectorOpen(false)}
           />
         )}

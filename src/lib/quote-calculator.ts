@@ -146,10 +146,16 @@ export function calculateQuote(data: QuoteFormData): QuoteCalculations {
   const baseBeforeDiscount = subTotalItems + totalOtCost + totalAllowances;
   const totalBeforeVat = Math.max(0, baseBeforeDiscount - (data.discountAmount || 0));
   
-  const vatAmount = Math.round(totalBeforeVat * ((data.vatRate || 8) / 100));
+  const effectiveVatRate =
+    data.vatRate !== undefined && data.vatRate !== null && !isNaN(data.vatRate) ? data.vatRate : 8;
+  const vatAmount = Math.round(totalBeforeVat * (effectiveVatRate / 100));
   const grandTotal = totalBeforeVat + vatAmount;
 
-  const advancePayment = Math.round(grandTotal * ((data.advanceRate || 30) / 100));
+  const effectiveAdvanceRate =
+    data.advanceRate !== undefined && data.advanceRate !== null && !isNaN(data.advanceRate)
+      ? data.advanceRate
+      : 30;
+  const advancePayment = Math.round(grandTotal * (effectiveAdvanceRate / 100));
   const remainingPayment = grandTotal - advancePayment;
 
   return {

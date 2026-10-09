@@ -11,9 +11,16 @@ import {
   FiAlertCircle,
   FiX,
   FiUserPlus,
+  FiDollarSign,
+  FiPercent,
+  FiShield,
+  FiAlertTriangle,
+  FiLoader,
 } from "react-icons/fi";
 import { toast } from "sonner";
 import { api } from "../../lib/api";
+import { formatVND, numberToVietnameseWords } from "../../lib/quote-calculator";
+import { isLockedStatus } from "../../lib/constants";
 
 interface CellDetails {
   sheetName: string;
@@ -56,9 +63,11 @@ interface EditorInspectorProps {
   members: Member[];
   nguoiPhuTrachName?: string;
   editsHistory: EditRecord[];
+  project?: any;
   onUpdateRanges?: (ranges: Record<string, string>) => void;
   onRefreshData?: () => void;
   onOpenAssignModal?: () => void;
+  onUpdateFinancial?: (payload: any) => Promise<void>;
   onClose: () => void;
 }
 
@@ -72,15 +81,45 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
   members,
   nguoiPhuTrachName,
   editsHistory,
+  project,
   onUpdateRanges,
   onRefreshData,
   onOpenAssignModal,
+  onUpdateFinancial,
   onClose,
 }) => {
   const isAdmin = userRole === "admin";
-  const [activeTab, setActiveTab] = useState<"cell" | "permissions" | "members" | "history" | "structure">("cell");
+  const isManager = userRole === "manager";
+  const canEditFinancial = isAdmin || isManager;
+
+  const [activeTab, setActiveTab] = useState<"cell" | "permissions" | "members" | "history" | "structure" | "finance">("cell");
   const [editingRange, setEditingRange] = useState<string>(editableRanges[currentSheet] || "");
   const [isSavingRange, setIsSavingRange] = useState(false);
+
+  // Financial & OT states (UC06, UC05)
+  const [otHours, setOtHours] = useState<number>(Number(project?.otHours ?? 0));
+  const [otRate, setOtRate] = useState<number>(Number(project?.otRate ?? 505000));
+  const [vatRate, setVatRate] = useState<number>(Number(project?.vatRate !== undefined ? project.vatRate : 8));
+  const [discountAmount, setDiscountAmount] = useState<number>(Number(project?.discountAmount ?? 0));
+  const [equipmentAllowance, setEquipmentAllowance] = useState<number>(
+    Number(project?.financialConfig?.equipmentAllowance ?? 0)
+  );
+  const [travelAllowance, setTravelAllowance] = useState<number>(
+    Number(project?.financialConfig?.travelAllowance ?? 0)
+  );
+  const [isSavingFinance, setIsSavingFinance] = useState(false);
+
+  // Sync state when project updates
+  React.useEffect(() => {
+    if (project) {
+      setOtHours(Number(project.otHours ?? 0));
+      setOtRate(Number(project.otRate ?? 505000));
+      setVatRate(Number(project.vatRate !== undefined ? project.vatRate : 8));
+      setDiscountAmount(Number(project.discountAmount ?? 0));
+      setEquipmentAllowance(Number(project.financialConfig?.equipmentAllowance ?? 0));
+      setTravelAllowance(Number(project.financialConfig?.travelAllowance ?? 0));
+    }
+  }, [project]);
 
   // Sync editing range when sheet changes
   React.useEffect(() => {
@@ -120,6 +159,55 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
     }
   };
 
+  // UC06 & UC05: Save OT and Financial Data
+  const handleSaveFinancial = async () => {
+    if (isLockedStatus(project?.trangThai)) {
+      toast.error("Báo giá đã bị khóa/đã phát hành, không thể chỉnh sửa!");
+      return;
+    }
+    if (isNaN(otHours) || otHours < 0) {
+      toast.error("Số giờ làm thêm OT phải là số lớn hơn hoặc bằng 0");
+      return;
+    }
+
+    try {
+      setIsSavingFinance(true);
+      const payload: any = {
+        otHours: Number(otHours),
+      };
+
+      if (canEditFinancial) {
+        payload.otRate = Number(otRate);
+        payload.vatRate = Number(vatRate);
+        payload.discountAmount = Number(discountAmount);
+        payload.financialConfig = {
+          ...(project?.financialConfig || {}),
+          equipmentAllowance: Number(equipmentAllowance),
+          travelAllowance: Number(travelAllowance),
+        };
+      }
+
+      if (onUpdateFinancial) {
+        await onUpdateFinancial(payload);
+      } else {
+        await api.updateProject(projectId, payload);
+        onRefreshData?.();
+      }
+      toast.success("Đã lưu dữ liệu Tài chính & Giờ làm thêm OT thành công!");
+    } catch (err: any) {
+      toast.error(err?.message || "Lỗi lưu dữ liệu tài chính/OT");
+    } finally {
+      setIsSavingFinance(false);
+    }
+  };
+
+  // Calculations for summary card
+  const totalOtCost = (Number(otHours) || 0) * (Number(otRate) || 505000);
+  const totalAllowances = (Number(equipmentAllowance) || 0) + (Number(travelAllowance) || 0);
+  const totalBeforeVat = Math.max(0, totalOtCost + totalAllowances - (Number(discountAmount) || 0));
+  const vatAmount = Math.round(totalBeforeVat * ((Number(vatRate) || 0) / 100));
+  const totalFinancialEst = totalBeforeVat + vatAmount;
+
   const sheetDisabled = disabledRanges[currentSheet] || { cells: [], rows: [], columns: [] };
 
   return (
@@ -143,11 +231,11 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
       </div>
 
       {/* Tabs Switcher */}
-      <div className="flex border-b border-slate-200 bg-slate-50/70 p-1 text-xs">
+      <div className="flex flex-wrap border-b border-slate-200 bg-slate-50/70 p-1 text-xs gap-1">
         <button
           type="button"
           onClick={() => setActiveTab("cell")}
-          className={`flex-1 rounded-md py-1.5 font-semibold transition-all ${
+          className={`flex-1 min-w-[50px] rounded-md py-1.5 px-1 font-semibold text-center transition-all ${
             activeTab === "cell"
               ? "bg-white text-[#105CB3] shadow-xs"
               : "text-slate-500 hover:text-slate-800"
@@ -158,8 +246,20 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
         </button>
         <button
           type="button"
+          onClick={() => setActiveTab("finance")}
+          className={`flex-1 min-w-[75px] rounded-md py-1.5 px-1 font-semibold text-center transition-all ${
+            activeTab === "finance"
+              ? "bg-white text-emerald-600 shadow-xs"
+              : "text-slate-500 hover:text-slate-800"
+          }`}
+          title="Quản lý Giờ làm thêm OT & Tài chính báo giá (UC06, UC05)"
+        >
+          Tài chính & OT
+        </button>
+        <button
+          type="button"
           onClick={() => setActiveTab("permissions")}
-          className={`flex-1 rounded-md py-1.5 font-semibold transition-all ${
+          className={`flex-1 min-w-[50px] rounded-md py-1.5 px-1 font-semibold text-center transition-all ${
             activeTab === "permissions"
               ? "bg-white text-[#105CB3] shadow-xs"
               : "text-slate-500 hover:text-slate-800"
@@ -171,7 +271,7 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
         <button
           type="button"
           onClick={() => setActiveTab("members")}
-          className={`flex-1 rounded-md py-1.5 font-semibold transition-all ${
+          className={`flex-1 min-w-[50px] rounded-md py-1.5 px-1 font-semibold text-center transition-all ${
             activeTab === "members"
               ? "bg-white text-[#105CB3] shadow-xs"
               : "text-slate-500 hover:text-slate-800"
@@ -183,7 +283,7 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
         <button
           type="button"
           onClick={() => setActiveTab("history")}
-          className={`flex-1 rounded-md py-1.5 font-semibold transition-all ${
+          className={`flex-1 min-w-[50px] rounded-md py-1.5 px-1 font-semibold text-center transition-all ${
             activeTab === "history"
               ? "bg-white text-[#105CB3] shadow-xs"
               : "text-slate-500 hover:text-slate-800"
@@ -196,7 +296,7 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab("structure")}
-            className={`flex-1 rounded-md py-1.5 font-semibold transition-all ${
+            className={`flex-1 min-w-[45px] rounded-md py-1.5 px-1 font-semibold text-center transition-all ${
               activeTab === "structure"
                 ? "bg-white text-red-600 shadow-xs"
                 : "text-slate-500 hover:text-slate-800"
@@ -527,6 +627,307 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* Tab 6: Finance & OT (UC06, UC05) */}
+        {activeTab === "finance" && (
+          <div className="space-y-4">
+            {/* Header info card */}
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3 shadow-2xs">
+              <div className="flex items-center gap-2 text-emerald-900 font-bold mb-1">
+                <FiDollarSign className="h-4 w-4 text-emerald-600" />
+                <span>Quản Lý Tài Chính & Giờ Làm Thêm OT</span>
+              </div>
+              <p className="text-[11px] text-emerald-800 leading-relaxed">
+                Đặc tả <strong>UC06</strong> (Giờ OT chuẩn 505.000đ/h) & <strong>UC05</strong> (Đơn giá, thuế VAT, chiết khấu).
+                Dữ liệu được lưu bền vững vào dự án và đồng bộ realtime.
+              </p>
+            </div>
+
+            {/* BLOCK 1: UC06 - Nhập giờ làm thêm OT */}
+            <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-2xs space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                  <FiClock className="h-3.5 w-3.5 text-[#105CB3]" />
+                  <span>Giờ Làm Thêm OT (UC06)</span>
+                </span>
+                <span className="rounded bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-[#105CB3]">
+                  Nhân viên & Kế toán
+                </span>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-semibold text-slate-600 block mb-1">
+                  Số giờ làm thêm thực tế (giờ):
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="0"
+                    value={otHours}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      setOtHours(isNaN(val) ? 0 : Math.max(0, val));
+                    }}
+                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-800 focus:border-[#105CB3] focus:bg-white focus:outline-hidden"
+                    placeholder="0.0"
+                  />
+                  <span className="text-xs font-semibold text-slate-500 shrink-0">giờ</span>
+                </div>
+              </div>
+
+              {/* Quick hour buttons */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[10px] text-slate-400">Chọn nhanh:</span>
+                {[0, 1, 1.5, 2, 4, 8].map((h) => (
+                  <button
+                    key={h}
+                    type="button"
+                    onClick={() => setOtHours(h)}
+                    className={`rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                      otHours === h
+                        ? "bg-[#105CB3] text-white"
+                        : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                    }`}
+                  >
+                    {h}h
+                  </button>
+                ))}
+              </div>
+
+              {/* OT Rate config */}
+              <div className="pt-2 border-t border-slate-100">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-slate-500">Đơn giá định mức chuẩn:</span>
+                  {canEditFinancial ? (
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min="0"
+                        step="1000"
+                        value={otRate}
+                        onChange={(e) => setOtRate(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                        className="w-24 rounded border border-slate-200 px-1.5 py-0.5 text-right font-mono text-[11px] font-bold text-slate-800"
+                      />
+                      <span className="text-[10px] text-slate-400">đ/h</span>
+                    </div>
+                  ) : (
+                    <span className="font-mono font-bold text-slate-700">
+                      {formatVND(otRate)}/giờ
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* OT Warning if > 40h */}
+              {otHours > 40 && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800 flex items-start gap-1.5">
+                  <FiAlertTriangle className="h-3.5 w-3.5 text-amber-600 shrink-0 mt-0.5" />
+                  <span>
+                    <strong>Cảnh báo chính sách:</strong> Số giờ OT ({otHours}h) vượt ngưỡng tiêu chuẩn 40h/tháng theo quy định nội bộ Phúc Gia.
+                  </span>
+                </div>
+              )}
+
+              {/* Calculated OT Amount */}
+              <div className="rounded-lg bg-blue-50/80 p-2.5 border border-blue-100 flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-[#105CB3]">Thành tiền OT:</span>
+                <span className="font-mono text-xs font-bold text-[#105CB3]">
+                  {formatVND(totalOtCost)}
+                </span>
+              </div>
+            </div>
+
+            {/* BLOCK 2: UC05 - Sửa VAT, Chiết Khấu, Phụ Cấp */}
+            <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-2xs space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                  <FiPercent className="h-3.5 w-3.5 text-emerald-600" />
+                  <span>Thuế VAT & Chiết Khấu (UC05)</span>
+                </span>
+                <span
+                  className={`rounded px-2 py-0.5 text-[10px] font-bold ${
+                    canEditFinancial
+                      ? "bg-emerald-50 text-emerald-700"
+                      : "bg-slate-100 text-slate-500"
+                  }`}
+                >
+                  {canEditFinancial ? "Kế toán / Admin" : "Chỉ xem"}
+                </span>
+              </div>
+
+              {/* Non-accountant lock banner */}
+              {!canEditFinancial && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-[10.5px] text-slate-500 flex items-start gap-1.5">
+                  <FiLock className="h-3.5 w-3.5 text-slate-400 shrink-0 mt-0.5" />
+                  <span>
+                    Nhân viên kỹ thuật chỉ có quyền xem. Chỉ <strong>Kế toán (Manager)</strong> và <strong>Quản trị viên</strong> mới có quyền điều chỉnh thuế VAT, chiết khấu và phụ cấp.
+                  </span>
+                </div>
+              )}
+
+              {/* VAT Rate Selection */}
+              <div>
+                <label className="text-[11px] font-semibold text-slate-600 block mb-1">
+                  Thuế suất Giá trị gia tăng (VAT):
+                </label>
+                <div className="flex items-center gap-1.5 mb-2">
+                  {[0, 8, 10].map((rate) => (
+                    <button
+                      key={rate}
+                      type="button"
+                      disabled={!canEditFinancial}
+                      onClick={() => setVatRate(rate)}
+                      className={`flex-1 rounded-md py-1 text-xs font-bold transition-all ${
+                        vatRate === rate
+                          ? "bg-emerald-600 text-white shadow-2xs"
+                          : "bg-slate-100 text-slate-700 hover:bg-slate-200 disabled:opacity-60 disabled:hover:bg-slate-100"
+                      }`}
+                    >
+                      {rate === 0 ? "0% (Miễn thuế)" : `${rate}%`}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="1"
+                    disabled={!canEditFinancial}
+                    value={vatRate}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      setVatRate(isNaN(val) ? 0 : Math.min(100, Math.max(0, val)));
+                    }}
+                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-800 disabled:opacity-60 focus:border-emerald-600 focus:bg-white focus:outline-hidden"
+                  />
+                  <span className="text-xs font-semibold text-slate-500">%</span>
+                </div>
+              </div>
+
+              {/* Discount Amount */}
+              <div>
+                <label className="text-[11px] font-semibold text-slate-600 block mb-1">
+                  Chiết khấu thương mại (VNĐ):
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="100000"
+                  disabled={!canEditFinancial}
+                  value={discountAmount}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    setDiscountAmount(isNaN(val) ? 0 : Math.max(0, val));
+                  }}
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-800 disabled:opacity-60 focus:border-emerald-600 focus:bg-white focus:outline-hidden"
+                  placeholder="0"
+                />
+                {discountAmount > 0 && (
+                  <p className="mt-1 text-[10px] text-slate-500 text-right">
+                    Giảm trừ: {formatVND(discountAmount)}
+                  </p>
+                )}
+              </div>
+
+              {/* Allowances */}
+              <div className="pt-2 border-t border-slate-100 space-y-2">
+                <span className="text-[11px] font-bold text-slate-700 block">
+                  Phụ cấp khảo sát (Tùy chọn):
+                </span>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-slate-500 block">Máy móc (RTK/UAV):</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="500000"
+                      disabled={!canEditFinancial}
+                      value={equipmentAllowance}
+                      onChange={(e) => setEquipmentAllowance(Math.max(0, parseFloat(e.target.value) || 0))}
+                      className="w-full rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-semibold text-slate-800 disabled:opacity-60"
+                      placeholder="0"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500 block">Công tác xa:</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="500000"
+                      disabled={!canEditFinancial}
+                      value={travelAllowance}
+                      onChange={(e) => setTravelAllowance(Math.max(0, parseFloat(e.target.value) || 0))}
+                      className="w-full rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-semibold text-slate-800 disabled:opacity-60"
+                      placeholder="0"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* BLOCK 3: Tổng hợp tài chính & Đọc tiền bằng chữ */}
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2">
+              <span className="font-bold text-slate-800 block text-xs">
+                Tổng Hợp Tạm Tính (OT + Tài chính)
+              </span>
+
+              <div className="space-y-1.5 text-[11px]">
+                <div className="flex justify-between text-slate-600">
+                  <span>Chi phí OT:</span>
+                  <span className="font-mono font-semibold">{formatVND(totalOtCost)}</span>
+                </div>
+                <div className="flex justify-between text-slate-600">
+                  <span>Tổng phụ cấp:</span>
+                  <span className="font-mono font-semibold">{formatVND(totalAllowances)}</span>
+                </div>
+                {discountAmount > 0 && (
+                  <div className="flex justify-between text-rose-600">
+                    <span>Chiết khấu:</span>
+                    <span className="font-mono font-semibold">- {formatVND(discountAmount)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between text-slate-600">
+                  <span>Tiền thuế VAT ({vatRate}%):</span>
+                  <span className="font-mono font-semibold">{formatVND(vatAmount)}</span>
+                </div>
+                <div className="pt-2 border-t border-slate-200 flex justify-between font-bold text-xs text-slate-900">
+                  <span>Cộng thêm vào dự toán:</span>
+                  <span className="font-mono text-emerald-600">{formatVND(totalFinancialEst)}</span>
+                </div>
+              </div>
+
+              {totalFinancialEst > 0 && (
+                <div className="pt-1 text-[10.5px] italic text-slate-500 leading-tight">
+                  {numberToVietnameseWords(totalFinancialEst)}
+                </div>
+              )}
+            </div>
+
+            {/* Action Save Button */}
+            <button
+              type="button"
+              disabled={isSavingFinance}
+              onClick={handleSaveFinancial}
+              className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white shadow-xs hover:bg-emerald-700 disabled:opacity-50 transition-colors"
+            >
+              {isSavingFinance ? (
+                <>
+                  <FiLoader className="h-3.5 w-3.5 animate-spin" />
+                  <span>Đang lưu dữ liệu...</span>
+                </>
+              ) : (
+                <>
+                  <FiSave className="h-3.5 w-3.5" />
+                  <span>
+                    {canEditFinancial ? "Lưu Tài Chính & OT" : "Lưu Số Giờ OT (UC06)"}
+                  </span>
+                </>
+              )}
+            </button>
           </div>
         )}
       </div>
