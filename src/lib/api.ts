@@ -21,18 +21,30 @@ async function request(url: string, options: RequestInit = {}) {
 
   const res = await fetch(url, { ...options, headers });
   if (res.status === 401) {
+    try {
+      const cloned = await res.clone().json();
+      if (cloned?.code === "ACCOUNT_LOCKED" || cloned?.error?.includes("khóa")) {
+        window.dispatchEvent(new CustomEvent("baogia:account_locked", { detail: cloned }));
+      }
+    } catch {
+      /* ignore */
+    }
     setToken(null);
     localStorage.removeItem("user");
   }
   if (!res.ok) {
     let message = "Request failed";
+    let data: any = null;
     try {
-      const data = await res.json();
-      message = data.error || message;
+      data = await res.json();
+      message = data?.error || message;
     } catch {
       /* ignore */
     }
-    throw new Error(message);
+    const err: any = new Error(message);
+    err.status = res.status;
+    err.data = data;
+    throw err;
   }
   if (res.status === 204) return null;
   return res.json();
@@ -49,6 +61,12 @@ export const api = {
       body: JSON.stringify({ username, password }),
     });
     if (data.token) setToken(data.token);
+    return data;
+  },
+
+  async refreshToken() {
+    const data = await request("/api/auth/refresh", { method: "POST" });
+    if (data?.token) setToken(data.token);
     return data;
   },
 
@@ -85,8 +103,16 @@ export const api = {
     return request(`/api/projects${query ? `?${query}` : ""}`);
   },
 
+  async getProjectByUserId() {
+    return request("/api/projects/me");
+  },
+
   async getDeletedProjects() {
     return request("/api/projects/deleted");
+  },
+
+  async getDeletedProject(id: string) {
+    return request(`/api/projects/deleted/${encodeURIComponent(id)}`);
   },
 
   async getPendingCount() {
@@ -129,56 +155,10 @@ export const api = {
     });
   },
 
-  async getMyProjectPermissions(id: string): Promise<{
-    fullAccess: boolean;
-    grants: Array<{ sheetName: string; rangeRef: string; canRead: boolean; canEdit: boolean }>;
-  }> {
-    return request(`/api/projects/${id}/permissions/me`);
-  },
-
-  async getProjectPermissions(projectId: string, userId: string) {
-    return request(`/api/projects/${projectId}/permissions/${userId}`);
-  },
-
-  async getProjectHiddenRanges(projectId: string) {
-    return request(`/api/projects/${projectId}/hidden-ranges`);
-  },
-
-  async createProjectHiddenRange(
-    projectId: string,
-    payload: { sheetName: string; rangeRef: string; userId?: string },
-  ) {
-    return request(`/api/projects/${projectId}/hidden-ranges`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-  },
-
-  async deleteProjectHiddenRange(projectId: string, hiddenRangeId: string) {
-    return request(`/api/projects/${projectId}/hidden-ranges/${hiddenRangeId}`, { method: "DELETE" });
-  },
-
-  async replaceUserProjectPermissions(
-    projectId: string,
-    userId: string,
-    grants: Array<{ sheetName: string; rangeRef: string; canRead: boolean; canEdit: boolean }>,
-  ) {
-    return request(`/api/projects/${projectId}/permissions/${userId}`, {
-      method: "PUT",
-      body: JSON.stringify({ grants }),
-    });
-  },
-
-  async updateProjectFile(
-    id: string,
-    fileBase64: string,
-    baseRevision: number,
-    sheets?: string[],
-    structureChange?: { sheetName: string; axis: "row" | "column"; action: "insert" | "delete"; index: number },
-  ) {
+  async updateProjectFile(id: string, fileBase64: string, sheets?: string[]) {
     return request(`/api/projects/${id}/file`, {
       method: "PUT",
-      body: JSON.stringify({ fileBase64, sheets, baseRevision, structureChange }),
+      body: JSON.stringify({ fileBase64, sheets }),
     });
   },
 
@@ -197,15 +177,67 @@ export const api = {
     return request(`/api/projects/${id}/versions/${version}`);
   },
 
-  async saveEdit(id: string, editData: Record<string, unknown>, baseRevision: number) {
+  async saveEdit(id: string, editData: Record<string, unknown>, expectedRevision?: number) {
     return request(`/api/projects/${id}/edits`, {
       method: "POST",
-      body: JSON.stringify({ ...editData, baseRevision }),
+      body: JSON.stringify({ ...editData, expectedRevision }),
     });
   },
 
-  async getEdits(id: string) {
-    return request(`/api/projects/${id}/edits`);
+  async saveBatchEdits(id: string, edits: any[]) {
+    return request(`/api/projects/${id}/edits/batch`, {
+      method: "POST",
+      body: JSON.stringify({ edits }),
+    });
+  },
+
+  async getCellValues(id: string) {
+    return request(`/api/projects/${id}/cell-values`);
+  },
+
+  async getCellStates(id: string) {
+    return request(`/api/projects/${id}/cell-states`);
+  },
+
+  async getProjectFile(id: string) {
+    return request(`/api/projects/${id}/file`);
+  },
+
+  async updateProjectMembers(id: string, payload: { memberIds: string[]; nguoiPhuTrachId?: string | null }) {
+    return request(`/api/projects/${id}/members`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async createBlankProject(name: string, meta?: Record<string, unknown>) {
+    return request("/api/projects", {
+      method: "POST",
+      body: JSON.stringify({ name, mode: "blank", sheets: ["BaoGia"], ...meta }),
+    });
+  },
+
+  async getMemberPermissions(id: string) {
+    return request(`/api/projects/${id}/member-permissions`);
+  },
+
+  async setMemberPermissions(id: string, permissions: { userId: string; sheetName: string; editableRanges: string }[]) {
+    return request(`/api/projects/${id}/member-permissions`, {
+      method: "PUT",
+      body: JSON.stringify({ permissions }),
+    });
+  },
+
+  async getAuditLogs(limit: number = 100) {
+    return request(`/api/audit-logs?limit=${limit}`);
+  },
+
+  async getEdits(id: string, page?: number, limit?: number) {
+    const qs = new URLSearchParams();
+    if (page !== undefined) qs.set("page", String(page));
+    if (limit !== undefined) qs.set("limit", String(limit));
+    const q = qs.toString();
+    return request(`/api/projects/${id}/edits${q ? `?${q}` : ""}`);
   },
 
   async getTemplates() {
@@ -227,8 +259,31 @@ export const api = {
       body: JSON.stringify(payload || {}),
     });
   },
-
   async deleteTemplate(id: string) {
     return request(`/api/templates/${id}`, { method: "DELETE" });
+  },
+
+  async getDisabledRanges(id: string) {
+    return request(`/api/projects/${id}/disabled-ranges`);
+  },
+
+  async disableRange(
+    id: string,
+    payload: { sheetName: string; type: "CELL" | "ROW" | "COLUMN"; target: string | number }
+  ) {
+    return request(`/api/projects/${id}/disable-range`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async enableRange(
+    id: string,
+    payload: { sheetName: string; type: "CELL" | "ROW" | "COLUMN"; target: string | number }
+  ) {
+    return request(`/api/projects/${id}/enable-range`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
   },
 };
