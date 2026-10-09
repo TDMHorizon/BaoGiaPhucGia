@@ -17,6 +17,7 @@
     "@fontsource-variable/geist": "^5.2.8",
     "@google/genai": "^1.29.0",
     "@tailwindcss/vite": "^4.1.14",
+    "@univerjs/core": "^1.0.3",
     "@univerjs/preset-sheets-core": "^1.0.3",
     "@univerjs/presets": "^1.0.3",
     "@vitejs/plugin-react": "^5.0.4",

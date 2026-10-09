@@ -5,7 +5,8 @@ import { validate } from "./server/middlewares/validate";
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
-import { initDb, getDb, projectToJson, getProjectMembers, setProjectMembers, userCanAccessProject, isProjectLocked, publicUser, type ProjectRow, type UserRow, type TrangThai, type EditRow, type VersionRow, type TemplateRow } from "./server/db";
+import { initDb, getDb, projectToJson, getProjectMembers, setProjectMembers, userCanAccessProject, isProjectLocked, publicUser, setProjectRoleVisibility, getProjectRoleVisibilities, isProjectHiddenForUser, saveWorkbookSnapshot, getLatestWorkbookSnapshot, recordWorkbookCommand, type ProjectRow, type UserRow, type TrangThai, type EditRow, type VersionRow, type TemplateRow } from "./server/db";
+import { logger } from "./server/logger";
 import { authenticateUser, signToken, authMiddleware, requireAdmin, requireAdminOrManager, hashPassword } from "./server/auth";
 import {
   isCellWithinRange,
@@ -234,8 +235,14 @@ async function startServer() {
     const q = String(req.query.q || "").trim().toLowerCase();
     const status = String(req.query.status || "").trim();
     const assignee = String(req.query.assignee || "").trim();
+    const includeHidden = req.query.includeHidden === "true" && user.role === "admin";
 
     let rows = getDb().prepare("SELECT * FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC").all() as ProjectRow[];
+
+    // Enforce role-based project visibility
+    if (!includeHidden) {
+      rows = rows.filter((p) => !isProjectHiddenForUser(p.id, user));
+    }
 
     if (user.role !== "admin" && user.role !== "manager") {
       rows = rows.filter((p) => userCanAccessProject(user, p));
@@ -257,10 +264,81 @@ async function startServer() {
 
     res.json(rows.map((project) => {
       const summary = listSummary(project);
+      const visibilities = (user.role === "admin" || user.role === "manager")
+        ? getProjectRoleVisibilities(project.id)
+        : [];
       return user.role === "admin" || user.role === "manager"
-        ? summary
+        ? { ...summary, visibilities }
         : { ...summary, sheets: [], editableRanges: {}, memberIds: [] };
     }));
+  });
+
+  // Project Visibility API
+  app.get("/api/projects/:id/visibility", authMiddleware, requireAdminOrManager, (req, res) => {
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    const list = getProjectRoleVisibilities(project.id);
+    res.json(list);
+  });
+
+  app.put("/api/projects/:id/visibility", authMiddleware, requireAdminOrManager, (req, res) => {
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const body = z.object({
+      role: z.enum(["admin", "manager", "user"]),
+      userId: z.string().nullable().optional(),
+      isHidden: z.boolean(),
+      canView: z.boolean().optional(),
+      canEdit: z.boolean().optional(),
+    }).safeParse(req.body);
+
+    if (!body.success) return res.status(400).json({ error: "Invalid payload" });
+
+    // Only Admin can hide files from Managers; Managers can only hide files from Users
+    if (req.user!.role === "manager" && body.data.role !== "user") {
+      return res.status(403).json({ error: "Manager can only configure visibility for employees (user role)." });
+    }
+
+    setProjectRoleVisibility(project.id, body.data.role, {
+      userId: body.data.userId || null,
+      isHidden: body.data.isHidden,
+      canView: body.data.canView,
+      canEdit: body.data.canEdit,
+      hiddenBy: req.user!.id,
+    });
+
+    logger.audit("UPDATE_PROJECT_VISIBILITY", {
+      userId: req.user!.id,
+      role: req.user!.role,
+      projectId: project.id,
+      payload: body.data,
+    });
+
+    res.json({ success: true, visibilities: getProjectRoleVisibilities(project.id) });
+  });
+
+  // Project Snapshot API (Runtime SSOT Persistence)
+  app.post("/api/projects/:id/snapshot", authMiddleware, catchAsync(async (req, res) => {
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const { snapshotJson, version } = req.body || {};
+    if (!snapshotJson) return res.status(400).json({ error: "Missing snapshotJson" });
+
+    const ver = typeof version === "number" ? version : project.version;
+    saveWorkbookSnapshot(project.id, ver, typeof snapshotJson === "string" ? snapshotJson : JSON.stringify(snapshotJson), req.user!.id);
+
+    logger.info("WORKBOOK_SNAPSHOT", "SAVE_SNAPSHOT_SUCCESS", { projectId: project.id, version: ver });
+    res.json({ success: true, version: ver });
+  }));
+
+  app.get("/api/projects/:id/snapshot", authMiddleware, (req, res) => {
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const snapshot = getLatestWorkbookSnapshot(project.id);
+    res.json({ snapshotJson: snapshot });
   });
 
   app.get("/api/projects/pending-count", authMiddleware, requireAdminOrManager, (_req, res) => {

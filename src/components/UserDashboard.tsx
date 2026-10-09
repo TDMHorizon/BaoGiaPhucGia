@@ -355,6 +355,10 @@ export function UserDashboard() {
         selectedProject={selectedProject}
         onSelectProject={handleSelectProject}
         onOpenProjects={() => setActiveTab("file")}
+        onOpenProject={(id) => {
+          handleSelectProject(id);
+          setActiveTab("file");
+        }}
       />
     ) : <div className="flex h-full flex-col">
       {/* Top Ribbon */}

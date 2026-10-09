@@ -256,11 +256,15 @@ export function AdminDashboard() {
       const base64 = await fileToBase64(file);
       const workbook = await parseExcel(base64);
       const sheets = workbook.SheetNames;
-      await api.createProject(file.name, base64, sheets);
-      toast.success("Project created successfully");
-      loadProjects();
+      const created = await api.createProject(file.name, base64, sheets);
+      toast.success("Đã tải lên và tạo dự án thành công");
+      await loadProjects();
+      if (created?.id) {
+        await handleSelectProject(created.id);
+        setMainTab("file");
+      }
     } catch (error) {
-      toast.error("Failed to upload file");
+      toast.error("Tải file thất bại");
     }
   };
 
@@ -931,6 +935,10 @@ export function AdminDashboard() {
             selectedProject={selectedProject}
             onUploadFile={(file) => onDrop([file])}
             onSelectProject={handleSelectProject}
+            onOpenProject={(id) => {
+              handleSelectProject(id);
+              setMainTab("file");
+            }}
           />
         ) : (
           <>

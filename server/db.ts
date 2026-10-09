@@ -107,6 +107,57 @@ export function createPermissionSchema(database: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_project_hidden_ranges_project_target
       ON project_hidden_ranges(project_id, hidden_for_user_id, hidden_by_role);
+
+    -- BẢNG PHÂN QUYỀN ẨN/HIỆN & QUYỀN TRUY CẬP DỰ ÁN CẤP ROLE / USER
+    CREATE TABLE IF NOT EXISTS project_role_visibility (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK (role IN ('admin', 'manager', 'user')),
+      user_id TEXT,
+      is_hidden INTEGER NOT NULL DEFAULT 0 CHECK (is_hidden IN (0, 1)),
+      can_view INTEGER NOT NULL DEFAULT 1 CHECK (can_view IN (0, 1)),
+      can_edit INTEGER NOT NULL DEFAULT 0 CHECK (can_edit IN (0, 1)),
+      hidden_by TEXT NOT NULL,
+      hidden_at TEXT NOT NULL,
+      UNIQUE (project_id, role, user_id),
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (hidden_by) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_project_role_visibility_project_role
+      ON project_role_visibility(project_id, role, user_id);
+
+    -- BẢNG SNAPSHOT UNIVER WORKBOOK PHỤC VỤ RUNTIME SSOT & PHỤC HỒI
+    CREATE TABLE IF NOT EXISTS workbook_snapshots (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      snapshot_json TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_workbook_snapshots_project_ver
+      ON workbook_snapshots(project_id, version);
+
+    -- BẢNG REVISION COMMAND LOG HỖ TRỢ TRUY VẾT & UNDO/REDO THEO PHIÊN BẢN
+    CREATE TABLE IF NOT EXISTS workbook_commands (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      sheet_name TEXT NOT NULL,
+      range_ref TEXT NOT NULL,
+      command_type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_workbook_commands_project_ver
+      ON workbook_commands(project_id, version);
   `);
 }
 
@@ -121,7 +172,9 @@ export function ensureEditRevisionColumns(database: Database.Database) {
 }
 
 export function getDb() {
-  if (!db) throw new Error("Database not initialized");
+  if (!db) {
+    initDb();
+  }
   return db;
 }
 
@@ -298,3 +351,143 @@ export const LOCKED_STATUSES: TrangThai[] = ["da_gui", "da_duyet"];
 export function isProjectLocked(trangThai: TrangThai | string): boolean {
   return LOCKED_STATUSES.includes(trangThai as TrangThai);
 }
+
+export type ProjectRoleVisibilityRow = {
+  id: string;
+  project_id: string;
+  role: "admin" | "manager" | "user";
+  user_id: string | null;
+  is_hidden: number;
+  can_view: number;
+  can_edit: number;
+  hidden_by: string;
+  hidden_at: string;
+};
+
+export function getProjectRoleVisibilities(projectId: string): ProjectRoleVisibilityRow[] {
+  return getDb()
+    .prepare("SELECT * FROM project_role_visibility WHERE project_id = ?")
+    .all(projectId) as ProjectRoleVisibilityRow[];
+}
+
+export function setProjectRoleVisibility(
+  projectId: string,
+  role: "admin" | "manager" | "user",
+  params: {
+    userId?: string | null;
+    isHidden: boolean;
+    canView?: boolean;
+    canEdit?: boolean;
+    hiddenBy: string;
+  }
+) {
+  const id = `${projectId}_${role}_${params.userId || "all"}`;
+  const now = new Date().toISOString();
+  const canView = params.canView !== undefined ? (params.canView ? 1 : 0) : params.isHidden ? 0 : 1;
+  const canEdit = params.canEdit ? 1 : 0;
+  const isHidden = params.isHidden ? 1 : 0;
+
+  getDb().prepare(`
+    INSERT INTO project_role_visibility (id, project_id, role, user_id, is_hidden, can_view, can_edit, hidden_by, hidden_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      is_hidden = excluded.is_hidden,
+      can_view = excluded.can_view,
+      can_edit = excluded.can_edit,
+      hidden_by = excluded.hidden_by,
+      hidden_at = excluded.hidden_at
+  `).run(
+    id,
+    projectId,
+    role,
+    params.userId || null,
+    isHidden,
+    canView,
+    canEdit,
+    params.hiddenBy,
+    now
+  );
+}
+
+export function isProjectHiddenForUser(
+  projectId: string,
+  user: { id: string; role: string }
+): boolean {
+  // Admin sees all files unless explicitly filtered
+  if (user.role === "admin") return false;
+
+  // Check specific user override
+  const userOverride = getDb()
+    .prepare(
+      "SELECT is_hidden, can_view FROM project_role_visibility WHERE project_id = ? AND user_id = ?"
+    )
+    .get(projectId, user.id) as { is_hidden: number; can_view: number } | undefined;
+
+  if (userOverride) {
+    return userOverride.is_hidden === 1 || userOverride.can_view === 0;
+  }
+
+  // Check role level
+  const roleOverride = getDb()
+    .prepare(
+      "SELECT is_hidden, can_view FROM project_role_visibility WHERE project_id = ? AND role = ? AND user_id IS NULL"
+    )
+    .get(projectId, user.role) as { is_hidden: number; can_view: number } | undefined;
+
+  if (roleOverride) {
+    return roleOverride.is_hidden === 1 || roleOverride.can_view === 0;
+  }
+
+  return false;
+}
+
+export function saveWorkbookSnapshot(
+  projectId: string,
+  version: number,
+  snapshotJson: string,
+  createdBy: string
+) {
+  const id = `${projectId}_v${version}_${Date.now()}`;
+  const now = new Date().toISOString();
+  getDb().prepare(`
+    INSERT INTO workbook_snapshots (id, project_id, version, snapshot_json, created_by, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, projectId, version, snapshotJson, createdBy, now);
+}
+
+export function getLatestWorkbookSnapshot(projectId: string): string | null {
+  const row = getDb()
+    .prepare(
+      "SELECT snapshot_json FROM workbook_snapshots WHERE project_id = ? ORDER BY version DESC LIMIT 1"
+    )
+    .get(projectId) as { snapshot_json: string } | undefined;
+  return row ? row.snapshot_json : null;
+}
+
+export function recordWorkbookCommand(
+  projectId: string,
+  version: number,
+  sheetName: string,
+  rangeRef: string,
+  commandType: string,
+  payload: any,
+  userId: string
+) {
+  const id = `${projectId}_cmd_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const now = new Date().toISOString();
+  getDb().prepare(`
+    INSERT INTO workbook_commands (id, project_id, version, sheet_name, range_ref, command_type, payload_json, user_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    projectId,
+    version,
+    sheetName,
+    rangeRef,
+    commandType,
+    typeof payload === "string" ? payload : JSON.stringify(payload),
+    userId,
+    now
+  );
+}
+

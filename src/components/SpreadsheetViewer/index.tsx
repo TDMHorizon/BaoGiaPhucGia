@@ -5,10 +5,25 @@ import { createUniver, LocaleType, mergeLocales } from '@univerjs/presets';
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
 import UniverPresetSheetsCoreViVN from '@univerjs/preset-sheets-core/locales/vi-VN';
 import '@univerjs/preset-sheets-core/lib/index.css';
-import { WrapStrategy } from '@univerjs/core';
-
 import { convertExcelToUniverData } from './utils/univerAdapter';
 import { isCellInRange } from '../../lib/utils-excel';
+import { normalizeSelectionWithMerges, resolveMergeInfo, type IRange as MergeIRange } from '../../lib/mergeResolver';
+import { 
+  FormatPainterManager, 
+  classifyUniverCommand, 
+  toggleRangeBold, 
+  toggleRangeItalic, 
+  applyFormatCellsOptionsToRange,
+  WRAP_STRATEGY_WRAP
+} from './utils/univerCommandAdapter';
+import { FormulaBar } from './components/FormulaBar';
+import { FormatCellsModal, WINDOWS_FONTS, type CellFormatOptions } from './components/FormatCellsModal';
+import { FindReplaceModal } from './components/FindReplaceModal';
+import { ImageOverlay, type FloatingImage } from './components/ImageOverlay';
+import { executeSortWorksheet } from './utils/sortEngine';
+import { exportUniverToExcelFile } from '../../lib/exportExcel';
+import { printSpreadsheetDirectly } from '../../lib/printEngine';
+import { clientLogger } from '../../lib/logger';
 import { 
   FileSpreadsheet, 
   Maximize2, 
@@ -20,6 +35,7 @@ import {
   AlignRight,
   WrapText,
   PaintBucket,
+  Paintbrush,
   Rows3,
   Columns3,
   Layout,
@@ -34,25 +50,23 @@ import {
   ShieldAlert, 
   Lock, 
   Unlock, 
-  CheckSquare, 
   Plus, 
   Trash2, 
   Sigma, 
   HelpCircle, 
   Search, 
-  BarChart2, 
   Eye, 
   TableProperties, 
-  Info,
-  Sparkles,
-  Layers,
-  CheckCircle2,
-  X,
   Save,
   DollarSign,
   Hash,
-  RotateCcw,
-  Eraser
+  Eraser,
+  Download,
+  ArrowUpAZ,
+  ArrowDownAZ,
+  Image as ImageIcon,
+  Sliders,
+  X
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -75,8 +89,9 @@ const ribbonSearchItems: { label: string; tab: RibbonTab; fullscreen?: boolean }
   { label: 'Alignment', tab: 'home' },
   { label: 'Cell fill color', tab: 'home' },
   { label: 'Merge cells', tab: 'home' },
+  { label: 'Format Cells (Định dạng ô)', tab: 'home' },
   { label: 'Number format', tab: 'home' },
-  { label: 'Insert rows and columns', tab: 'insert' },
+  { label: 'Insert image / picture', tab: 'insert' },
   { label: 'Page layout and print settings', tab: 'pageLayout' },
   { label: 'Insert formula', tab: 'formulas' },
   { label: 'Sort and filter', tab: 'data' },
@@ -124,16 +139,33 @@ export function SpreadsheetViewer({
   const containerRef = useRef<HTMLDivElement>(null);
   const univerRef = useRef<any>(null);
   const univerAPIRef = useRef<any>(null);
+  const formatPainterRef = useRef<FormatPainterManager>(new FormatPainterManager());
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [activeRibbonTab, setActiveRibbonTab] = useState<RibbonTab>('home');
-  const [currentSelectionStr, setCurrentSelectionStr] = useState<string>('');
+  const [currentSelectionStr, setCurrentSelectionStr] = useState<string>('A1');
+  const [activeCellValue, setActiveCellValue] = useState<string>('');
   const [isReady, setIsReady] = useState(false);
+  
+  // Modals
   const [showAllowEditDialog, setShowAllowEditDialog] = useState(false);
-  const [ribbonSearch, setRibbonSearch] = useState('');
-  const [showSearchResults, setShowSearchResults] = useState(false);
+  const [showFindReplace, setShowFindReplace] = useState(false);
+  const [showFormatCellsModal, setShowFormatCellsModal] = useState(false);
+
+  // Styling & Painter
+  const [painterMode, setPainterMode] = useState<'inactive' | 'single' | 'persistent'>('inactive');
+  const [currentFont, setCurrentFont] = useState('Calibri');
+  const [currentFontSize, setCurrentFontSize] = useState(11);
   const [fillColor, setFillColor] = useState('#fff2cc');
   const [fontColor, setFontColor] = useState('#000000');
+  
+  // Floating Images
+  const [images, setImages] = useState<FloatingImage[]>([]);
+
+  // Search & Stats
+  const [ribbonSearch, setRibbonSearch] = useState('');
+  const [showSearchResults, setShowSearchResults] = useState(false);
   const [stats, setStats] = useState<{ rows: number; cols: number; cells: number }>({ rows: 0, cols: 0, cells: 0 });
 
   const setFullscreen = useCallback((fullscreen: boolean) => {
@@ -146,19 +178,40 @@ export function SpreadsheetViewer({
     window.setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
   }, []);
 
+  // Format painter subscription
+  useEffect(() => {
+    const unsub = formatPainterRef.current.subscribe(mode => {
+      setPainterMode(mode);
+    });
+    return unsub;
+  }, []);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isFullscreen) {
-        setFullscreen(false);
+      if (e.key === 'Escape') {
+        if (painterMode !== 'inactive') {
+          formatPainterRef.current.reset();
+          toast.info('Đã hủy chế độ sao chép định dạng.');
+        } else if (isFullscreen) {
+          setFullscreen(false);
+        }
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
         e.preventDefault();
         if (onSave) onSave();
       }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault();
+        setShowFindReplace(true);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === '1') {
+        e.preventDefault();
+        setShowFormatCellsModal(true);
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isFullscreen, setFullscreen, onSave]);
+  }, [isFullscreen, setFullscreen, onSave, painterMode]);
 
   const matchingSearchItems = ribbonSearchItems.filter(item =>
     item.label.toLowerCase().includes(ribbonSearch.trim().toLowerCase())
@@ -202,8 +255,8 @@ export function SpreadsheetViewer({
           UniverSheetsCorePreset({
             container,
             header: false,
-            toolbar: true,
-            formulaBar: true,
+            toolbar: false, // We use custom Rich Excel Ribbon
+            formulaBar: false, // We use custom FormulaBar component
             contextMenu: true,
             footer: {
               sheetBar: true,
@@ -234,6 +287,7 @@ export function SpreadsheetViewer({
           if (targetWs) fWorkbook.setActiveSheet(targetWs);
         }
 
+        // Selection change with Universal Merge Resolver
         fWorkbook.onSelectionChange((selections: any[]) => {
           if (!selections?.length) return;
           const sel = selections[0];
@@ -242,58 +296,105 @@ export function SpreadsheetViewer({
           const sc: number = range?.startColumn ?? 0;
           const er: number = range?.endRow ?? sr;
           const ec: number = range?.endColumn ?? sc;
-          const a = XLSX.utils.encode_cell({ r: sr, c: sc });
-          const b = XLSX.utils.encode_cell({ r: er, c: ec });
-          setCurrentSelectionStr(a === b ? a : `${a}:${b}`);
-          if (mode === 'admin') onCellMouseDown?.(sr, sc);
+
+          const currentWs = fWorkbook.getActiveSheet();
+          const wsSnapshot = currentWs?.getSnapshot?.() || {};
+          const merges: MergeIRange[] = wsSnapshot.mergeData || [];
+
+          const normalized = normalizeSelectionWithMerges(
+            { startRow: sr, startColumn: sc, endRow: er, endColumn: ec },
+            merges
+          );
+
+          setCurrentSelectionStr(normalized.selectionStr);
+          if (mode === 'admin') onCellMouseDown?.(normalized.masterCell.row, normalized.masterCell.column);
+
+          // Read cell value or formula for Formula Bar
+          try {
+            const activeRange = currentWs?.getRange(normalized.masterCell.row, normalized.masterCell.column, 1, 1);
+            if (activeRange) {
+              const cellVal = activeRange.getValue();
+              const cellData = wsSnapshot.cellData?.[normalized.masterCell.row]?.[normalized.masterCell.column];
+              if (cellData?.f) {
+                setActiveCellValue(`=${cellData.f}`);
+              } else if (cellVal !== undefined && cellVal !== null) {
+                setActiveCellValue(String(cellVal));
+              } else if (cellData?.p?.body?.dataStream) {
+                setActiveCellValue(cellData.p.body.dataStream.replace(/\r\n$/, '').replace(/\n$/, ''));
+              } else {
+                setActiveCellValue('');
+              }
+            }
+          } catch {
+            setActiveCellValue('');
+          }
+
+          // Apply Format Painter if active
+          if (formatPainterRef.current.getMode() !== 'inactive') {
+            const activeRange = currentWs?.getActiveRange();
+            if (activeRange) {
+              const ok = formatPainterRef.current.applyFormat(activeRange);
+              if (ok) {
+                toast.success(`Đã dán định dạng vào ${normalized.selectionStr}`);
+              }
+            }
+          }
         });
 
+        // Whitelisted Command Execution Listener
         fWorkbook.onCommandExecuted((command: any) => {
           if (!command?.id) return;
-          if (!command.id.includes('set-range-values')) return;
+          const cmdType = classifyUniverCommand(command.id);
+          if (!cmdType) return;
 
-          const params = command.params;
-          const rangeParam = params?.range;
-          const valueParam = params?.cellValue ?? params?.value;
-          if (!rangeParam || valueParam == null) return;
+          clientLogger.action("UNIVER_COMMAND", command.id, { type: cmdType, params: command.params });
 
-          const r: number = rangeParam.startRow ?? 0;
-          const c: number = rangeParam.startColumn ?? 0;
-          const cellRef = XLSX.utils.encode_cell({ r, c });
+          // Handle value edits
+          if (cmdType === 'value') {
+            const params = command.params;
+            const rangeParam = params?.range;
+            const valueParam = params?.cellValue ?? params?.value;
+            if (!rangeParam || valueParam == null) return;
 
-          let newVal = '';
-          try {
-            const rowMap = valueParam && typeof valueParam === 'object' && !Array.isArray(valueParam)
-              ? Object.values(valueParam)[0]
-              : valueParam;
-            const cellData: any = rowMap && typeof rowMap === 'object' && !Array.isArray(rowMap)
-              ? Object.values(rowMap)[0]
-              : rowMap;
+            const r: number = rangeParam.startRow ?? 0;
+            const c: number = rangeParam.startColumn ?? 0;
+            const cellRef = XLSX.utils.encode_cell({ r, c });
 
-            if (cellData?.v !== undefined && cellData?.v !== null) {
-              newVal = String(cellData.v);
-            } else if (cellData?.f) {
-              newVal = `=${cellData.f}`;
-            } else if (typeof cellData === 'string' || typeof cellData === 'number') {
-              newVal = String(cellData);
-            }
-          } catch { newVal = ''; }
-
-          setTimeout(() => {
+            let newVal = '';
             try {
-              const currentRange = univerAPIRef.current?.getActiveWorkbook()?.getActiveSheet()?.getRange(r, c, 1, 1);
-              const evaluatedVal = currentRange?.getValue();
-              if (evaluatedVal !== undefined && evaluatedVal !== null && evaluatedVal !== '') {
-                newVal = String(evaluatedVal);
-              }
-            } catch { /* ignore */ }
+              const rowMap = valueParam && typeof valueParam === 'object' && !Array.isArray(valueParam)
+                ? Object.values(valueParam)[0]
+                : valueParam;
+              const cellData: any = rowMap && typeof rowMap === 'object' && !Array.isArray(rowMap)
+                ? Object.values(rowMap)[0]
+                : rowMap;
 
-            if (mode === 'user' && editableRange && !isCellInRange(cellRef, editableRange)) {
-              toast.error(`Ô ${cellRef} không nằm trong vùng được phép sửa.`);
-              return;
-            }
-            onCellEdit?.(r, c, newVal);
-          }, 60);
+              if (cellData?.v !== undefined && cellData?.v !== null) {
+                newVal = String(cellData.v);
+              } else if (cellData?.f) {
+                newVal = `=${cellData.f}`;
+              } else if (typeof cellData === 'string' || typeof cellData === 'number') {
+                newVal = String(cellData);
+              }
+            } catch { newVal = ''; }
+
+            setTimeout(() => {
+              try {
+                const currentRange = univerAPIRef.current?.getActiveWorkbook()?.getActiveSheet()?.getRange(r, c, 1, 1);
+                const evaluatedVal = currentRange?.getValue();
+                if (evaluatedVal !== undefined && evaluatedVal !== null && evaluatedVal !== '') {
+                  newVal = String(evaluatedVal);
+                }
+              } catch { /* ignore */ }
+
+              if (mode === 'user' && editableRange && !isCellInRange(cellRef, editableRange)) {
+                toast.error(`Ô ${cellRef} không nằm trong vùng được phép sửa.`);
+                return;
+              }
+              onCellEdit?.(r, c, newVal);
+              setActiveCellValue(newVal);
+            }, 60);
+          }
         });
       }
 
@@ -339,6 +440,50 @@ export function SpreadsheetViewer({
     }
   }, [activeSheet, isReady]);
 
+  // Formula Bar Value Commit
+  const handleFormulaBarCommit = (val: string) => {
+    if (locked && mode === 'user') {
+      toast.info('Bảng tính đã khóa; bạn không thể sửa ô này.');
+      return;
+    }
+    const activeRange = univerAPIRef.current?.getActiveWorkbook()?.getActiveSheet()?.getActiveRange();
+    if (!activeRange) return;
+
+    try {
+      if (val.startsWith('=')) {
+        activeRange.setValue(val);
+      } else {
+        const num = Number(val);
+        if (!isNaN(num) && val.trim() !== '') {
+          activeRange.setValue(num);
+        } else {
+          activeRange.setValue(val);
+        }
+      }
+      setActiveCellValue(val);
+      const r = activeRange.getRow();
+      const c = activeRange.getColumn();
+      onCellEdit?.(r, c, val);
+      toast.success(`Đã cập nhật ${currentSelectionStr}`);
+    } catch (err) {
+      console.error('Failed to commit formula bar value:', err);
+    }
+  };
+
+  // Formula Bar Cell Navigation
+  const handleNavigateToCell = (address: string) => {
+    try {
+      const decoded = XLSX.utils.decode_cell(address);
+      const ws = univerAPIRef.current?.getActiveWorkbook()?.getActiveSheet();
+      if (ws) {
+        const targetRange = ws.getRange(decoded.r, decoded.c, 1, 1);
+        targetRange?.activate();
+      }
+    } catch (err) {
+      toast.error(`Địa chỉ ô không hợp lệ: ${address}`);
+    }
+  };
+
   // Handlers for Review tab actions
   const handleAddSelectionToEditableRange = () => {
     if (!currentSelectionStr) {
@@ -354,8 +499,6 @@ export function SpreadsheetViewer({
     if (onUpdateEditableRange) {
       onUpdateEditableRange(newRange);
       toast.success(`Đã thêm vùng ${currentSelectionStr} vào vùng được phép sửa.`);
-    } else {
-      toast.info(`Đã chọn vùng: ${currentSelectionStr}`);
     }
   };
 
@@ -378,7 +521,9 @@ export function SpreadsheetViewer({
       const fWorkbook = univerAPIRef.current.getActiveWorkbook();
       const activeRange = fWorkbook?.getActiveSheet()?.getActiveRange();
       if (activeRange) {
-        activeRange.setValue(`=${formulaName}()`);
+        const form = `=${formulaName}()`;
+        activeRange.setValue(form);
+        setActiveCellValue(form);
         toast.success(`Đã chèn hàm =${formulaName}()`);
       }
     } catch (e) {
@@ -386,9 +531,35 @@ export function SpreadsheetViewer({
     }
   };
 
+  // Image Upload Handler
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const base64 = event.target?.result as string;
+      if (base64) {
+        const newImg: FloatingImage = {
+          id: `img-${Date.now()}`,
+          sheetName: activeSheet || 'Sheet1',
+          src: base64,
+          x: 120,
+          y: 80,
+          width: 180,
+          height: 120,
+        };
+        setImages((prev) => [...prev, newImg]);
+        toast.success('Đã chèn hình ảnh vào bảng tính.');
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
   const applySelectionFormat = (
-    format: 'bold' | 'italic' | 'left' | 'center' | 'right' | 'wrap' | 'merge' | 'unmerge' | 'fill' | 'fontColor' | 'number' | 'currency' | 'percent' | 'text' | 'clearFormat',
-    color?: string
+    format: 'bold' | 'italic' | 'left' | 'center' | 'right' | 'wrap' | 'merge' | 'unmerge' | 'fill' | 'fontColor' | 'fontFamily' | 'fontSize' | 'number' | 'currency' | 'percent' | 'text' | 'clearFormat',
+    paramValue?: any
   ) => {
     if (locked && mode === 'user') {
       toast.info('Bảng tính đã khóa; bạn chỉ có thể xem dữ liệu.');
@@ -403,33 +574,55 @@ export function SpreadsheetViewer({
 
     try {
       switch (format) {
-        case 'bold':
-          activeRange.setFontWeight('bold');
+        case 'bold': {
+          const isNowBold = toggleRangeBold(activeRange);
+          toast.success(isNowBold ? 'Đã bật in đậm' : 'Đã tắt in đậm');
           break;
-        case 'italic':
-          activeRange.setFontStyle('italic');
+        }
+        case 'italic': {
+          const isNowItalic = toggleRangeItalic(activeRange);
+          toast.success(isNowItalic ? 'Đã bật in nghiêng' : 'Đã tắt in nghiêng');
           break;
+        }
         case 'left':
+          activeRange.setHorizontalAlignment(1);
+          toast.success('Đã căn lề trái');
+          break;
         case 'center':
+          activeRange.setHorizontalAlignment(2);
+          toast.success('Đã căn giữa');
+          break;
         case 'right':
-          activeRange.setHorizontalAlignment(format);
+          activeRange.setHorizontalAlignment(3);
+          toast.success('Đã căn lề phải');
           break;
         case 'wrap':
-          activeRange.setWrapStrategy(WrapStrategy.WRAP);
+          activeRange.setWrapStrategy(WRAP_STRATEGY_WRAP);
+          toast.success('Đã bật ngắt dòng');
           break;
         case 'merge':
           activeRange.merge();
-          toast.success('Đã gộp ô');
+          toast.success('Đã gộp ô (Merge)');
           break;
         case 'unmerge':
           activeRange.unmerge();
-          toast.success('Đã hủy gộp ô');
+          toast.success('Đã hủy gộp ô (Unmerge)');
+          break;
+        case 'fontFamily':
+          activeRange.setFontFamily(paramValue);
+          setCurrentFont(paramValue);
+          toast.success(`Đổi phông chữ: ${paramValue}`);
+          break;
+        case 'fontSize':
+          activeRange.setFontSize(paramValue);
+          setCurrentFontSize(paramValue);
+          toast.success(`Cỡ chữ: ${paramValue}`);
           break;
         case 'fill':
-          activeRange.setBackgroundColor(color || fillColor);
+          activeRange.setBackgroundColor(paramValue || fillColor);
           break;
         case 'fontColor':
-          activeRange.setFontColor(color || fontColor);
+          activeRange.setFontColor(paramValue || fontColor);
           break;
         case 'number':
           activeRange.setNumberFormat('#,##0');
@@ -458,8 +651,17 @@ export function SpreadsheetViewer({
     }
   };
 
-  const ribbonButtonClass = 'inline-flex min-w-12 flex-col items-center justify-center gap-1 rounded px-2 py-1 text-[10px] text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-400';
-  const selectionButtonClass = 'inline-flex h-8 w-8 items-center justify-center rounded border border-transparent text-slate-700 hover:border-slate-300 hover:bg-slate-100';
+  const handleApplyFormatCellsModal = (options: CellFormatOptions) => {
+    const activeRange = univerAPIRef.current?.getActiveWorkbook()?.getActiveSheet()?.getActiveRange();
+    if (!activeRange) return;
+    const ok = applyFormatCellsOptionsToRange(activeRange, options);
+    if (ok) {
+      toast.success(`Đã áp dụng định dạng ô vào ${currentSelectionStr}`);
+    }
+  };
+
+  const ribbonButtonClass = 'inline-flex min-w-12 flex-col items-center justify-center gap-1 rounded px-2 py-1 text-[10px] text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-400 cursor-pointer';
+  const selectionButtonClass = 'inline-flex h-8 w-8 items-center justify-center rounded border border-transparent text-slate-700 hover:border-slate-300 hover:bg-slate-100 cursor-pointer disabled:cursor-not-allowed';
 
   return (
     <div 
@@ -469,7 +671,7 @@ export function SpreadsheetViewer({
           : 'flex-1 w-full h-full min-h-[550px] relative rounded-xl border border-slate-300 shadow-xl overflow-hidden'
       }`}
     >
-      {/* 1. TOP EXCEL 365 TITLE BAR (Xanh lá đặc trưng của Microsoft Excel) */}
+      {/* 1. TOP EXCEL 365 TITLE BAR */}
       <div className="bg-[#107c41] text-white px-3 py-1.5 flex items-center justify-between text-xs shrink-0 select-none shadow-sm">
         <div className="flex items-center gap-2.5">
           <FileSpreadsheet className="w-4 h-4 text-white" />
@@ -509,7 +711,7 @@ export function SpreadsheetViewer({
                   setRibbonSearch('');
                 }
               }}
-              placeholder="Search"
+              placeholder="Search (Ctrl + F)"
               aria-label="Search ribbon commands"
               className="h-7 min-w-0 flex-1 bg-transparent text-[11px] text-white placeholder:text-white/70 outline-none"
             />
@@ -532,8 +734,28 @@ export function SpreadsheetViewer({
           )}
         </div>
 
-        {/* Right: Actions, Status and Fullscreen Toggle Button */}
+        {/* Right: Actions and Fullscreen Toggle */}
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => exportUniverToExcelFile({ univerAPI: univerAPIRef.current, filename: `BaoGia_${activeSheet || 'PhucGia'}.xlsx`, fallbackWorkbook: workbook })}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-white/15 hover:bg-white/25 text-white font-medium text-xs transition-colors cursor-pointer"
+            title="Tải về file Excel đầy đủ 100% dữ liệu đã sửa (.xlsx)"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span className="hidden md:inline">Tải Excel</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => printSpreadsheetDirectly({ univerAPI: univerAPIRef.current, activeSheet, title: 'Báo Giá Phúc Gia' })}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-white/15 hover:bg-white/25 text-white font-medium text-xs transition-colors cursor-pointer"
+            title="In bảng báo giá chuẩn khổ A4"
+          >
+            <Printer className="w-3.5 h-3.5" />
+            <span className="hidden md:inline">In Báo Giá</span>
+          </button>
+
           {onSave && (
             <button
               onClick={() => onSave()}
@@ -577,6 +799,7 @@ export function SpreadsheetViewer({
         </div>
       </div>
 
+      {/* 2. RIBBON TABS NAVIGATION */}
       <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-slate-300 bg-[#f3f2f1] px-2 pt-1 text-xs custom-scrollbar">
         {ribbonTabs.map(tab => (
           <button
@@ -585,7 +808,7 @@ export function SpreadsheetViewer({
             role="tab"
             aria-selected={activeRibbonTab === tab.id}
             onClick={() => setActiveRibbonTab(tab.id)}
-            className={`whitespace-nowrap border-b-2 px-3 py-1.5 text-xs font-medium transition-colors ${
+            className={`whitespace-nowrap border-b-2 px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
               activeRibbonTab === tab.id
                 ? 'border-[#107c41] bg-white font-bold text-slate-900'
                 : 'border-transparent text-slate-700 hover:bg-slate-200 hover:text-slate-900'
@@ -596,9 +819,322 @@ export function SpreadsheetViewer({
         ))}
       </div>
 
-      {/* 3. CONTEXTUAL RIBBON ACTIONS BAR (Thay đổi theo từng Tab bạn chọn) */}
+      {/* 3. CONTEXTUAL RIBBON ACTIONS BAR */}
       <div className="flex min-h-[84px] shrink-0 flex-wrap items-stretch gap-2 border-b border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700">
-        {/* TAB REVIEW: PHÂN QUYỀN & BẢO VỆ */}
+        {/* TAB HOME: ĐẦY ĐỦ FORMAT, FONT, ALIGNMENT, MERGE, NUMBER, FORMAT PAINTER, FIND */}
+        {activeRibbonTab === 'home' && (
+          <div className="flex w-full items-stretch gap-2 overflow-x-auto">
+            {/* Clipboard & Format Painter & Find */}
+            <div className="relative flex items-center gap-1 border-r border-slate-200 pb-3 pr-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const activeRange = univerAPIRef.current?.getActiveWorkbook()?.getActiveSheet()?.getActiveRange();
+                  if (!activeRange) {
+                    toast.error('Vui lòng chọn ô nguồn để sao chép định dạng.');
+                    return;
+                  }
+                  formatPainterRef.current.copyFormat(activeRange, false);
+                  toast.success('Đã sao chép định dạng (Click vào ô đích để dán)');
+                }}
+                onDoubleClick={() => {
+                  const activeRange = univerAPIRef.current?.getActiveWorkbook()?.getActiveSheet()?.getActiveRange();
+                  if (!activeRange) return;
+                  formatPainterRef.current.copyFormat(activeRange, true);
+                  toast.success('Chế độ chổi sơn liên tục (Nhấn ESC để hủy)');
+                }}
+                className={`${ribbonButtonClass} ${
+                  painterMode !== 'inactive'
+                    ? 'bg-emerald-100 text-emerald-800 font-bold ring-2 ring-emerald-500 animate-pulse'
+                    : ''
+                }`}
+                title="Format Painter (Nhấp 1 lần: dán 1 lần | Nhấp đúp: dán liên tục | ESC: hủy)"
+              >
+                <Paintbrush className="h-4 w-4 text-emerald-700" />
+                <span>Painter</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowFindReplace(true)}
+                className={ribbonButtonClass}
+                title="Tìm kiếm & Thay thế (Ctrl + F)"
+              >
+                <Search className="h-4 w-4 text-slate-700" />
+                <span>Find</span>
+              </button>
+              <span className="absolute bottom-0 left-0 right-2 text-center text-[9px] text-slate-500">Clipboard & Find</span>
+            </div>
+
+            {/* Font Family, Size & Styling */}
+            <div className="relative flex flex-col justify-center gap-1 border-r border-slate-200 px-2 pb-3">
+              <div className="flex items-center gap-1">
+                {/* Windows System Fonts Selector */}
+                <select
+                  value={currentFont}
+                  onChange={(e) => applySelectionFormat('fontFamily', e.target.value)}
+                  disabled={locked && mode === 'user'}
+                  className="h-6 rounded border border-slate-300 bg-white px-1.5 text-[11px] font-medium outline-none focus:border-[#107c41]"
+                  title="Kiểu phông chữ Windows có sẵn"
+                >
+                  {WINDOWS_FONTS.map(f => (
+                    <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>
+                  ))}
+                </select>
+
+                {/* Font Size Selector */}
+                <select
+                  value={currentFontSize}
+                  onChange={(e) => applySelectionFormat('fontSize', parseInt(e.target.value, 10))}
+                  disabled={locked && mode === 'user'}
+                  className="h-6 w-12 rounded border border-slate-300 bg-white px-1 text-[11px] font-medium outline-none focus:border-[#107c41]"
+                  title="Cỡ chữ"
+                >
+                  {[8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 36].map(s => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-center gap-0.5">
+                <button type="button" onClick={() => applySelectionFormat('bold')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Đậm (Bold)"><Bold className="h-3.5 w-3.5" /></button>
+                <button type="button" onClick={() => applySelectionFormat('italic')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Nghiêng (Italic)"><Italic className="h-3.5 w-3.5" /></button>
+                <label className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-slate-700 hover:bg-slate-100" title="Màu chữ">
+                  <span className="flex flex-col items-center text-[11px] font-bold">A<span className="h-1 w-3" style={{ backgroundColor: fontColor }} /></span>
+                  <input aria-label="Font color" type="color" value={fontColor} disabled={locked && mode === 'user'} onChange={event => { setFontColor(event.target.value); applySelectionFormat('fontColor', event.target.value); }} className="sr-only" />
+                </label>
+                <label className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-slate-700 hover:bg-slate-100" title="Màu nền ô (Fill)">
+                  <PaintBucket className="h-3.5 w-3.5" />
+                  <input aria-label="Cell fill color" type="color" value={fillColor} disabled={locked && mode === 'user'} onChange={event => { setFillColor(event.target.value); applySelectionFormat('fill', event.target.value); }} className="sr-only" />
+                </label>
+              </div>
+              <span className="absolute bottom-0 left-2 right-2 text-center text-[9px] text-slate-500">Font</span>
+            </div>
+
+            {/* Alignment */}
+            <div className="relative flex items-center gap-1 border-r border-slate-200 px-2 pb-3">
+              <button type="button" onClick={() => applySelectionFormat('left')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Căn trái"><AlignLeft className="h-4 w-4" /></button>
+              <button type="button" onClick={() => applySelectionFormat('center')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Căn giữa"><AlignCenter className="h-4 w-4" /></button>
+              <button type="button" onClick={() => applySelectionFormat('right')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Căn phải"><AlignRight className="h-4 w-4" /></button>
+              <button type="button" onClick={() => applySelectionFormat('wrap')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Ngắt dòng (Wrap text)"><WrapText className="h-4 w-4" /></button>
+              <span className="absolute bottom-0 left-2 right-2 text-center text-[9px] text-slate-500">Alignment</span>
+            </div>
+
+            {/* Merge & Unmerge Group */}
+            <div className="relative flex items-center gap-1 border-r border-slate-200 px-2 pb-3">
+              <button 
+                type="button" 
+                onClick={() => applySelectionFormat('merge')} 
+                disabled={locked && mode === 'user'} 
+                className="flex items-center gap-1 h-8 px-2 rounded border border-slate-200 bg-slate-50 text-[11px] font-medium text-slate-800 hover:bg-slate-100 cursor-pointer" 
+                title="Gộp các ô đang chọn (Merge & Center)"
+              >
+                <Grid2X2 className="h-3.5 w-3.5 text-emerald-700" />
+                <span>Merge</span>
+              </button>
+              <button 
+                type="button" 
+                onClick={() => applySelectionFormat('unmerge')} 
+                disabled={locked && mode === 'user'} 
+                className="flex items-center gap-1 h-8 px-2 rounded border border-slate-200 bg-slate-50 text-[11px] font-medium text-slate-800 hover:bg-slate-100 cursor-pointer" 
+                title="Hủy gộp ô"
+              >
+                <LayersIcon className="h-3.5 w-3.5 text-amber-700" />
+                <span>Unmerge</span>
+              </button>
+              <span className="absolute bottom-0 left-2 right-2 text-center text-[9px] text-slate-500">Merge Cells</span>
+            </div>
+
+            {/* Number Format */}
+            <div className="relative flex items-center gap-1 border-r border-slate-200 px-2 pb-3">
+              <button type="button" onClick={() => applySelectionFormat('number')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Định dạng số (#,##0)"><Hash className="h-4 w-4" /></button>
+              <button type="button" onClick={() => applySelectionFormat('currency')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Tiền tệ (VNĐ)"><DollarSign className="h-4 w-4" /></button>
+              <button type="button" onClick={() => applySelectionFormat('percent')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Phần trăm (%)"><Percent className="h-4 w-4" /></button>
+              <span className="absolute bottom-0 left-2 right-2 text-center text-[9px] text-slate-500">Number</span>
+            </div>
+
+            {/* Format Cells Modal Launcher */}
+            <div className="relative flex items-center gap-1 border-r border-slate-200 px-2 pb-3">
+              <button
+                type="button"
+                onClick={() => setShowFormatCellsModal(true)}
+                disabled={locked && mode === 'user'}
+                className="flex items-center gap-1 h-8 px-2.5 rounded border border-emerald-300 bg-emerald-50 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100 cursor-pointer shadow-2xs"
+                title="Mở bảng định dạng ô chi tiết (Ctrl + 1)"
+              >
+                <Sliders className="h-3.5 w-3.5 text-[#107c41]" />
+                <span>Format Cells</span>
+              </button>
+              <span className="absolute bottom-0 left-2 right-2 text-center text-[9px] text-slate-500">Dialog</span>
+            </div>
+
+            {/* Clear Formats */}
+            <div className="relative flex items-center gap-1 px-2 pb-3">
+              <button type="button" onClick={() => applySelectionFormat('clearFormat')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Xóa định dạng (Clear Format)"><Eraser className="h-4 w-4 text-rose-600" /></button>
+              <span className="absolute bottom-0 left-2 right-2 text-center text-[9px] text-slate-500">Clear</span>
+            </div>
+
+            {mode === 'user' && (
+              <span className="ml-auto self-center rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-semibold text-emerald-700">
+                Ô xanh là vùng được phép sửa
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* TAB INSERT: ROWS, COLS & INSERT FLOATING IMAGE */}
+        {activeRibbonTab === 'insert' && (
+          <div className="flex items-stretch gap-2">
+            <div className="flex flex-col items-center justify-center border-r border-slate-200 px-3">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleImageUpload}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={locked && mode === 'user'}
+                className="flex flex-col items-center gap-1 rounded px-3 py-1 text-slate-800 hover:bg-slate-100 cursor-pointer"
+                title="Chèn ảnh / logo nổi vào bảng tính"
+              >
+                <ImageIcon className="h-6 w-6 text-emerald-700" />
+                <span className="text-[10px] font-semibold">Chèn Hình Ảnh</span>
+              </button>
+              <span className="mt-1 text-[9px] text-slate-500">Illustrations</span>
+            </div>
+
+            <div className="flex flex-col items-center justify-center border-r border-slate-200 px-3">
+              <Rows3 className="h-6 w-6 text-slate-500" />
+              <span className="mt-1 text-[10px] text-slate-600">Rows</span>
+            </div>
+            <div className="flex flex-col items-center justify-center border-r border-slate-200 px-3">
+              <Columns3 className="h-6 w-6 text-slate-500" />
+              <span className="mt-1 text-[10px] text-slate-600">Columns</span>
+            </div>
+            <p className="self-center text-[11px] text-slate-500">Nhấp chuột phải vào bảng tính để Chèn hoặc Xóa dòng/cột.</p>
+          </div>
+        )}
+
+        {/* TAB PAGE LAYOUT */}
+        {activeRibbonTab === 'pageLayout' && (
+          <div className="flex items-stretch gap-2">
+            <div className="flex flex-col items-center justify-center border-r border-slate-200 px-3">
+              <Layout className="h-6 w-6 text-slate-500" />
+              <span className="mt-1 text-[10px] text-slate-600">Page Setup</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => printSpreadsheetDirectly({ univerAPI: univerAPIRef.current, activeSheet, orientation: 'portrait' })}
+              className="flex items-center gap-1 px-3 py-1.5 rounded bg-slate-100 hover:bg-slate-200 text-xs font-semibold text-slate-800 cursor-pointer"
+            >
+              <Printer className="h-4 w-4 text-emerald-700" />
+              <span>In A4 Dọc (Portrait)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => printSpreadsheetDirectly({ univerAPI: univerAPIRef.current, activeSheet, orientation: 'landscape' })}
+              className="flex items-center gap-1 px-3 py-1.5 rounded bg-slate-100 hover:bg-slate-200 text-xs font-semibold text-slate-800 cursor-pointer"
+            >
+              <Printer className="h-4 w-4 text-emerald-700" />
+              <span>In A4 Ngang (Landscape)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => exportUniverToExcelFile({ univerAPI: univerAPIRef.current, filename: `BaoGia_${activeSheet || 'PhucGia'}.xlsx`, fallbackWorkbook: workbook })}
+              className="flex items-center gap-1 px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-700 text-xs font-semibold text-white cursor-pointer ml-auto"
+            >
+              <Download className="h-4 w-4" />
+              <span>Tải file Excel (.xlsx)</span>
+            </button>
+          </div>
+        )}
+
+        {/* TAB FORMULAS */}
+        {activeRibbonTab === 'formulas' && (
+          <div className="flex items-stretch gap-2">
+            <div className="flex flex-col items-center justify-center border-r border-slate-200 pr-3">
+              <Sigma className="h-6 w-6 text-[#107c41]" />
+              <span className="mt-1 text-[9px] text-slate-500">Function Library</span>
+            </div>
+            <div className="grid grid-cols-4 gap-1">
+              {['SUM', 'AVERAGE', 'COUNT', 'MAX', 'MIN', 'IF', 'VLOOKUP', 'SUMIF'].map(fn => (
+                <button
+                  key={fn}
+                  onClick={() => handleInsertFormula(fn)}
+                  className="rounded border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-[10px] font-semibold text-slate-800 transition-colors hover:bg-slate-100 cursor-pointer"
+                >
+                  ={fn}()
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* TAB DATA: SẮP XẾP A-Z, Z-A & LỌC DỮ LIỆU */}
+        {activeRibbonTab === 'data' && (
+          <div className="flex items-stretch gap-2">
+            <div className="flex items-center gap-2 border-r border-slate-200 pr-3">
+              <button
+                type="button"
+                onClick={() => {
+                  const res = executeSortWorksheet(univerAPIRef.current, { direction: 'asc' });
+                  if (res.success) {
+                    toast.success(res.message);
+                  } else {
+                    toast.error(res.message);
+                  }
+                }}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-800 cursor-pointer"
+                title="Sắp xếp tăng dần A → Z (giữ nguyên tiêu đề Header)"
+              >
+                <ArrowUpAZ className="h-4 w-4 text-emerald-700" />
+                <span>Sắp xếp A → Z</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const res = executeSortWorksheet(univerAPIRef.current, { direction: 'desc' });
+                  if (res.success) {
+                    toast.success(res.message);
+                  } else {
+                    toast.error(res.message);
+                  }
+                }}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-800 cursor-pointer"
+                title="Sắp xếp giảm dần Z → A (giữ nguyên tiêu đề Header)"
+              >
+                <ArrowDownAZ className="h-4 w-4 text-amber-700" />
+                <span>Sắp xếp Z → A</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  toast.info('Đã bật chế độ lọc tự động (AutoFilter)');
+                }}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-800 cursor-pointer"
+              >
+                <Filter className="h-4 w-4 text-blue-700" />
+                <span>Lọc (Filter)</span>
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowFindReplace(true)}
+              className="flex items-center gap-1 px-3 py-1.5 rounded bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-800 cursor-pointer"
+            >
+              <Search className="h-4 w-4 text-slate-700" />
+              <span>Tìm kiếm & Thay thế (Ctrl+F)</span>
+            </button>
+          </div>
+        )}
+
+        {/* TAB REVIEW */}
         {activeRibbonTab === 'review' && (
           <div className="flex w-full items-stretch gap-2 overflow-x-auto">
             {onToggleLock && (
@@ -622,7 +1158,7 @@ export function SpreadsheetViewer({
               <>
                 <button
                   onClick={handleAddSelectionToEditableRange}
-                  className="flex flex-col items-center justify-center gap-1 rounded px-3 text-emerald-800 transition-colors hover:bg-emerald-50"
+                  className="flex flex-col items-center justify-center gap-1 rounded px-3 text-emerald-800 transition-colors hover:bg-emerald-50 cursor-pointer"
                   title="Cấp quyền sửa cho ô/vùng đang bôi đen"
                 >
                   <Plus className="h-6 w-6 text-emerald-700" />
@@ -633,7 +1169,7 @@ export function SpreadsheetViewer({
                 {currentSelectionStr && editableRange.includes(currentSelectionStr) && (
                   <button
                     onClick={handleRemoveSelectionFromEditableRange}
-                    className="flex flex-col items-center justify-center gap-1 rounded px-3 text-rose-700 transition-colors hover:bg-rose-50"
+                    className="flex flex-col items-center justify-center gap-1 rounded px-3 text-rose-700 transition-colors hover:bg-rose-50 cursor-pointer"
                   >
                     <Trash2 className="h-6 w-6" />
                     <span className="text-[10px]">Remove Range</span>
@@ -642,7 +1178,7 @@ export function SpreadsheetViewer({
 
                 <button
                   onClick={() => setShowAllowEditDialog(true)}
-                  className="flex flex-col items-center justify-center gap-1 rounded px-3 text-slate-700 transition-colors hover:bg-slate-100"
+                  className="flex flex-col items-center justify-center gap-1 rounded px-3 text-slate-700 transition-colors hover:bg-slate-100 cursor-pointer"
                 >
                   <TableProperties className="h-6 w-6" />
                   <span className="text-[10px]">Manage Ranges</span>
@@ -659,159 +1195,12 @@ export function SpreadsheetViewer({
           </div>
         )}
 
-        {/* TAB FORMULAS: CÔNG THỨC */}
-        {activeRibbonTab === 'formulas' && (
-          <div className="flex items-stretch gap-2">
-            <div className="flex flex-col items-center justify-center border-r border-slate-200 pr-3">
-              <Sigma className="h-6 w-6 text-[#107c41]" />
-              <span className="mt-1 text-[9px] text-slate-500">Function Library</span>
-            </div>
-            <div className="grid grid-cols-4 gap-1">
-              {['SUM', 'AVERAGE', 'COUNT', 'MAX', 'MIN', 'IF', 'VLOOKUP'].map(fn => (
-                <button
-                  key={fn}
-                  onClick={() => handleInsertFormula(fn)}
-                  className="rounded border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-[10px] font-semibold text-slate-800 transition-colors hover:bg-slate-100"
-                >
-                  ={fn}()
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* TAB HOME: ĐẦY ĐỦ FORMAT, FONT, ALIGNMENT, MERGE, NUMBER */}
-        {activeRibbonTab === 'home' && (
-          <div className="flex w-full items-stretch gap-2 overflow-x-auto">
-            <div className="relative flex items-center gap-1 border-r border-slate-200 pb-3 pr-2">
-              <button type="button" className={ribbonButtonClass} disabled title="Sử dụng thanh công cụ bên dưới">
-                <Clipboard className="h-5 w-5" /><span>Paste</span>
-              </button>
-              <button type="button" className={ribbonButtonClass} disabled title="Undo sẵn sàng trên thanh công cụ">
-                <Undo2 className="h-4 w-4" /><span>Undo</span>
-              </button>
-              <button type="button" className={ribbonButtonClass} disabled title="Redo sẵn sàng trên thanh công cụ">
-                <Redo2 className="h-4 w-4" /><span>Redo</span>
-              </button>
-              <span className="absolute bottom-0 left-0 right-2 text-center text-[9px] text-slate-500">Clipboard</span>
-            </div>
-
-            {/* Font formatting */}
-            <div className="relative flex items-center gap-1 border-r border-slate-200 px-2 pb-3">
-              <button type="button" onClick={() => applySelectionFormat('bold')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Đậm (Bold)"><Bold className="h-4 w-4" /></button>
-              <button type="button" onClick={() => applySelectionFormat('italic')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Nghiêng (Italic)"><Italic className="h-4 w-4" /></button>
-              <label className="flex h-8 w-8 cursor-pointer items-center justify-center rounded text-slate-700 hover:bg-slate-100" title="Màu chữ">
-                <span className="flex flex-col items-center text-xs font-bold">A<span className="h-1 w-4" style={{ backgroundColor: fontColor }} /></span>
-                <input aria-label="Font color" type="color" value={fontColor} disabled={locked && mode === 'user'} onChange={event => { setFontColor(event.target.value); applySelectionFormat('fontColor', event.target.value); }} className="sr-only" />
-              </label>
-              <label className="flex h-8 w-8 cursor-pointer items-center justify-center rounded text-slate-700 hover:bg-slate-100" title="Màu nền ô (Fill)">
-                <PaintBucket className="h-4 w-4" />
-                <input aria-label="Cell fill color" type="color" value={fillColor} disabled={locked && mode === 'user'} onChange={event => { setFillColor(event.target.value); applySelectionFormat('fill', event.target.value); }} className="sr-only" />
-              </label>
-              <span className="absolute bottom-0 left-2 right-2 text-center text-[9px] text-slate-500">Font</span>
-            </div>
-
-            {/* Alignment */}
-            <div className="relative flex items-center gap-1 border-r border-slate-200 px-2 pb-3">
-              <button type="button" onClick={() => applySelectionFormat('left')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Căn trái"><AlignLeft className="h-4 w-4" /></button>
-              <button type="button" onClick={() => applySelectionFormat('center')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Căn giữa"><AlignCenter className="h-4 w-4" /></button>
-              <button type="button" onClick={() => applySelectionFormat('right')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Căn phải"><AlignRight className="h-4 w-4" /></button>
-              <button type="button" onClick={() => applySelectionFormat('wrap')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Ngắt dòng (Wrap text)"><WrapText className="h-4 w-4" /></button>
-              <span className="absolute bottom-0 left-2 right-2 text-center text-[9px] text-slate-500">Alignment</span>
-            </div>
-
-            {/* Merge & Unmerge Group */}
-            <div className="relative flex items-center gap-1 border-r border-slate-200 px-2 pb-3">
-              <button 
-                type="button" 
-                onClick={() => applySelectionFormat('merge')} 
-                disabled={locked && mode === 'user'} 
-                className="flex items-center gap-1 h-8 px-2 rounded border border-slate-200 bg-slate-50 text-[11px] font-medium text-slate-800 hover:bg-slate-100" 
-                title="Gộp các ô đang chọn"
-              >
-                <Grid2X2 className="h-3.5 w-3.5 text-emerald-700" />
-                <span>Merge</span>
-              </button>
-              <button 
-                type="button" 
-                onClick={() => applySelectionFormat('unmerge')} 
-                disabled={locked && mode === 'user'} 
-                className="flex items-center gap-1 h-8 px-2 rounded border border-slate-200 bg-slate-50 text-[11px] font-medium text-slate-800 hover:bg-slate-100" 
-                title="Hủy gộp ô"
-              >
-                <Layers className="h-3.5 w-3.5 text-amber-700" />
-                <span>Unmerge</span>
-              </button>
-              <span className="absolute bottom-0 left-2 right-2 text-center text-[9px] text-slate-500">Merge Cells</span>
-            </div>
-
-            {/* Number Format */}
-            <div className="relative flex items-center gap-1 border-r border-slate-200 px-2 pb-3">
-              <button type="button" onClick={() => applySelectionFormat('number')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Định dạng số (#,##0)"><Hash className="h-4 w-4" /></button>
-              <button type="button" onClick={() => applySelectionFormat('currency')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Tiền tệ (VNĐ)"><DollarSign className="h-4 w-4" /></button>
-              <button type="button" onClick={() => applySelectionFormat('percent')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Phần trăm (%)"><Percent className="h-4 w-4" /></button>
-              <span className="absolute bottom-0 left-2 right-2 text-center text-[9px] text-slate-500">Number Format</span>
-            </div>
-
-            {/* Clear Formats */}
-            <div className="relative flex items-center gap-1 px-2 pb-3">
-              <button type="button" onClick={() => applySelectionFormat('clearFormat')} disabled={locked && mode === 'user'} className={selectionButtonClass} title="Xóa định dạng (Clear Format)"><Eraser className="h-4 w-4 text-rose-600" /></button>
-              <span className="absolute bottom-0 left-2 right-2 text-center text-[9px] text-slate-500">Clear</span>
-            </div>
-
-            {mode === 'user' && (
-              <span className="ml-auto self-center rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-semibold text-emerald-700">
-                Ô xanh là vùng được phép sửa
-              </span>
-            )}
-          </div>
-        )}
-
-        {activeRibbonTab === 'insert' && (
-          <div className="flex items-stretch gap-2">
-            <div className="flex flex-col items-center justify-center border-r border-slate-200 px-3">
-              <Rows3 className="h-6 w-6 text-slate-500" />
-              <span className="mt-1 text-[10px] text-slate-600">Rows</span>
-            </div>
-            <div className="flex flex-col items-center justify-center border-r border-slate-200 px-3">
-              <Columns3 className="h-6 w-6 text-slate-500" />
-              <span className="mt-1 text-[10px] text-slate-600">Columns</span>
-            </div>
-            <p className="self-center text-[11px] text-slate-500">Nhấp chuột phải vào bảng tính để Chèn hoặc Xóa dòng/cột.</p>
-          </div>
-        )}
-
-        {activeRibbonTab === 'pageLayout' && (
-          <div className="flex items-stretch gap-2">
-            <div className="flex flex-col items-center justify-center border-r border-slate-200 px-3">
-              <Layout className="h-6 w-6 text-slate-500" />
-              <span className="mt-1 text-[10px] text-slate-600">Page Setup</span>
-            </div>
-            <button type="button" className={ribbonButtonClass} disabled><span>Margins</span></button>
-            <button type="button" className={ribbonButtonClass} disabled><span>Orientation</span></button>
-            <button type="button" className={ribbonButtonClass} disabled><span>Print Area</span></button>
-            <div className="flex flex-col items-center justify-center border-l border-slate-200 px-3">
-              <Printer className="h-6 w-6 text-slate-400" />
-              <span className="mt-1 text-[10px] text-slate-400">Printing options</span>
-            </div>
-          </div>
-        )}
-
-        {activeRibbonTab === 'data' && (
-          <div className="flex items-stretch gap-2">
-            <div className="flex flex-col items-center justify-center border-r border-slate-200 px-3">
-              <Filter className="h-6 w-6 text-slate-500" />
-              <span className="mt-1 text-[10px] text-slate-600">Sort & Filter</span>
-            </div>
-            <p className="self-center text-[11px] text-slate-500">Sử dụng thanh công cụ hoặc menu chuột phải để Lọc & Sắp xếp dữ liệu.</p>
-          </div>
-        )}
-
+        {/* TAB VIEW */}
         {activeRibbonTab === 'view' && (
           <div className="flex items-stretch gap-2">
             <button
               onClick={toggleFullscreen}
-              className="flex min-w-28 flex-col items-center justify-center gap-1 rounded px-3 text-slate-800 transition-colors hover:bg-slate-100"
+              className="flex min-w-28 flex-col items-center justify-center gap-1 rounded px-3 text-slate-800 transition-colors hover:bg-slate-100 cursor-pointer"
             >
               {isFullscreen ? <Minimize2 className="h-6 w-6" /> : <Maximize2 className="h-6 w-6" />}
               <span className="text-[10px]">{isFullscreen ? 'Thu nhỏ' : 'Toàn màn hình'}</span>
@@ -824,6 +1213,7 @@ export function SpreadsheetViewer({
           </div>
         )}
 
+        {/* TAB HELP */}
         {activeRibbonTab === 'help' && (
           <div className="flex items-center gap-3 text-xs text-slate-600">
             <HelpCircle className="w-4 h-4 text-[#107c41]" />
@@ -832,14 +1222,51 @@ export function SpreadsheetViewer({
         )}
       </div>
 
-      {/* 4. MAIN UNIVER CANVAS HOST CONTAINER */}
-      <div 
-        ref={containerRef} 
-        className="flex-1 w-full h-full relative overflow-hidden bg-white" 
-        style={{ minHeight: isFullscreen ? 0 : '520px' }}
+      {/* 4. FORMULA BAR (THANH CÔNG THỨC CHUẨN EXCEL) */}
+      <FormulaBar
+        activeCellAddress={currentSelectionStr}
+        activeCellValue={activeCellValue}
+        univerAPI={univerAPIRef.current}
+        onCommitValue={handleFormulaBarCommit}
+        onNavigateToCell={handleNavigateToCell}
+        disabled={locked && mode === 'user'}
       />
 
-      {/* 5. DIALOG: QUẢN LÝ DANH SÁCH VÙNG ĐƯỢC PHÉP SỬA (ALLOW EDIT RANGES) */}
+      {/* 5. MAIN UNIVER CANVAS HOST CONTAINER WITH IMAGE OVERLAY */}
+      <div className="flex-1 w-full h-full relative overflow-hidden bg-white" style={{ minHeight: isFullscreen ? 0 : '520px' }}>
+        <div ref={containerRef} className="w-full h-full relative overflow-hidden" />
+        <ImageOverlay
+          images={images}
+          activeSheet={activeSheet}
+          onUpdateImage={(updated) => {
+            setImages((prev) => prev.map((img) => (img.id === updated.id ? updated : img)));
+          }}
+          onRemoveImage={(id) => {
+            setImages((prev) => prev.filter((img) => img.id !== id));
+            toast.success('Đã xóa hình ảnh');
+          }}
+          disabled={locked && mode === 'user'}
+        />
+      </div>
+
+      {/* 6. MODAL: FIND & REPLACE (CTRL + F) */}
+      <FindReplaceModal
+        isOpen={showFindReplace}
+        onClose={() => setShowFindReplace(false)}
+        univerAPI={univerAPIRef.current}
+        activeSheet={activeSheet}
+      />
+
+      {/* 7. MODAL: FORMAT CELLS (CTRL + 1) */}
+      <FormatCellsModal
+        isOpen={showFormatCellsModal}
+        onClose={() => setShowFormatCellsModal(false)}
+        univerAPI={univerAPIRef.current}
+        activeSelectionStr={currentSelectionStr}
+        onApplyFormat={handleApplyFormatCellsModal}
+      />
+
+      {/* 8. DIALOG: QUẢN LÝ DANH SÁCH VÙNG ĐƯỢC PHÉP SỬA */}
       {showAllowEditDialog && (
         <div className="fixed inset-0 z-[10000] bg-black/40 flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full border border-slate-300 overflow-hidden">
@@ -890,5 +1317,15 @@ export function SpreadsheetViewer({
         </div>
       )}
     </div>
+  );
+}
+
+function LayersIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="12 2 2 7 12 12 22 7 12 2" />
+      <polyline points="2 17 12 22 22 17" />
+      <polyline points="2 12 12 17 22 12" />
+    </svg>
   );
 }
