@@ -10,7 +10,7 @@ import {
   Users,
 } from "lucide-react";
 import { useState } from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { StatusBadge } from "../components/StatusBadge";
 import type { TrangThai } from "../lib/constants";
 
@@ -54,6 +54,7 @@ export function AdminSidebar({
   onLogout,
 }: AdminSidebarProps) {
   const location = useLocation();
+  const navigate = useNavigate();
   const itemClass = (active: boolean) => `w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left text-sm font-semibold transition-colors ${isCollapsed ? "justify-center" : ""} ${active ? "bg-white text-[#0b4f9c] shadow-sm" : "text-blue-50 hover:bg-white/10"}`;
   const childClass = (active: boolean) => `w-full rounded-md px-3 py-2 text-left text-sm font-medium flex items-center gap-2 transition-colors ${active ? "bg-white/15 text-white" : "text-blue-100 hover:bg-white/10 hover:text-white"}`;
   const isAccountPage = location.pathname === "/admin/accounts";
@@ -72,6 +73,20 @@ export function AdminSidebar({
       {!isCollapsed && <div className="px-4 pt-6 pb-3 text-[10px] uppercase tracking-[0.16em] text-blue-200 font-bold">Không gian làm việc</div>}
       <nav className="px-3 space-y-1" aria-label="Điều hướng quản trị">
         <button type="button" onClick={() => { onMainTabChange("dashboard"); onMobileOpenChange(false); }} title={isCollapsed ? "Dashboard" : undefined} className={itemClass(mainTab === "dashboard")}><LayoutDashboard className="h-4 w-4 shrink-0" />{!isCollapsed && <><span className="flex-1">Dashboard</span><ChevronRight className="h-3.5 w-3.5 opacity-60" /></>}</button>
+        {(userRole === "admin" || userRole === "manager") && (
+          <button
+            type="button"
+            onClick={() => {
+              navigate("/management/overview");
+              onMobileOpenChange(false);
+            }}
+            title={isCollapsed ? "Quản trị & Điều hành" : undefined}
+            className={itemClass(location.pathname.startsWith("/management"))}
+          >
+            <ShieldCheck className="h-4 w-4 shrink-0" />
+            {!isCollapsed && <span className="flex-1">Quản trị & Điều hành</span>}
+          </button>
+        )}
         <button type="button" onClick={() => { onMainTabChange("file"); onQuotesExpandedChange(); }} title={isCollapsed ? "Quản lý báo giá" : undefined} className={itemClass(mainTab === "file")}><FolderOpen className="h-4 w-4 shrink-0" />{!isCollapsed && <><span className="flex-1">Quản lý báo giá</span><ChevronRight className={`h-3.5 w-3.5 opacity-60 transition-transform ${isQuotesExpanded ? "rotate-90" : ""}`} /></>}</button>
         {!isCollapsed && isQuotesExpanded && <div className="ml-7 space-y-1 border-l border-white/20 pl-2">
           <button type="button" onClick={() => { onMainTabChange("file"); onProjectDialogOpen(); onMobileOpenChange(false); }} className={childClass(false)}><FolderOpen className="h-4 w-4 shrink-0" /><span>Mở dự án</span></button>

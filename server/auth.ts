@@ -39,6 +39,15 @@ export function verifyToken(token: string): (AuthUser & { tokenVersion: number }
   }
 }
 
+export function decodeTokenIgnoreExpiry(token: string): (AuthUser & { tokenVersion: number }) | null {
+  try {
+    const payload = jwt.decode(token) as (AuthUser & { tokenVersion: number }) | null;
+    return payload && payload.id ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Hash giả để thời gian xử lý khi sai username ≈ khi sai password (chống timing attack). */
 const DUMMY_HASH = bcrypt.hashSync("dummy-password-for-timing", 10);
 
@@ -115,11 +124,11 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
   const db = getDb();
   const row = db.prepare("SELECT * FROM users WHERE id = ?").get(decoded.id) as UserRow | undefined;
   if (!row || !row.active) {
-    return res.status(401).json({ error: "Tài khoản không tồn tại hoặc đã bị vô hiệu hoá" });
+    return res.status(401).json({ error: "Tài khoản của bạn đã bị khóa hoặc vô hiệu hoá. Vui lòng liên hệ Admin để xử lý!", code: "ACCOUNT_LOCKED" });
   }
 
   if (row.token_version !== decoded.tokenVersion) {
-    return res.status(401).json({ error: "Phiên làm việc đã bị thu hồi hoặc mật khẩu đã đổi. Vui lòng đăng nhập lại." });
+    return res.status(401).json({ error: "Phiên làm việc đã bị thu hồi hoặc mật khẩu đã đổi. Vui lòng đăng nhập lại.", code: "TOKEN_REVOKED" });
   }
 
   req.user = publicUser(row) as AuthUser;

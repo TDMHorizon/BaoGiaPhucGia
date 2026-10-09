@@ -21,6 +21,14 @@ async function request(url: string, options: RequestInit = {}) {
 
   const res = await fetch(url, { ...options, headers });
   if (res.status === 401) {
+    try {
+      const cloned = await res.clone().json();
+      if (cloned?.code === "ACCOUNT_LOCKED" || cloned?.error?.includes("khóa")) {
+        window.dispatchEvent(new CustomEvent("baogia:account_locked", { detail: cloned }));
+      }
+    } catch {
+      /* ignore */
+    }
     setToken(null);
     localStorage.removeItem("user");
   }
@@ -53,6 +61,12 @@ export const api = {
       body: JSON.stringify({ username, password }),
     });
     if (data.token) setToken(data.token);
+    return data;
+  },
+
+  async refreshToken() {
+    const data = await request("/api/auth/refresh", { method: "POST" });
+    if (data?.token) setToken(data.token);
     return data;
   },
 
@@ -247,5 +261,29 @@ export const api = {
   },
   async deleteTemplate(id: string) {
     return request(`/api/templates/${id}`, { method: "DELETE" });
+  },
+
+  async getDisabledRanges(id: string) {
+    return request(`/api/projects/${id}/disabled-ranges`);
+  },
+
+  async disableRange(
+    id: string,
+    payload: { sheetName: string; type: "CELL" | "ROW" | "COLUMN"; target: string | number }
+  ) {
+    return request(`/api/projects/${id}/disable-range`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async enableRange(
+    id: string,
+    payload: { sheetName: string; type: "CELL" | "ROW" | "COLUMN"; target: string | number }
+  ) {
+    return request(`/api/projects/${id}/enable-range`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
   },
 };

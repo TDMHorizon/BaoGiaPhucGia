@@ -4,6 +4,7 @@ import { FolderOpen, Settings, Users, FileText, Undo, Plus, Minus, Search, Filte
 import { api } from "../lib/api";
 import { fileToBase64, parseExcel, getSheetData, applyEditsToWorkbook, downloadBase64File, generateExcelBase64 } from "../lib/excel";
 import { SpreadsheetViewer } from "./SpreadsheetViewer";
+import { ActiveEditor } from "./SpreadsheetViewer/components/Cell";
 import { insertRowWithExcelJS, deleteRowWithExcelJS, insertColWithExcelJS, deleteColWithExcelJS, loadExcelJSWorkbook, updateMergedCellInExcelJS, workbookToBase64 } from "../lib/exceljs-helper";
 import { getSocket, joinProjectRoom, leaveProjectRoom } from "../lib/socket";
 import { Button } from "./ui/button";
@@ -63,9 +64,11 @@ export function AdminDashboard() {
   const [colInsertIndex, setColInsertIndex] = useState<string>("");
   const [rowDeleteIndex, setRowDeleteIndex] = useState<string>("");
   const [colDeleteIndex, setColDeleteIndex] = useState<string>("");
+  const [disabledRanges, setDisabledRanges] = useState<any>({});
   const [history, setHistory] = useState<string[]>([]);
   const [dragStart, setDragStart] = useState<{ r: number; c: number } | null>(null);
   const [dragEnd, setDragEnd] = useState<{ r: number; c: number } | null>(null);
+  const [activeEditors, setActiveEditors] = useState<Record<string, ActiveEditor>>({});
 
   const pushToHistory = (fileBase64: string) => {
     setHistory(prev => [...prev, fileBase64]);
@@ -182,6 +185,7 @@ export function AdminDashboard() {
     const project = await api.getProject(id);
     setSelectedProject(project);
     setRanges(project.editableRanges || {});
+    setDisabledRanges(project.disabledRanges || {});
     const projectEdits = await api.getEdits(id);
     setEdits(projectEdits);
 
@@ -262,9 +266,52 @@ export function AdminDashboard() {
         });
       }
 
+      setActiveEditors((prev) => {
+        const copy = { ...prev };
+        delete copy[`${payload.sheetName}!${payload.cell}`];
+        delete copy[payload.cell];
+        return copy;
+      });
+
       if (payload.userId !== user?.id) {
-        toast.info(`${payload.updatedBy} vừa cập nhật ô ${payload.cell} (${payload.sheetName})`);
+        toast.info(`${payload.updatedBy} vừa cập nhật ô ${payload.cell} (${payload.sheetName}): "${payload.newValue}"`);
       }
+    };
+
+    const handleCellFocused = (payload: any) => {
+      if (payload?.projectId !== selectedProject.id) return;
+      if (payload?.user?.id === user?.id) return;
+      const keyFull = `${payload.sheetName}!${payload.cell}`;
+      const keyShort = payload.cell;
+      setActiveEditors((prev) => ({
+        ...prev,
+        [keyFull]: {
+          userId: payload.user.id,
+          username: payload.user.username,
+          color: payload.user.color || "#6366f1",
+        },
+        ...(payload.sheetName === activeSheet
+          ? {
+              [keyShort]: {
+                userId: payload.user.id,
+                username: payload.user.username,
+                color: payload.user.color || "#6366f1",
+              },
+            }
+          : {}),
+      }));
+    };
+
+    const handleCellBlurred = (payload: any) => {
+      if (payload?.projectId !== selectedProject.id) return;
+      const keyFull = `${payload.sheetName}!${payload.cell}`;
+      const keyShort = payload.cell;
+      setActiveEditors((prev) => {
+        const next = { ...prev };
+        delete next[keyFull];
+        delete next[keyShort];
+        return next;
+      });
     };
 
     const handleRangesUpdated = (payload: any) => {
@@ -282,14 +329,41 @@ export function AdminDashboard() {
       }
     };
 
+    // UC04 - Tình huống 10: Đồng bộ realtime trạng thái vô hiệu hóa ô, dòng, cột
+    const handleRangeDisabled = (payload: any) => {
+      if (payload?.projectId !== selectedProject.id) return;
+      const newConfig = payload.disabledRanges || {};
+      setDisabledRanges(newConfig);
+      setSelectedProject((prev: any) => (prev ? { ...prev, disabledRanges: newConfig } : null));
+    };
+
+    const handleRangeEnabled = (payload: any) => {
+      if (payload?.projectId !== selectedProject.id) return;
+      const newConfig = payload.disabledRanges || {};
+      setDisabledRanges(newConfig);
+      setSelectedProject((prev: any) => (prev ? { ...prev, disabledRanges: newConfig } : null));
+    };
+
     s.on("cell.updated", handleCellUpdated);
+    s.on("cell_focused", handleCellFocused);
+    s.on("cell_blurred", handleCellBlurred);
     s.on("ranges.updated", handleRangesUpdated);
     s.on("status.updated", handleStatusUpdated);
+    s.on("range.disabled", handleRangeDisabled);
+    s.on("project:range:disabled", handleRangeDisabled);
+    s.on("range.enabled", handleRangeEnabled);
+    s.on("project:range:enabled", handleRangeEnabled);
 
     return () => {
       s.off("cell.updated", handleCellUpdated);
+      s.off("cell_focused", handleCellFocused);
+      s.off("cell_blurred", handleCellBlurred);
       s.off("ranges.updated", handleRangesUpdated);
       s.off("status.updated", handleStatusUpdated);
+      s.off("range.disabled", handleRangeDisabled);
+      s.off("project:range:disabled", handleRangeDisabled);
+      s.off("range.enabled", handleRangeEnabled);
+      s.off("project:range:enabled", handleRangeEnabled);
       leaveProjectRoom(selectedProject.id);
     };
   }, [selectedProject?.id, activeSheet, workbook, exceljsWorkbook, user?.id]);
@@ -601,6 +675,11 @@ export function AdminDashboard() {
       }
     }
 
+    // UC04 - Tình huống 10: Ngăn thao tác chèn dòng vào giữa bảng khi đã có dữ liệu chỉnh sửa
+    if (targetRowIndex < sheetData.length && edits.length > 0) {
+      toast.warning("Báo giá đã có dữ liệu chỉnh sửa! Để tránh làm dịch chuyển tọa độ các dòng của nhân viên, bạn nên thêm dòng ở cuối bảng tính hoặc sử dụng cơ chế Vô hiệu hóa dòng.", { duration: 6000 });
+    }
+
     pushToHistory(selectedProject.fileBase64);
 
     try {
@@ -659,82 +738,227 @@ export function AdminDashboard() {
     }
   };
 
-  const handleDeleteRow = async () => {
-    if (!workbook || !selectedProject) return;
-    if (sheetData.length === 0) {
-      toast.error("Bảng tính không có dòng nào để xóa!");
+  // UC04 - Tình huống 10: Vô hiệu hóa logic dòng (Logical Deletion - không làm dịch chuyển tọa độ dòng dưới)
+  const handleDisableRow = async () => {
+    if (!selectedProject || !activeSheet) return;
+    const inputVal = (rowInsertIndex || rowDeleteIndex).trim();
+    if (!inputVal) {
+      toast.error("Vui lòng nhập số dòng cần vô hiệu hóa!");
+      return;
+    }
+    const rowNum = parseInt(inputVal, 10);
+    if (isNaN(rowNum) || rowNum <= 0) {
+      toast.error("Số dòng không hợp lệ!");
       return;
     }
 
-    let targetRowIndex = sheetData.length - 1; // Default to delete last row
-    if (rowDeleteIndex.trim()) {
-      const idx = parseInt(rowDeleteIndex.trim(), 10) - 1;
-      if (!isNaN(idx) && idx >= 0 && idx < sheetData.length) {
-        targetRowIndex = idx;
-      } else {
-        toast.error("Vị trí dòng xóa không hợp lệ!");
-        return;
-      }
-    }
-
-    pushToHistory(selectedProject.fileBase64);
-
     try {
-      const newBase64 = await deleteRowWithExcelJS(selectedProject.fileBase64, activeSheet, targetRowIndex);
-      const { wb } = await updateWorkbookStateAndExcelJS(newBase64, edits);
-      setSheetData(getSheetData(wb, activeSheet));
-
-      await api.updateProjectFile(selectedProject.id, newBase64, wb.SheetNames);
-      toast.success(`Đã xóa dòng số ${targetRowIndex + 1} thành công`);
-      setRowDeleteIndex(""); // clear input
-
-      setSelectedProject((prev: any) => prev ? { ...prev, fileBase64: newBase64 } : null);
-    } catch (error) {
-      console.error(error);
-      toast.error("Xóa dòng thất bại!");
+      const res = await api.disableRange(selectedProject.id, {
+        sheetName: activeSheet,
+        type: "ROW",
+        target: rowNum,
+      });
+      setDisabledRanges(res.disabledRanges);
+      setSelectedProject((prev: any) => prev ? { ...prev, disabledRanges: res.disabledRanges } : null);
+      toast.success(`Đã vô hiệu hóa dòng ${rowNum} thành công (giữ nguyên tọa độ bảng tính)`);
+      setRowInsertIndex("");
+      setRowDeleteIndex("");
+    } catch (error: any) {
+      toast.error(error.message || "Vô hiệu hóa dòng thất bại!");
     }
   };
 
-  const handleDeleteColumn = async () => {
-    if (!workbook || !selectedProject) return;
-    const colCount = sheetData[0]?.length || 0;
-    if (colCount === 0) {
-      toast.error("Bảng tính không có cột nào để xóa!");
+  // UC04 - Tình huống 10: Khôi phục dòng đã bị vô hiệu hóa
+  const handleEnableRow = async () => {
+    if (!selectedProject || !activeSheet) return;
+    const inputVal = (rowInsertIndex || rowDeleteIndex).trim();
+    if (!inputVal) {
+      toast.error("Vui lòng nhập số dòng cần khôi phục!");
+      return;
+    }
+    const rowNum = parseInt(inputVal, 10);
+    if (isNaN(rowNum) || rowNum <= 0) {
+      toast.error("Số dòng không hợp lệ!");
       return;
     }
 
-    let targetColIndex = colCount - 1; // Default to last column
-    if (colDeleteIndex.trim()) {
-      const normalized = colDeleteIndex.trim().toUpperCase();
-      if (/^[A-Z]+$/.test(normalized)) {
-        targetColIndex = XLSX.utils.decode_col(normalized);
-      } else if (/^\d+$/.test(normalized)) {
-        targetColIndex = parseInt(normalized, 10) - 1;
-      }
+    try {
+      const res = await api.enableRange(selectedProject.id, {
+        sheetName: activeSheet,
+        type: "ROW",
+        target: rowNum,
+      });
+      setDisabledRanges(res.disabledRanges);
+      setSelectedProject((prev: any) => prev ? { ...prev, disabledRanges: res.disabledRanges } : null);
+      toast.success(`Đã khôi phục dòng ${rowNum} thành công!`);
+      setRowInsertIndex("");
+      setRowDeleteIndex("");
+    } catch (error: any) {
+      toast.error(error.message || "Khôi phục dòng thất bại!");
+    }
+  };
 
-      if (targetColIndex === undefined || isNaN(targetColIndex) || targetColIndex < 0 || targetColIndex >= colCount) {
-        toast.error("Vị trí cột xóa không hợp lệ!");
-        return;
-      }
+  // UC04 - Tình huống 10: Vô hiệu hóa logic cột (Logical Deletion - không làm dịch chuyển tọa độ cột phải)
+  const handleDisableColumn = async () => {
+    if (!selectedProject || !activeSheet) return;
+    const inputVal = (colInsertIndex || colDeleteIndex).trim().toUpperCase();
+    if (!inputVal) {
+      toast.error("Vui lòng nhập tên cột cần vô hiệu hóa (VD: C, D, H)!");
+      return;
     }
 
-    pushToHistory(selectedProject.fileBase64);
+    let colLetter = inputVal;
+    if (/^\d+$/.test(inputVal)) {
+      const colIdx = parseInt(inputVal, 10) - 1;
+      if (colIdx >= 0) colLetter = XLSX.utils.encode_col(colIdx);
+    }
 
     try {
-      const newBase64 = await deleteColWithExcelJS(selectedProject.fileBase64, activeSheet, targetColIndex);
-      const { wb } = await updateWorkbookStateAndExcelJS(newBase64, edits);
-      setSheetData(getSheetData(wb, activeSheet));
+      const res = await api.disableRange(selectedProject.id, {
+        sheetName: activeSheet,
+        type: "COLUMN",
+        target: colLetter,
+      });
+      setDisabledRanges(res.disabledRanges);
+      setSelectedProject((prev: any) => prev ? { ...prev, disabledRanges: res.disabledRanges } : null);
+      toast.success(`Đã vô hiệu hóa cột ${colLetter} thành công (giữ nguyên tọa độ bảng tính)`);
+      setColInsertIndex("");
+      setColDeleteIndex("");
+    } catch (error: any) {
+      toast.error(error.message || "Vô hiệu hóa cột thất bại!");
+    }
+  };
 
-      await api.updateProjectFile(selectedProject.id, newBase64, wb.SheetNames);
+  // UC04 - Tình huống 10: Khôi phục cột đã bị vô hiệu hóa
+  const handleEnableColumn = async () => {
+    if (!selectedProject || !activeSheet) return;
+    const inputVal = (colInsertIndex || colDeleteIndex).trim().toUpperCase();
+    if (!inputVal) {
+      toast.error("Vui lòng nhập tên cột cần khôi phục (VD: C, D, H)!");
+      return;
+    }
 
-      const posLabel = XLSX.utils.encode_col(targetColIndex);
-      toast.success(`Đã xóa cột ${posLabel} thành công`);
-      setColDeleteIndex(""); // clear input
+    let colLetter = inputVal;
+    if (/^\d+$/.test(inputVal)) {
+      const colIdx = parseInt(inputVal, 10) - 1;
+      if (colIdx >= 0) colLetter = XLSX.utils.encode_col(colIdx);
+    }
 
-      setSelectedProject((prev: any) => prev ? { ...prev, fileBase64: newBase64 } : null);
-    } catch (error) {
-      console.error(error);
-      toast.error("Xóa cột thất bại!");
+    try {
+      const res = await api.enableRange(selectedProject.id, {
+        sheetName: activeSheet,
+        type: "COLUMN",
+        target: colLetter,
+      });
+      setDisabledRanges(res.disabledRanges);
+      setSelectedProject((prev: any) => prev ? { ...prev, disabledRanges: res.disabledRanges } : null);
+      toast.success(`Đã khôi phục cột ${colLetter} thành công!`);
+      setColInsertIndex("");
+      setColDeleteIndex("");
+    } catch (error: any) {
+      toast.error(error.message || "Khôi phục cột thất bại!");
+    }
+  };
+
+  // UC04 - Tình huống 10: Vô hiệu hóa ô đang chọn
+  const handleDisableSelectedCell = async () => {
+    if (!selectedProject || !activeSheet) return;
+    const rangeToDisable = (() => {
+      if (!dragStart || !dragEnd) return "";
+      const r1 = Math.min(dragStart.r, dragEnd.r);
+      const r2 = Math.max(dragStart.r, dragEnd.r);
+      const c1 = Math.min(dragStart.c, dragEnd.c);
+      const c2 = Math.max(dragStart.c, dragEnd.c);
+      if (r1 === r2 && c1 === c2) return XLSX.utils.encode_cell({ r: r1, c: c1 });
+      return `${XLSX.utils.encode_cell({ r: r1, c: c1 })}:${XLSX.utils.encode_cell({ r: r2, c: c2 })}`;
+    })();
+
+    if (!rangeToDisable) {
+      toast.error("Vui lòng click chọn ô cần vô hiệu hóa trên bảng tính!");
+      return;
+    }
+
+    try {
+      let lastConfig = disabledRanges;
+      if (rangeToDisable.includes(":")) {
+        const [start, end] = rangeToDisable.split(":");
+        const s = XLSX.utils.decode_cell(start);
+        const e = XLSX.utils.decode_cell(end);
+        for (let r = s.r; r <= e.r; r++) {
+          for (let c = s.c; c <= e.c; c++) {
+            const cell = XLSX.utils.encode_cell({ r, c });
+            const res = await api.disableRange(selectedProject.id, {
+              sheetName: activeSheet,
+              type: "CELL",
+              target: cell,
+            });
+            lastConfig = res.disabledRanges;
+          }
+        }
+      } else {
+        const res = await api.disableRange(selectedProject.id, {
+          sheetName: activeSheet,
+          type: "CELL",
+          target: rangeToDisable,
+        });
+        lastConfig = res.disabledRanges;
+      }
+      setDisabledRanges(lastConfig);
+      setSelectedProject((prev: any) => prev ? { ...prev, disabledRanges: lastConfig } : null);
+      toast.success(`Đã vô hiệu hóa vùng/ô ${rangeToDisable} thành công!`);
+    } catch (error: any) {
+      toast.error(error.message || "Vô hiệu hóa ô thất bại!");
+    }
+  };
+
+  // UC04 - Tình huống 10: Khôi phục ô đang chọn
+  const handleEnableSelectedCell = async () => {
+    if (!selectedProject || !activeSheet) return;
+    const rangeToEnable = (() => {
+      if (!dragStart || !dragEnd) return "";
+      const r1 = Math.min(dragStart.r, dragEnd.r);
+      const r2 = Math.max(dragStart.r, dragEnd.r);
+      const c1 = Math.min(dragStart.c, dragEnd.c);
+      const c2 = Math.max(dragStart.c, dragEnd.c);
+      if (r1 === r2 && c1 === c2) return XLSX.utils.encode_cell({ r: r1, c: c1 });
+      return `${XLSX.utils.encode_cell({ r: r1, c: c1 })}:${XLSX.utils.encode_cell({ r: r2, c: c2 })}`;
+    })();
+
+    if (!rangeToEnable) {
+      toast.error("Vui lòng click chọn ô cần khôi phục trên bảng tính!");
+      return;
+    }
+
+    try {
+      let lastConfig = disabledRanges;
+      if (rangeToEnable.includes(":")) {
+        const [start, end] = rangeToEnable.split(":");
+        const s = XLSX.utils.decode_cell(start);
+        const e = XLSX.utils.decode_cell(end);
+        for (let r = s.r; r <= e.r; r++) {
+          for (let c = s.c; c <= e.c; c++) {
+            const cell = XLSX.utils.encode_cell({ r, c });
+            const res = await api.enableRange(selectedProject.id, {
+              sheetName: activeSheet,
+              type: "CELL",
+              target: cell,
+            });
+            lastConfig = res.disabledRanges;
+          }
+        }
+      } else {
+        const res = await api.enableRange(selectedProject.id, {
+          sheetName: activeSheet,
+          type: "CELL",
+          target: rangeToEnable,
+        });
+        lastConfig = res.disabledRanges;
+      }
+      setDisabledRanges(lastConfig);
+      setSelectedProject((prev: any) => prev ? { ...prev, disabledRanges: lastConfig } : null);
+      toast.success(`Đã khôi phục vùng/ô ${rangeToEnable} thành công!`);
+    } catch (error: any) {
+      toast.error(error.message || "Khôi phục ô thất bại!");
     }
   };
 
@@ -753,9 +977,55 @@ export function AdminDashboard() {
     try {
       if (exceljsWorkbook) {
         try {
+          // UC04 - Mục 10: Áp dụng định dạng vô hiệu hóa (nền xám) lên workbook ExcelJS khi xuất
+          if (disabledRanges && typeof disabledRanges === "object") {
+            for (const [sName, cfg] of Object.entries(disabledRanges as any)) {
+              const ws = exceljsWorkbook.getWorksheet(sName);
+              if (!ws) continue;
+              const config = cfg as any;
+              const disabledFill: any = {
+                type: 'pattern',
+                pattern: 'solid',
+                fgColor: { argb: 'FF64748B' } // Slate 500
+              };
+              if (Array.isArray(config.rows)) {
+                for (const rNum of config.rows) {
+                  try {
+                    const row = ws.getRow(Number(rNum));
+                    if (row) {
+                      row.eachCell({ includeEmpty: true }, (cell) => {
+                        cell.fill = disabledFill;
+                      });
+                    }
+                  } catch {}
+                }
+              }
+              if (Array.isArray(config.columns)) {
+                for (const colLetter of config.columns) {
+                  try {
+                    const col = ws.getColumn(String(colLetter));
+                    if (col) {
+                      col.eachCell({ includeEmpty: true }, (cell) => {
+                        cell.fill = disabledFill;
+                      });
+                    }
+                  } catch {}
+                }
+              }
+              if (Array.isArray(config.cells)) {
+                for (const cellRef of config.cells) {
+                  try {
+                    const c = ws.getCell(String(cellRef));
+                    if (c) c.fill = disabledFill;
+                  } catch {}
+                }
+              }
+            }
+          }
+
           const base64 = await workbookToBase64(exceljsWorkbook);
           downloadBase64File(base64, selectedProject.name?.replace(/\.xlsx$/i, "") || "baogia");
-          toast.success("Đã xuất tệp Excel (đã áp dụng các ô điền).");
+          toast.success("Đã xuất tệp Excel (đã áp dụng các ô điền và vô hiệu hóa).");
           return;
         } catch (ejErr) {
           console.warn("ExcelJS export failed, falling back to XLSX engine:", ejErr);
@@ -1022,14 +1292,27 @@ export function AdminDashboard() {
                           <div className="flex flex-col gap-1 border-r border-slate-200 pr-2 mr-1">
                             <div className="flex items-center gap-1">
                               <Input type="number" min="1" placeholder="Dòng..." value={rowInsertIndex} onChange={(e) => setRowInsertIndex(e.target.value)} className="w-16 h-6 text-[10px] py-0 bg-white" />
-                              <Button size="icon" variant="ghost" onClick={handleAddRow} className="h-6 w-6 text-indigo-600 hover:bg-indigo-50"><Plus className="w-3 h-3" /></Button>
-                              <Button size="icon" variant="ghost" onClick={handleDeleteRow} className="h-6 w-6 text-red-600 hover:bg-red-50"><Minus className="w-3 h-3" /></Button>
+                              <Button size="icon" variant="ghost" onClick={handleAddRow} title="Thêm dòng mới" className="h-6 w-6 text-indigo-600 hover:bg-indigo-50"><Plus className="w-3 h-3" /></Button>
+                              <Button size="icon" variant="ghost" onClick={handleDisableRow} title="Vô hiệu hóa dòng (giữ nguyên tọa độ)" className="h-6 w-6 text-slate-600 hover:text-red-600 hover:bg-red-50"><Minus className="w-3 h-3" /></Button>
+                              <Button size="icon" variant="ghost" onClick={handleEnableRow} title="Khôi phục dòng đã vô hiệu hóa" className="h-6 w-6 text-emerald-600 hover:bg-emerald-50"><RotateCcw className="w-3 h-3" /></Button>
                             </div>
                             <div className="flex items-center gap-1">
-                              <Input type="number" min="1" placeholder="Cột..." value={colInsertIndex} onChange={(e) => setColInsertIndex(e.target.value)} className="w-16 h-6 text-[10px] py-0 bg-white" />
-                              <Button size="icon" variant="ghost" onClick={handleAddColumn} className="h-6 w-6 text-indigo-600 hover:bg-indigo-50"><Plus className="w-3 h-3" /></Button>
-                              <Button size="icon" variant="ghost" onClick={handleDeleteColumn} className="h-6 w-6 text-red-600 hover:bg-red-50"><Minus className="w-3 h-3" /></Button>
+                              <Input type="text" placeholder="Cột..." value={colInsertIndex} onChange={(e) => setColInsertIndex(e.target.value)} className="w-16 h-6 text-[10px] py-0 bg-white" />
+                              <Button size="icon" variant="ghost" onClick={handleAddColumn} title="Thêm cột mới" className="h-6 w-6 text-indigo-600 hover:bg-indigo-50"><Plus className="w-3 h-3" /></Button>
+                              <Button size="icon" variant="ghost" onClick={handleDisableColumn} title="Vô hiệu hóa cột (giữ nguyên tọa độ)" className="h-6 w-6 text-slate-600 hover:text-red-600 hover:bg-red-50"><Minus className="w-3 h-3" /></Button>
+                              <Button size="icon" variant="ghost" onClick={handleEnableColumn} title="Khôi phục cột đã vô hiệu hóa" className="h-6 w-6 text-emerald-600 hover:bg-emerald-50"><RotateCcw className="w-3 h-3" /></Button>
                             </div>
+                          </div>
+
+                          <div className="flex flex-col gap-1 border-r border-slate-200 pr-2 mr-1">
+                            <Button size="sm" variant="ghost" onClick={handleDisableSelectedCell} title="Vô hiệu hóa ô đang chọn" className="h-6 text-[10px] px-1.5 text-slate-700 hover:text-red-600 hover:bg-red-50 flex items-center gap-1">
+                              <Minus className="w-3 h-3 text-red-500" />
+                              <span>Khóa ô</span>
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={handleEnableSelectedCell} title="Khôi phục ô đang chọn" className="h-6 text-[10px] px-1.5 text-slate-700 hover:text-emerald-600 hover:bg-emerald-50 flex items-center gap-1">
+                              <RotateCcw className="w-3 h-3 text-emerald-600" />
+                              <span>Mở ô</span>
+                            </Button>
                           </div>
                           
                           <Button variant="ghost" onClick={handleUndo} disabled={history.length === 0} className="h-14 w-14 flex flex-col gap-1 rounded-sm text-slate-600 hover:bg-purple-50 hover:text-purple-700">
@@ -1187,6 +1470,8 @@ export function AdminDashboard() {
                     return `${XLSX.utils.encode_cell({ r: r1, c: c1 })}:${XLSX.utils.encode_cell({ r: r2, c: c2 })}`;
                   })()}
                   previewLimit={previewLimit}
+                  disabledRanges={disabledRanges}
+                  activeEditors={activeEditors}
 
                   onColumnClick={handleColumnClick}
                   onRowClick={handleRowClick}

@@ -55,6 +55,7 @@ export type ProjectRow = {
   name: string;
   sheets: string;
   editable_ranges: string;
+  disabled_ranges: string;
   so_bao_gia: string;
   ten_khach_hang: string;
   nguoi_phu_trach_id: string | null;
@@ -469,6 +470,13 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    id: 7,
+    name: "projects.disabled_ranges: logical deletion of cells, rows, columns (UC04 T10)",
+    up: () => {
+      addColumnIfMissing("projects", "disabled_ranges", "TEXT NOT NULL DEFAULT '{}'");
+    },
+  },
 ];
 
 function runMigrations() {
@@ -570,6 +578,7 @@ export function projectToJson(p: ProjectRow, memberIds: string[] = [], stats?: P
     name: p.name,
     sheets: p.sheets ? JSON.parse(p.sheets) : [],
     editableRanges: p.editable_ranges ? JSON.parse(p.editable_ranges) : {},
+    disabledRanges: p.disabled_ranges ? JSON.parse(p.disabled_ranges) : {},
     soBaoGia: p.so_bao_gia,
     tenKhachHang: p.ten_khach_hang,
     nguoiPhuTrachId: p.nguoi_phu_trach_id,
@@ -812,5 +821,177 @@ export function userHasProjectOrEditReferences(userId: string): { hasReferences:
     return { hasReferences: true, reason: `Có dữ liệu lịch sử chỉnh sửa ô trong hệ thống` };
   }
   return { hasReferences: false };
+}
+
+/* ----------------- Logical Deletion / Range Deactivation (UC04 T10) ----------------- */
+
+export type DisabledRangesConfig = Record<
+  string,
+  {
+    cells?: string[];
+    rows?: number[];
+    columns?: string[];
+  }
+>;
+
+export function parseCellCoord(cell: string): { col: string; row: number } | null {
+  const match = cell.trim().toUpperCase().match(/^([A-Z]+)(\d+)$/);
+  if (!match) return null;
+  return {
+    col: match[1],
+    row: parseInt(match[2], 10),
+  };
+}
+
+export function isCellDisabled(
+  sheetName: string,
+  cell: string,
+  disabledRangesConfig: string | DisabledRangesConfig | null | undefined
+): boolean {
+  if (!disabledRangesConfig) return false;
+  let config: DisabledRangesConfig;
+  if (typeof disabledRangesConfig === "string") {
+    try {
+      config = JSON.parse(disabledRangesConfig);
+    } catch {
+      return false;
+    }
+  } else {
+    config = disabledRangesConfig;
+  }
+
+  const sheetConfig = config[sheetName];
+  if (!sheetConfig) return false;
+
+  const cleanCell = cell.trim().toUpperCase();
+
+  // 1. Kiểm tra trong danh sách ô riêng lẻ (cells)
+  if (sheetConfig.cells && sheetConfig.cells.map((c) => c.trim().toUpperCase()).includes(cleanCell)) {
+    return true;
+  }
+
+  const parsed = parseCellCoord(cleanCell);
+  if (!parsed) return false;
+
+  // 2. Kiểm tra trong danh sách dòng bị vô hiệu hóa (rows)
+  if (sheetConfig.rows && sheetConfig.rows.map(Number).includes(parsed.row)) {
+    return true;
+  }
+
+  // 3. Kiểm tra trong danh sách cột bị vô hiệu hóa (columns)
+  if (sheetConfig.columns && sheetConfig.columns.map((c) => c.trim().toUpperCase()).includes(parsed.col)) {
+    return true;
+  }
+
+  return false;
+}
+
+export function isRowDisabled(
+  sheetName: string,
+  rowNumber: number,
+  disabledRangesConfig: string | DisabledRangesConfig | null | undefined
+): boolean {
+  if (!disabledRangesConfig) return false;
+  let config: DisabledRangesConfig;
+  if (typeof disabledRangesConfig === "string") {
+    try {
+      config = JSON.parse(disabledRangesConfig);
+    } catch {
+      return false;
+    }
+  } else {
+    config = disabledRangesConfig;
+  }
+  const sheetConfig = config[sheetName];
+  if (!sheetConfig?.rows) return false;
+  return sheetConfig.rows.map(Number).includes(Number(rowNumber));
+}
+
+export function isColDisabled(
+  sheetName: string,
+  colLetter: string,
+  disabledRangesConfig: string | DisabledRangesConfig | null | undefined
+): boolean {
+  if (!disabledRangesConfig) return false;
+  let config: DisabledRangesConfig;
+  if (typeof disabledRangesConfig === "string") {
+    try {
+      config = JSON.parse(disabledRangesConfig);
+    } catch {
+      return false;
+    }
+  } else {
+    config = disabledRangesConfig;
+  }
+  const sheetConfig = config[sheetName];
+  if (!sheetConfig?.columns) return false;
+  return sheetConfig.columns.map((c) => c.trim().toUpperCase()).includes(colLetter.trim().toUpperCase());
+}
+
+export function updateProjectDisabledRange(
+  projectId: string,
+  sheetName: string,
+  action: "disable" | "enable",
+  type: "CELL" | "ROW" | "COLUMN",
+  target: string | number
+): DisabledRangesConfig {
+  const database = getDb();
+  let updatedConfig: DisabledRangesConfig = {};
+
+  database.transaction(() => {
+    const row = database.prepare("SELECT disabled_ranges FROM projects WHERE id = ?").get(projectId) as
+      | { disabled_ranges: string }
+      | undefined;
+    if (!row) throw new Error("Project not found");
+
+    try {
+      updatedConfig = JSON.parse(row.disabled_ranges || "{}");
+    } catch {
+      updatedConfig = {};
+    }
+
+    if (!updatedConfig[sheetName]) {
+      updatedConfig[sheetName] = { cells: [], rows: [], columns: [] };
+    }
+    const sc = updatedConfig[sheetName];
+    if (!sc.cells) sc.cells = [];
+    if (!sc.rows) sc.rows = [];
+    if (!sc.columns) sc.columns = [];
+
+    const normType = String(type).toUpperCase();
+    if (action === "disable") {
+      if (normType === "CELL") {
+        const c = String(target).trim().toUpperCase();
+        if (!sc.cells.includes(c)) sc.cells.push(c);
+      } else if (normType === "ROW") {
+        const r = Number(target);
+        if (!sc.rows.includes(r)) sc.rows.push(r);
+      } else if (normType === "COLUMN") {
+        const col = String(target).trim().toUpperCase();
+        if (!sc.columns.includes(col)) sc.columns.push(col);
+      }
+    } else {
+      // enable / khôi phục
+      if (normType === "CELL") {
+        const c = String(target).trim().toUpperCase();
+        sc.cells = sc.cells.filter((x) => x.toUpperCase() !== c);
+      } else if (normType === "ROW") {
+        const r = Number(target);
+        sc.rows = sc.rows.filter((x) => x !== r);
+      } else if (normType === "COLUMN") {
+        const col = String(target).trim().toUpperCase();
+        sc.columns = sc.columns.filter((x) => x.toUpperCase() !== col);
+      }
+    }
+
+    const ts = new Date().toISOString();
+    database.prepare("UPDATE projects SET disabled_ranges = ?, updated_at = ? WHERE id = ?").run(
+      JSON.stringify(updatedConfig),
+      ts,
+      projectId
+    );
+  })();
+
+  return updatedConfig;
 }
 
