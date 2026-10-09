@@ -8,8 +8,7 @@ import { TemplatesPage } from "./components/pages/TemplatesPage";
 import { UpdateProfile } from "./components/pages/UpdateProfile";
 import { ListHistFilePage } from "./components/pages/ListHistFilePage";
 
-import { AdminDashboard } from "./components/AdminDashboard";
-import { UserDashboard } from "./components/UserDashboard";
+import { HomePage } from "./components/pages/HomePage";
 
 export const ROUTES = {
   home: "/",
@@ -39,18 +38,14 @@ function LoadingScreen() {
   );
 }
 
-// Root route: Hiển thị Dashboard tổng quan ban đầu của hệ thống theo mục 7.1.2
+// Root route: Hiển thị Dashboard tổng quan ban đầu của hệ thống theo mục 7.1.2 (trong AppShell đồng bộ 100%)
 function RootRoute() {
   const { user, loading } = useAuth();
 
   if (loading) return <LoadingScreen />;
   if (!user) return <Login />;
 
-  if (user.role === "admin" || user.role === "manager") {
-    return <AdminDashboard />;
-  }
-
-  return <UserDashboard />;
+  return <HomePage />;
 }
 
 // Protected Route for Admin/Manager (UC01 Workspace)
