@@ -706,6 +706,7 @@ export function projectToJson(p: ProjectRow, memberIds: string[] = [], stats?: P
     disabledRanges: p.disabled_ranges ? JSON.parse(p.disabled_ranges) : {},
     soBaoGia: p.so_bao_gia,
     tenKhachHang: p.ten_khach_hang,
+    khachHang: p.ten_khach_hang,
     nguoiPhuTrachId: p.nguoi_phu_trach_id,
     memberIds,
     trangThai: normalizeTrangThai(p.trang_thai),
@@ -733,6 +734,7 @@ export function projectToJson(p: ProjectRow, memberIds: string[] = [], stats?: P
     isArchived: !!p.archived_at,
     createdAt: p.created_at,
     updatedAt: p.updated_at,
+    updated_at: p.updated_at,
     deletedAt: p.deleted_at,
     isDelete: p.isDelete === 1,
   };
@@ -782,13 +784,15 @@ export function getProjectsWithMembers(includeDeleted = false): {
   projects: ProjectRow[];
   membersByProjectId: Map<string, string[]>;
 } {
-  const deletedClause = includeDeleted ? "p.isDelete = 1" : "p.isDelete = 0";
+  const whereClause = includeDeleted
+    ? "p.isDelete = 1"
+    : "p.isDelete = 0 AND p.archived_at IS NULL";
   const rows = db
     .prepare(
       `SELECT p.*, pm.user_id AS member_user_id
        FROM projects p
        LEFT JOIN project_members pm ON pm.project_id = p.id
-      WHERE ${deletedClause}
+      WHERE ${whereClause}
       ORDER BY ${includeDeleted ? "p.deleted_at" : "p.updated_at"} DESC`
     )
     .all() as (ProjectRow & { member_user_id: string | null })[];

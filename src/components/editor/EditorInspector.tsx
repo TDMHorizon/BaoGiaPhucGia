@@ -229,35 +229,19 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
       if (onCellEdit) {
         // UC06: Đồng bộ giờ OT vào ô bảng tính (Nhân viên & Kế toán)
         if (cellMapping.otHoursCell) {
-          try {
-            await onCellEdit(targetSheet, cellMapping.otHoursCell.trim().toUpperCase(), otHours);
-          } catch (e: any) {
-            console.warn("[Inspector] onCellEdit otHoursCell:", e);
-          }
+          await onCellEdit(targetSheet, cellMapping.otHoursCell.trim().toUpperCase(), otHours);
         }
         if (cellMapping.otAmountCell) {
-          try {
-            await onCellEdit(targetSheet, cellMapping.otAmountCell.trim().toUpperCase(), totalOtCost);
-          } catch (e: any) {
-            console.warn("[Inspector] onCellEdit otAmountCell:", e);
-          }
+          await onCellEdit(targetSheet, cellMapping.otAmountCell.trim().toUpperCase(), totalOtCost);
         }
 
         // UC05: Đồng bộ các ô tài chính vào bảng tính (Kế toán & Admin)
         if (canEditFinancial) {
           if (cellMapping.vatRateCell) {
-            try {
-              await onCellEdit(targetSheet, cellMapping.vatRateCell.trim().toUpperCase(), vatRate);
-            } catch (e: any) {
-              console.warn("[Inspector] onCellEdit vatRateCell:", e);
-            }
+            await onCellEdit(targetSheet, cellMapping.vatRateCell.trim().toUpperCase(), vatRate);
           }
           if (cellMapping.discountCell) {
-            try {
-              await onCellEdit(targetSheet, cellMapping.discountCell.trim().toUpperCase(), discountAmount);
-            } catch (e: any) {
-              console.warn("[Inspector] onCellEdit discountCell:", e);
-            }
+            await onCellEdit(targetSheet, cellMapping.discountCell.trim().toUpperCase(), discountAmount);
           }
         }
       }
@@ -295,11 +279,15 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
       toast.success("Đã đồng bộ và lưu dữ liệu Tài chính & OT vào bảng tính thành công!");
     } catch (err: any) {
       if (err?.status === 409 || err?.message?.includes("409")) {
-        toast.error("Xung đột đồng thời (OCC): Dữ liệu tài chính vừa được cập nhật bởi người khác! Vui lòng làm mới dữ liệu.");
+        toast.error("Xung đột đồng thời (OCC): Dữ liệu vừa được cập nhật bởi người khác! Vui lòng làm mới dữ liệu.");
         onRefreshData?.();
         return;
       }
-      toast.error(err?.message || "Lỗi lưu dữ liệu tài chính/OT");
+      if (err?.status === 403 || err?.message?.includes("403")) {
+        toast.error(err?.data?.error || err?.message || "Bạn không có quyền chỉnh sửa ô tài chính này!");
+        return;
+      }
+      toast.error(err?.data?.error || err?.message || "Lỗi lưu dữ liệu tài chính/OT");
     } finally {
       setIsSavingFinance(false);
     }

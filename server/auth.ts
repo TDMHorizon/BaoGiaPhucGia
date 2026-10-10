@@ -193,7 +193,13 @@ export function checkCellPermission(
         reason: "Kế toán không có quyền chỉnh sửa số liệu khối lượng kỹ thuật (UC04/UC05).",
       };
     }
-    // Kế toán được phép sửa các ô tài chính (đơn giá, VAT, chiết khấu, phụ cấp)
+    // Nếu có cấu hình vùng tài chính finSheetRange, Kế toán chỉ được sửa trong vùng tài chính
+    if (finSheetRange && !isFinancialCell) {
+      return {
+        allowed: false,
+        reason: `Ô ${cell} trên sheet "${sheetName}" nằm ngoài phạm vi tài chính được cấu hình (${finSheetRange}).`,
+      };
+    }
     return { allowed: true };
   }
 
@@ -207,9 +213,13 @@ export function checkCellPermission(
   }
 
   // Tình huống 09 (UC05): Nhân viên kỹ thuật KHÔNG ĐƯỢC PHÉP sửa ô đơn giá, VAT, chiết khấu
+  const isOtHoursCell =
+    finCfg.cellMapping?.otHoursCell &&
+    (!finCfg.cellMapping?.sheetName || finCfg.cellMapping.sheetName === sheetName) &&
+    finCfg.cellMapping.otHoursCell.toUpperCase() === cell.toUpperCase();
+
   if (isFinancialCell) {
     // Ngoại lệ: Nếu ô này được ánh xạ cụ thể là ô số giờ OT (UC06) thì nhân viên được sửa
-    const isOtHoursCell = finCfg.cellMapping?.otHoursCell && finCfg.cellMapping.otHoursCell.toUpperCase() === cell.toUpperCase();
     if (!isOtHoursCell) {
       return {
         allowed: false,
@@ -233,7 +243,6 @@ export function checkCellPermission(
   // Nếu không có cấu hình riêng, kiểm tra theo editableRanges chung của project
   if (!techSheetRange || !isCellInRange(cell, techSheetRange)) {
     // Cho phép sửa nếu là ô số giờ OT đã được ánh xạ cho nhân viên
-    const isOtHoursCell = finCfg.cellMapping?.otHoursCell && finCfg.cellMapping.otHoursCell.toUpperCase() === cell.toUpperCase();
     if (isOtHoursCell) {
       return { allowed: true };
     }

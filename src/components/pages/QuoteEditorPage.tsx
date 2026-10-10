@@ -185,18 +185,87 @@ export const QuoteEditorPage: React.FC = () => {
       });
     };
 
+    const handleBatchUpdated = (payload: any) => {
+      if (payload.projectId !== projectId || !Array.isArray(payload.edits)) return;
+      const editsList = payload.edits;
+      setCellRevisions((prev) => {
+        const next = { ...prev };
+        for (const e of editsList) {
+          next[`${e.sheetName}!${e.cell}`] = e.revision;
+        }
+        return next;
+      });
+      setEdits((prev) => [...prev, ...editsList]);
+      if (workbook) {
+        applyEditsToWorkbook(workbook, editsList);
+        setSheetData(getSheetData(workbook, activeSheet));
+      }
+      if (exceljsWorkbook) {
+        for (const e of editsList) {
+          try {
+            const ws = exceljsWorkbook.getWorksheet(e.sheetName);
+            if (ws) updateMergedCellInExcelJS(ws, e.cell, e.newValue);
+          } catch {}
+        }
+      }
+    };
+
+    const handleStatusUpdated = (payload: any) => {
+      if (payload.projectId !== projectId) return;
+      const newStatus = payload.trangThai || payload.status;
+      setProject((prev: any) => (prev ? { ...prev, trangThai: newStatus } : prev));
+      toast.info(`Trạng thái báo giá đã chuyển sang: ${newStatus}`);
+    };
+
+    const handleProjectLocked = (payload: any) => {
+      if (payload.projectId !== projectId) return;
+      setProject((prev: any) => (prev ? { ...prev, isLocked: true } : prev));
+      toast.warning("Báo giá vừa bị khóa!");
+    };
+
+    const handleProjectRestored = (payload: any) => {
+      if (payload.projectId !== projectId) return;
+      toast.info("Báo giá vừa được khôi phục phiên bản! Đang tải lại dữ liệu...");
+      loadProjectData();
+    };
+
+    const handleMemberPermissionsUpdated = (payload: any) => {
+      if (payload.projectId !== projectId) return;
+      loadProjectData();
+    };
+
+    const handleMembershipRevoked = (payload: any) => {
+      if (payload.projectId !== projectId) return;
+      if (payload.userId === user?.id) {
+        toast.error("Bạn đã bị thu hồi quyền truy cập báo giá này!");
+        navigate("/quotes");
+      }
+    };
+
     socket.on("cell.updated", handleCellUpdated);
+    socket.on("cells.batch_updated", handleBatchUpdated);
     socket.on("range.disabled", handleRangeDisabled);
     socket.on("range.enabled", handleRangeEnabled);
     socket.on("project.updated", handleProjectUpdated);
+    socket.on("status.updated", handleStatusUpdated);
+    socket.on("project.locked", handleProjectLocked);
+    socket.on("project.restored", handleProjectRestored);
+    socket.on("member_permissions.updated", handleMemberPermissionsUpdated);
+    socket.on("project.membership_revoked", handleMembershipRevoked);
 
     return () => {
       socket.off("cell.updated", handleCellUpdated);
+      socket.off("cells.batch_updated", handleBatchUpdated);
       socket.off("range.disabled", handleRangeDisabled);
       socket.off("range.enabled", handleRangeEnabled);
       socket.off("project.updated", handleProjectUpdated);
+      socket.off("status.updated", handleStatusUpdated);
+      socket.off("project.locked", handleProjectLocked);
+      socket.off("project.restored", handleProjectRestored);
+      socket.off("member_permissions.updated", handleMemberPermissionsUpdated);
+      socket.off("project.membership_revoked", handleMembershipRevoked);
     };
-  }, [projectId, activeSheet, workbook, exceljsWorkbook]);
+  }, [projectId, activeSheet, workbook, exceljsWorkbook, loadProjectData, navigate, user]);
 
   // 3. Switch sheet
   const handleSheetChange = (sheetName: string) => {
@@ -257,7 +326,6 @@ export const QuoteEditorPage: React.FC = () => {
         const parsedHours = parseFloat(String(newValue));
         if (!isNaN(parsedHours) && parsedHours >= 0) {
           setProject((prev: any) => (prev ? { ...prev, otHours: parsedHours } : prev));
-          api.updateProject(projectId, { otHours: parsedHours }).catch(() => {});
         }
       }
     } catch (e: any) {
@@ -272,6 +340,7 @@ export const QuoteEditorPage: React.FC = () => {
         setSaveStatus("error");
         toast.error("Không thể lưu giá trị ô.");
       }
+      throw e;
     }
   };
 

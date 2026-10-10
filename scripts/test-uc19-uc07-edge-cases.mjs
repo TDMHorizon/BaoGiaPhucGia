@@ -75,7 +75,7 @@ async function main() {
   assert(uLoginRes.ok && uLoginRes.data?.token, "Nhân viên đăng nhập thất bại");
   const uLockedToken = uLoginRes.data.token;
 
-  const socketUser = ioClient(BASE, { transports: ["websocket"] });
+  const socketUser = ioClient(BASE, { auth: { token: uLockedToken }, transports: ["websocket"] });
   await new Promise((resolve) => socketUser.on("connect", resolve));
   socketUser.emit("identify_user", lockedUserId);
 
@@ -128,7 +128,7 @@ async function main() {
   assert(roleLoginRes.ok && roleLoginRes.data.role === "user", "Đăng nhập ban đầu không mang role user");
   const oldRoleToken = roleLoginRes.data.token;
 
-  const socketRoleUser = ioClient(BASE, { transports: ["websocket"] });
+  const socketRoleUser = ioClient(BASE, { auth: { token: oldRoleToken }, transports: ["websocket"] });
   await new Promise((resolve) => socketRoleUser.on("connect", resolve));
   socketRoleUser.emit("identify_user", roleUserId);
 
@@ -208,7 +208,7 @@ async function main() {
   // Nhân viên B đăng nhập và kết nối Socket
   const loginB = await api("/api/login", { method: "POST", body: { username: userB.username, password: "password123" } });
   const tokenB = loginB.data.token;
-  const socketB = ioClient(BASE, { transports: ["websocket"] });
+  const socketB = ioClient(BASE, { auth: { token: tokenB }, transports: ["websocket"] });
   await new Promise((resolve) => socketB.on("connect", resolve));
   socketB.emit("identify_user", userB.id);
   socketB.emit("join_project", prjId);
@@ -263,8 +263,8 @@ async function main() {
   const loginC = await api("/api/login", { method: "POST", body: { username: userC.username, password: "password123" } });
   const tokenC = loginC.data.token;
 
-  const socketA = ioClient(BASE, { transports: ["websocket"] });
-  const socketC = ioClient(BASE, { transports: ["websocket"] });
+  const socketA = ioClient(BASE, { auth: { token: tokenA }, transports: ["websocket"] });
+  const socketC = ioClient(BASE, { auth: { token: tokenC }, transports: ["websocket"] });
   await Promise.all([
     new Promise((resolve) => socketA.on("connect", resolve)),
     new Promise((resolve) => socketC.on("connect", resolve)),

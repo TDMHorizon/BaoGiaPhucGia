@@ -213,25 +213,52 @@ export async function getOfficialA4ExportBuffer(
 ): Promise<{ buffer: Buffer; fileName: string; version: number }> {
   let targetVersion = version;
 
-  // Nếu không chỉ định version, lấy từ finalized_snapshot_id
   if (!targetVersion) {
-    if (!project.finalized_snapshot_id) {
-      // Tìm version mới nhất đã được tạo
-      const latestVer = getDb()
-        .prepare("SELECT version FROM versions WHERE project_id = ? ORDER BY version DESC LIMIT 1")
+    if (project.finalized_snapshot_id) {
+      const vRow = getDb()
+        .prepare("SELECT version FROM versions WHERE id = ?")
+        .get(project.finalized_snapshot_id) as { version: number } | undefined;
+      targetVersion = vRow?.version;
+    }
+
+    if (!targetVersion) {
+      // Tìm snapshot gần nhất có quyết định APPROVED (P1-22)
+      const approvedDecision = getDb()
+        .prepare(
+          `SELECT v.version 
+           FROM approval_decisions a
+           JOIN versions v ON a.snapshot_id = v.id
+           WHERE a.project_id = ? AND a.decision = 'APPROVED'
+           ORDER BY a.created_at DESC LIMIT 1`
+        )
         .get(project.id) as { version: number } | undefined;
-      if (!latestVer) {
+
+      if (!approvedDecision) {
         throw new AppError(
           "Báo giá chưa có phiên bản nào được Admin phê duyệt (UC09). Không thể xuất bản chính thức.",
           400
         );
       }
-      targetVersion = latestVer.version;
-    } else {
-      const vRow = getDb()
-        .prepare("SELECT version FROM versions WHERE id = ?")
-        .get(project.finalized_snapshot_id) as { version: number } | undefined;
-      targetVersion = vRow?.version || 1;
+      targetVersion = approvedDecision.version;
+    }
+  } else {
+    // Nếu chỉ định version cụ thể, xác thực xem version đó đã được Admin phê duyệt chưa (P1-22)
+    const vRow = getDb()
+      .prepare("SELECT id FROM versions WHERE project_id = ? AND version = ?")
+      .get(project.id, targetVersion) as { id: string } | undefined;
+    if (!vRow) {
+      throw new AppError(`Không tìm thấy phiên bản v${targetVersion} của báo giá`, 404);
+    }
+    const isApproved = getDb()
+      .prepare(
+        "SELECT id FROM approval_decisions WHERE project_id = ? AND snapshot_id = ? AND decision = 'APPROVED'"
+      )
+      .get(project.id, vRow.id);
+    if (!isApproved && project.finalized_snapshot_id !== vRow.id) {
+      throw new AppError(
+        `Phiên bản v${targetVersion} chưa qua phê duyệt chính thức (UC09). Không thể xuất tệp chính thức.`,
+        422
+      );
     }
   }
 

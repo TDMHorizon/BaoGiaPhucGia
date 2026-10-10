@@ -7,9 +7,10 @@ import {
   type ProjectRow,
 } from "../db";
 import { AppError } from "../utils/AppError";
-import { readProjectFileBuffer, saveVersionSnapshot, sha256 } from "../files";
+import { deleteVersionSnapshot, readProjectFileBuffer, saveVersionSnapshot, sha256 } from "../files";
 import { buildFinalWorkbookBuffer } from "./excelService";
 import { getProjectFinancialReviewStatus } from "./financeReviewService";
+import { withProjectLock } from "./common";
 import type { AuthUser } from "../auth";
 
 export async function approveQuotation(
@@ -21,6 +22,9 @@ export async function approveQuotation(
     expectedFinanceRevision?: number;
   }
 ): Promise<{ decision: string; version: number; snapshotVersion: number; snapshotId: string; checksum: string }> {
+  return withProjectLock(project.id, async () => {
+    // 0. Đọc bản ghi mới nhất từ DB trong lock
+    const currentProject = (getDb().prepare("SELECT * FROM projects WHERE id = ?").get(project.id) as ProjectRow) || project;
   // Chỉ Quản trị viên (Admin) mới có quyền phê duyệt phát hành (UC09 - Actor: Minh)
   if (actor.role !== "admin") {
     throw new AppError("Chỉ Quản trị viên (Admin) mới có thẩm quyền phê duyệt phát hành báo giá (UC09)", 403);
@@ -108,67 +112,73 @@ export async function approveQuotation(
   const now = new Date().toISOString();
 
   // 3. Ghi file snapshot bất biến vào đĩa data/versions/{projectId}/v{N}.xlsx
-  await saveVersionSnapshot(project.id, nextVersion, finalWbBuf);
+  await saveVersionSnapshot(currentProject.id, nextVersion, finalWbBuf);
 
-  // 4. Transaction ghi nhận phiên bản, quyết định phê duyệt và khóa dự án
-  const database = getDb();
-  database.transaction(() => {
-    // Lưu vào versions
-    database
-      .prepare(
-        `INSERT INTO versions (
-          id, project_id, version, note, created_by, created_at,
-          source_revision, checksum, file_size, sent_by, sent_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
+  try {
+    // 4. Transaction ghi nhận phiên bản, quyết định phê duyệt và khóa dự án
+    const database = getDb();
+    database.transaction(() => {
+      // Lưu vào versions
+      database
+        .prepare(
+          `INSERT INTO versions (
+            id, project_id, version, note, created_by, created_at,
+            source_revision, checksum, file_size, sent_by, sent_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          snapshotId,
+          currentProject.id,
+          nextVersion,
+          payload.note || `Phê duyệt phát hành phiên bản v${nextVersion}`,
+          actor.username,
+          now,
+          currentProject.project_revision,
+          checksum,
+          fileSize,
+          null,
+          null
+        );
+
+      // Lưu vào approval_decisions
+      const decisionId = `appr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const decisionRow: ApprovalDecisionRow = {
+        id: decisionId,
+        project_id: currentProject.id,
+        review_id: reviewStatus.review!.id,
+        actor_id: actor.id,
+        actor_username: actor.username,
+        decision: "APPROVED",
+        note: payload.note || "",
+        project_revision: currentProject.project_revision,
+        finance_revision: currentProject.finance_revision ?? 1,
+        snapshot_id: snapshotId,
+        created_at: now,
+      };
+      insertApprovalDecision(decisionRow);
+
+      // Cập nhật projects: gắn finalized_snapshot_id và chuyển sang da_gui
+      database
+        .prepare(
+          `UPDATE projects 
+           SET finalized_snapshot_id = ?, trang_thai = 'da_gui', updated_at = ?, project_revision = project_revision + 1 
+           WHERE id = ?`
+        )
+        .run(snapshotId, now, currentProject.id);
+
+      // Ghi nhận project_events
+      recordProjectEvent(currentProject.id, "ADMIN_APPROVED", actor.id, actor.username, {
+        version: nextVersion,
         snapshotId,
-        project.id,
-        nextVersion,
-        payload.note || `Phê duyệt phát hành phiên bản v${nextVersion}`,
-        actor.username,
-        now,
-        project.project_revision,
         checksum,
-        fileSize,
-        null,
-        null
-      );
-
-    // Lưu vào approval_decisions
-    const decisionId = `appr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    const decisionRow: ApprovalDecisionRow = {
-      id: decisionId,
-      project_id: project.id,
-      review_id: reviewStatus.review!.id,
-      actor_id: actor.id,
-      actor_username: actor.username,
-      decision: "APPROVED",
-      note: payload.note || "",
-      project_revision: project.project_revision,
-      finance_revision: project.finance_revision ?? 1,
-      snapshot_id: snapshotId,
-      created_at: now,
-    };
-    insertApprovalDecision(decisionRow);
-
-    // Cập nhật projects: gắn finalized_snapshot_id và chuyển sang da_gui
-    database
-      .prepare(
-        `UPDATE projects 
-         SET finalized_snapshot_id = ?, trang_thai = 'da_gui', updated_at = ?, project_revision = project_revision + 1 
-         WHERE id = ?`
-      )
-      .run(snapshotId, now, project.id);
-
-    // Ghi nhận project_events
-    recordProjectEvent(project.id, "ADMIN_APPROVED", actor.id, actor.username, {
-      version: nextVersion,
-      snapshotId,
-      checksum,
-      note: payload.note || "",
-    });
-  })();
+        note: payload.note || "",
+      });
+    })();
+  } catch (dbErr: any) {
+    // Nếu ghi DB thất bại, dọn dẹp file snapshot vật lý để tránh file mồ côi (P1-14)
+    await deleteVersionSnapshot(currentProject.id, nextVersion);
+    throw dbErr;
+  }
 
   return {
     decision: "APPROVED",
@@ -177,6 +187,7 @@ export async function approveQuotation(
     snapshotId,
     checksum,
   };
+  });
 }
 
 export async function rejectQuotation(

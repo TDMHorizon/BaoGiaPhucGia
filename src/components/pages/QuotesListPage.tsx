@@ -162,7 +162,7 @@ export const QuotesListPage: React.FC = () => {
       !searchQuery ||
       p.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       p.soBaoGia?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.khachHang?.toLowerCase().includes(searchQuery.toLowerCase());
+      (p.tenKhachHang || p.khachHang)?.toLowerCase().includes(searchQuery.toLowerCase());
     const matchStatus = !statusFilter || p.trangThai === statusFilter;
     return matchSearch && matchStatus;
   });
@@ -249,7 +249,7 @@ export const QuotesListPage: React.FC = () => {
                     </span>
                     <span className="text-slate-400 flex items-center gap-1">
                       <FiClock className="h-3 w-3" />
-                      {p.updated_at ? new Date(p.updated_at).toLocaleDateString("vi-VN") : "—"}
+                      {(p.updatedAt || p.updated_at) ? new Date(p.updatedAt || p.updated_at).toLocaleDateString("vi-VN") : "—"}
                     </span>
                   </div>
 
@@ -259,10 +259,10 @@ export const QuotesListPage: React.FC = () => {
                   </h3>
 
                   {/* Client */}
-                  {p.khachHang && (
+                  {(p.tenKhachHang || p.khachHang) && (
                     <p className="mt-1.5 text-xs text-slate-500 truncate flex items-center gap-1.5">
                       <RiBuilding4Line className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-                      <span>{p.khachHang}</span>
+                      <span>{p.tenKhachHang || p.khachHang}</span>
                     </p>
                   )}
 

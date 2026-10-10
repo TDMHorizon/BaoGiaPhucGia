@@ -60,7 +60,7 @@ import {
   deleteProjectFiles,
   toDataUrl,
 } from "./server/files";
-import { buildFinalWorkbookBuffer, loadWorkbookFromBuffer } from "./server/services/excelService";
+import { buildFinalWorkbookBuffer, loadWorkbookFromBuffer, validateXlsxUpload } from "./server/services/excelService";
 import { applyDraftWatermarkToWorkbook } from "./src/lib/exceljs-helper";
 import * as XLSX from "xlsx";
 import {
@@ -567,6 +567,18 @@ async function startServer() {
 
     if (!name || !actualFile) return res.status(400).json({ error: "Missing name or file" });
 
+    // [P1-29] Validate file Excel tải lên và trích xuất danh sách sheet thực từ workbook
+    try {
+      const validated = await validateXlsxUpload(actualFile);
+      if (Array.isArray(validated.sheetNames) && validated.sheetNames.length > 0) {
+        actualSheets = validated.sheetNames;
+      }
+    } catch (valErr: any) {
+      if (mode !== "blank") {
+        return res.status(valErr?.status || 400).json({ error: valErr?.message || "File Excel không hợp lệ" });
+      }
+    }
+
     const id = newId();
     const ts = now();
     const ownerId = (user.role === "admin" || user.role === "manager") ? nguoiPhuTrachId || null : user.id;
@@ -592,7 +604,12 @@ async function startServer() {
       );
 
     if (members.length) setProjectMembers(id, members);
-    await saveProjectFile(id, actualFile);
+    try {
+      await saveProjectFile(id, actualFile);
+    } catch (saveErr: any) {
+      hardDeleteProject(id);
+      throw saveErr;
+    }
 
     const project = loadProject(id)!;
     res.json(await projectWithFile(project));
@@ -833,6 +850,8 @@ async function startServer() {
           },
         },
       });
+      // Đánh dấu kết quả thẩm định cũ là stale khi có điều chỉnh tài chính (P1-26)
+      getDb().prepare("UPDATE financial_reviews SET is_stale = 1 WHERE project_id = ?").run(project.id);
     }
 
     // [P1-12] Realtime Socket phát đầy đủ thông tin tài chính kèm financeRevision
@@ -1000,6 +1019,11 @@ async function startServer() {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
 
+    // [P1-16] Kiểm tra khóa dự án trước khi cấu hình lại vùng
+    if (req.user!.role !== "admin" && isProjectMutationLocked(project)) {
+      return res.status(403).json({ error: "Báo giá đang bị khóa, không thể cấu hình lại vùng nhập liệu." });
+    }
+
     const updatedRanges = req.body.editableRanges || {};
     getDb()
         .prepare("UPDATE projects SET editable_ranges = ?, updated_at = ? WHERE id = ?")
@@ -1019,17 +1043,30 @@ async function startServer() {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
 
+    // [P1-16] Kiểm tra khóa dự án
+    if (req.user!.role !== "admin" && isProjectMutationLocked(project)) {
+      return res.status(403).json({ error: "Báo giá đang bị khóa, không thể thay đổi tệp nền." });
+    }
+
+    // [P1-17] Chỉ cho phép thay đổi file nền khi ở trạng thái nhap và chưa có edit nào (editCount = 0)
+    const editCountRow = getDb().prepare("SELECT COUNT(*) AS c FROM edits WHERE project_id = ?").get(project.id) as { c: number };
+    const editCount = editCountRow?.c || 0;
+    if (project.trang_thai !== "nhap" || editCount > 0) {
+      return res.status(409).json({
+        error: "Chỉ được phép thay đổi tệp Excel nền khi báo giá ở trạng thái Mới giao (nháp) và chưa có lượt chỉnh sửa nào (editCount = 0).",
+      });
+    }
+
     const { fileBase64, sheets } = req.body || {};
     if (!fileBase64) return res.status(400).json({ error: "Missing file" });
 
+    const validated = await validateXlsxUpload(fileBase64);
     await saveProjectFile(project.id, fileBase64);
-    if (sheets) {
-      getDb()
-        .prepare("UPDATE projects SET sheets = ?, project_revision = project_revision + 1, updated_at = ? WHERE id = ?")
-        .run(JSON.stringify(sheets), now(), project.id);
-    } else {
-      getDb().prepare("UPDATE projects SET project_revision = project_revision + 1, updated_at = ? WHERE id = ?").run(now(), project.id);
-    }
+    const newSheets = Array.isArray(sheets) && sheets.length > 0 ? sheets : validated.sheetNames;
+
+    getDb()
+      .prepare("UPDATE projects SET sheets = ?, project_revision = project_revision + 1, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(newSheets), now(), project.id);
 
     io.to(`project:${project.id}`).emit("structure.updated", {
       projectId: project.id,
@@ -1109,6 +1146,9 @@ async function startServer() {
   app.put("/api/projects/:id/member-permissions", authMiddleware, requireAdminOrManager, (req, res) => {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
+    if (req.user!.role !== "admin" && isProjectMutationLocked(project)) {
+      return res.status(403).json({ error: "Báo giá đã bị khóa, không thể thay đổi phân quyền thành viên." });
+    }
     const permissions = Array.isArray(req.body.permissions) ? req.body.permissions : [];
     setProjectMemberPermissions(project.id, permissions);
 
@@ -1431,6 +1471,9 @@ async function startServer() {
     const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
+    if (user.role !== "admin" && isProjectMutationLocked(project)) {
+      return res.status(403).json({ error: "Báo giá đã bị khóa, không thể thay đổi cấu hình vùng." });
+    }
 
     const { sheetName, type, target } = req.body || {};
     if (!sheetName || !type || target === undefined || target === null) {
@@ -1476,6 +1519,9 @@ async function startServer() {
     const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
+    if (user.role !== "admin" && isProjectMutationLocked(project)) {
+      return res.status(403).json({ error: "Báo giá đã bị khóa, không thể thay đổi cấu hình vùng." });
+    }
 
     const { sheetName, type, target } = req.body || {};
     if (!sheetName || !type || target === undefined || target === null) {
@@ -1515,6 +1561,32 @@ async function startServer() {
       res.status(500).json({ error: err.message || "Lỗi khôi phục vùng vô hiệu hóa" });
     }
   });
+
+  // [P1-19 & P1-20] Hàm tiện ích đồng bộ ô ánh xạ Giờ làm thêm (OT) vào bảng dự án nguyên tử
+  function syncMappedOtIfMatching(
+    project: any,
+    sheetName: string,
+    cell: string,
+    val: string,
+    timestamp: string
+  ): { updated: boolean; otHours?: number } {
+    try {
+      const finCfg = JSON.parse(project.financial_config || "{}");
+      const mapping = finCfg.cellMapping;
+      if (mapping && mapping.otHoursCell && mapping.otHoursCell.trim().toUpperCase() === cell.trim().toUpperCase()) {
+        if (!mapping.sheetName || mapping.sheetName.trim().toLowerCase() === sheetName.trim().toLowerCase()) {
+          const parsedH = parseFloat(val);
+          if (!isNaN(parsedH) && parsedH >= 0) {
+            getDb()
+              .prepare("UPDATE projects SET ot_hours = ?, finance_revision = finance_revision + 1, updated_at = ? WHERE id = ?")
+              .run(parsedH, timestamp, project.id);
+            return { updated: true, otHours: parsedH };
+          }
+        }
+      }
+    } catch {}
+    return { updated: false };
+  }
 
   // Edits - Dùng chung Edit Service cho Admin, Manager và Employee (Chương 8, 12, 13, 15, 16, 21, 22)
   app.post("/api/projects/:id/edits", authMiddleware, (req, res) => {
@@ -1571,6 +1643,8 @@ async function startServer() {
     const oldVal = currentCell ? currentCell.value : (req.body.oldValue ? String(req.body.oldValue) : "");
 
     let nextSeq = 1;
+    let otSyncResult = { updated: false } as { updated: boolean; otHours?: number };
+
     getDb().transaction(() => {
       const maxSeqRow = getDb().prepare("SELECT COALESCE(MAX(sequence), 0) AS m FROM edits WHERE project_id = ?").get(project.id) as { m: number };
       nextSeq = maxSeqRow.m + 1;
@@ -1598,17 +1672,8 @@ async function startServer() {
 
       getDb().prepare("UPDATE projects SET project_revision = project_revision + 1, updated_at = ? WHERE id = ?").run(timestamp, project.id);
 
-      // [P0-01 & UC06] Đồng bộ hai chiều nếu ô chỉnh sửa là ô ánh xạ Giờ OT
-      try {
-        const finCfg = JSON.parse(project.financial_config || "{}");
-        const mapping = finCfg.cellMapping;
-        if (mapping && mapping.otHoursCell && mapping.otHoursCell.toUpperCase() === cell.toUpperCase()) {
-          const parsedH = parseFloat(val);
-          if (!isNaN(parsedH) && parsedH >= 0) {
-            getDb().prepare("UPDATE projects SET ot_hours = ?, updated_at = ? WHERE id = ?").run(parsedH, timestamp, project.id);
-          }
-        }
-      } catch {}
+      // [P0-01, P1-19 & UC06] Đồng bộ hai chiều nếu ô chỉnh sửa là ô ánh xạ Giờ OT
+      otSyncResult = syncMappedOtIfMatching(project, sheetName, cell, val, timestamp);
     })();
 
     // 4. Realtime Broadcast tới Room Project sau khi COMMIT thành công (Chương 21 & 22)
@@ -1624,6 +1689,14 @@ async function startServer() {
       userId: user.id,
       timestamp,
     });
+
+    if (otSyncResult.updated) {
+      io.to(`project:${project.id}`).emit("project.updated", {
+        projectId: project.id,
+        otHours: otSyncResult.otHours,
+        financeRevision: (Number(project.finance_revision) || 1) + 1,
+      });
+    }
 
     res.json({
       id,
@@ -1703,6 +1776,7 @@ async function startServer() {
     const timestamp = now();
     const results: any[] = [];
     let nextSeq = 1;
+    let lastOtSync: { updated: boolean; otHours?: number } = { updated: false };
 
     getDb().transaction(() => {
       const maxSeqRow = getDb().prepare("SELECT COALESCE(MAX(sequence), 0) AS m FROM edits WHERE project_id = ?").get(project.id) as { m: number };
@@ -1734,6 +1808,11 @@ async function startServer() {
         insertEdit.run(editId, project.id, user.id, user.username, item.sheetName, item.cell, oldVal, val, nextSeq, timestamp);
         upsertCell.run(project.id, item.sheetName, item.cell, val, nextRev, user.username, timestamp);
 
+        const otSync = syncMappedOtIfMatching(project, item.sheetName, item.cell, val, timestamp);
+        if (otSync.updated) {
+          lastOtSync = otSync;
+        }
+
         results.push({
           id: editId,
           projectId: project.id,
@@ -1760,6 +1839,15 @@ async function startServer() {
       userId: user.id,
       timestamp,
     });
+
+    if (lastOtSync.updated) {
+      const refreshedProj = loadProject(project.id);
+      io.to(`project:${project.id}`).emit("project.updated", {
+        projectId: project.id,
+        otHours: lastOtSync.otHours,
+        financeRevision: refreshedProj?.finance_revision ?? (Number(project.finance_revision) || 1) + 1,
+      });
+    }
 
     res.json({ ok: true, count: results.length, edits: results });
   });
