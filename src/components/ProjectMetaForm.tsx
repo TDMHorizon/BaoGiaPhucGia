@@ -3,7 +3,9 @@ import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Button } from "./ui/button";
 import { api } from "../lib/api";
+import { useAuth } from "../lib/auth";
 import { toast } from "sonner";
+import { MemberPermissionsModal } from "./MemberPermissionsModal";
 
 type Props = {
   project: any;
@@ -12,6 +14,8 @@ type Props = {
 };
 
 export function ProjectMetaForm({ project, onUpdated, onDeleted }: Props) {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [name, setName] = useState(project.name || "");
   const [soBaoGia, setSoBaoGia] = useState(project.soBaoGia || "");
   const [tenKhachHang, setTenKhachHang] = useState(project.tenKhachHang || "");
@@ -35,20 +39,33 @@ export function ProjectMetaForm({ project, onUpdated, onDeleted }: Props) {
   }, []);
 
   const toggleMember = (id: string) => {
+    if (!isAdmin) {
+      toast.error("Chỉ Quản trị viên (Admin) mới có quyền thay đổi phân công nhân sự.");
+      return;
+    }
     setMemberIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      const updated = await api.updateProject(project.id, {
+      let updated = await api.updateProject(project.id, {
         name: name.trim(),
         soBaoGia: soBaoGia.trim(),
         tenKhachHang: tenKhachHang.trim(),
         ghiChu: ghiChu.trim(),
         nguoiPhuTrachId: nguoiPhuTrachId || null,
-        memberIds,
       });
+
+      // UC07: Admin phân công nhiều người làm qua route chuyên biệt PUT /api/projects/:id/members
+      if (isAdmin) {
+        await api.updateProjectMembers(project.id, {
+          memberIds,
+          nguoiPhuTrachId: nguoiPhuTrachId || null,
+        });
+        updated = { ...updated, memberIds, nguoiPhuTrachId: nguoiPhuTrachId || null };
+      }
+
       onUpdated(updated);
       toast.success("Đã lưu thông tin báo giá");
     } catch (e: any) {
@@ -103,12 +120,24 @@ export function ProjectMetaForm({ project, onUpdated, onDeleted }: Props) {
           <Input value={ghiChu} onChange={(e) => setGhiChu(e.target.value)} className="h-8 text-xs" />
         </div>
         <div className="space-y-1 md:col-span-2">
-          <Label className="text-xs">Thành viên được gán</Label>
+          <div className="flex items-center justify-between">
+            <Label className="text-xs">
+              Thành viên được gán (UC07) {!isAdmin && <span className="text-[10px] text-amber-600 font-normal">(Chỉ Quản trị viên mới được đổi phân công)</span>}
+            </Label>
+            {memberIds.length > 0 && isAdmin && (
+              <MemberPermissionsModal
+                projectId={project.id}
+                sheets={project.sheets || []}
+                members={users.filter((u) => memberIds.includes(u.id))}
+              />
+            )}
+          </div>
           <div className="flex flex-wrap gap-2">
             {users.map((u) => (
-              <label key={u.id} className="flex items-center gap-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md px-2 py-1 cursor-pointer">
+              <label key={u.id} className={`flex items-center gap-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md px-2 py-1 ${isAdmin ? "cursor-pointer" : "cursor-not-allowed opacity-75"}`}>
                 <input
                   type="checkbox"
+                  disabled={!isAdmin}
                   checked={memberIds.includes(u.id)}
                   onChange={() => toggleMember(u.id)}
                 />

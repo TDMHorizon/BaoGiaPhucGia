@@ -1,64 +1,205 @@
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import type { Request, Response, NextFunction } from "express";
-import { getDb, publicUser, type UserRow } from "./db";
+import { getDb, publicUser, recordAuditLog, getMemberCustomRanges, toPermProject, type UserRow, type ProjectRow } from "./db";
+import { getJwtSecret } from "./config";
+import { canManageQuotation, canManageUsers, canEditProjectCells } from "../src/lib/permissions";
+import { isCellInRange } from "../src/lib/editableRange";
 
-const JWT_SECRET = process.env.JWT_SECRET || "baogia-phucgia-dev-secret-change-me";
 const TOKEN_TTL = "7d";
 
-export type AuthUser = { id: string; username: string; role: "admin" | "manager" | "user" };
+export type AuthUser = {
+  id: string;
+  username: string;
+  role: "admin" | "manager" | "user";
+  tokenVersion: number;
+  fullName?: string;
+  email?: string;
+  active?: boolean;
+};
 
 export function signToken(user: AuthUser): string {
-  return jwt.sign(user, JWT_SECRET, { expiresIn: TOKEN_TTL });
+  return jwt.sign(
+    {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      tokenVersion: user.tokenVersion || 1,
+    },
+    getJwtSecret(),
+    { expiresIn: TOKEN_TTL }
+  );
 }
 
-export function verifyToken(token: string): AuthUser | null {
+export function verifyToken(token: string): (AuthUser & { tokenVersion: number }) | null {
   try {
-    return jwt.verify(token, JWT_SECRET) as AuthUser;
+    return jwt.verify(token, getJwtSecret()) as AuthUser & { tokenVersion: number };
   } catch {
     return null;
   }
 }
 
-export function authenticateUser(username: string, password: string): AuthUser | null {
+export function decodeTokenIgnoreExpiry(token: string): (AuthUser & { tokenVersion: number }) | null {
+  try {
+    const payload = jwt.decode(token) as (AuthUser & { tokenVersion: number }) | null;
+    return payload && payload.id ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Hash giả để thời gian xử lý khi sai username ≈ khi sai password (chống timing attack). */
+const DUMMY_HASH = bcrypt.hashSync("dummy-password-for-timing", 10);
+
+export function authenticateUser(
+  username: string,
+  password: string,
+  reqInfo?: { ip?: string; userAgent?: string }
+): AuthUser | null {
   const db = getDb();
-  const trimmed = (username || "").trim();
-  const row = db.prepare("SELECT * FROM users WHERE LOWER(username) = LOWER(?)").get(trimmed) as UserRow | undefined;
-  if (!row || !row.active) return null;
-  if (!bcrypt.compareSync(password, row.password_hash)) return null;
-  return { id: row.id, username: row.username, role: row.role };
+  const cleanUsername = String(username || "").trim();
+  const row = db.prepare("SELECT * FROM users WHERE username = ?").get(cleanUsername) as UserRow | undefined;
+  if (!row) {
+    bcrypt.compareSync(String(password ?? ""), DUMMY_HASH);
+    recordAuditLog({
+      action: "AUTH_LOGIN_FAILED",
+      resource: "users",
+      username: cleanUsername,
+      ipAddress: reqInfo?.ip,
+      userAgent: reqInfo?.userAgent,
+      detail: { reason: "User not found" },
+    });
+    return null;
+  }
+  if (!bcrypt.compareSync(String(password ?? ""), row.password_hash)) {
+    recordAuditLog({
+      action: "AUTH_LOGIN_FAILED",
+      resource: "users",
+      userId: row.id,
+      username: row.username,
+      ipAddress: reqInfo?.ip,
+      userAgent: reqInfo?.userAgent,
+      detail: { reason: "Incorrect password" },
+    });
+    return null;
+  }
+  if (!row.active) {
+    recordAuditLog({
+      action: "AUTH_LOGIN_BLOCKED",
+      resource: "users",
+      userId: row.id,
+      username: row.username,
+      ipAddress: reqInfo?.ip,
+      userAgent: reqInfo?.userAgent,
+      detail: { reason: "User inactive" },
+    });
+    return null;
+  }
+
+  recordAuditLog({
+    action: "AUTH_LOGIN_SUCCESS",
+    resource: "users",
+    userId: row.id,
+    username: row.username,
+    ipAddress: reqInfo?.ip,
+    userAgent: reqInfo?.userAgent,
+    detail: { role: row.role },
+  });
+
+  return publicUser(row) as AuthUser;
 }
 
 export function authMiddleware(req: Request, res: Response, next: NextFunction) {
   const header = req.headers.authorization;
   if (!header?.startsWith("Bearer ")) {
-    return res.status(401).json({ error: "Unauthorized" });
+    return res.status(401).json({ error: "Unauthorized: Vui lòng đăng nhập" });
   }
-  const user = verifyToken(header.slice(7));
-  if (!user) return res.status(401).json({ error: "Invalid token" });
+  const decoded = verifyToken(header.slice(7));
+  if (!decoded) {
+    return res.status(401).json({ error: "Phiên làm việc không hợp lệ hoặc đã hết hạn" });
+  }
 
+  // Luôn đọc lại user và kiểm tra token_version từ DB:
+  // Đổi quyền, đổi mật khẩu hoặc khoá tài khoản sẽ có hiệu lực ngay lập tức!
   const db = getDb();
-  const row = db.prepare("SELECT * FROM users WHERE id = ?").get(user.id) as UserRow | undefined;
-  if (!row || !row.active) return res.status(401).json({ error: "User inactive" });
+  const row = db.prepare("SELECT * FROM users WHERE id = ?").get(decoded.id) as UserRow | undefined;
+  if (!row || !row.active) {
+    return res.status(401).json({ error: "Tài khoản của bạn đã bị khóa hoặc vô hiệu hoá. Vui lòng liên hệ Admin để xử lý!", code: "ACCOUNT_LOCKED" });
+  }
+
+  if (row.token_version !== decoded.tokenVersion) {
+    return res.status(401).json({ error: "Phiên làm việc đã bị thu hồi hoặc mật khẩu đã đổi. Vui lòng đăng nhập lại.", code: "TOKEN_REVOKED" });
+  }
 
   req.user = publicUser(row) as AuthUser;
   next();
 }
 
+/** Chỉ Admin: quản trị tài khoản hệ thống. */
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   const user = req.user;
-  if (!user || user.role !== "admin") {
-    return res.status(403).json({ error: "Admin only" });
+  if (!user || !canManageUsers(user.role)) {
+    return res.status(403).json({ error: "Quyền truy cập bị từ chối: Chỉ Quản trị viên (Admin) mới có quyền này." });
   }
   next();
 }
 
+/** Admin hoặc Manager: quản lý nghiệp vụ báo giá. */
 export function requireAdminOrManager(req: Request, res: Response, next: NextFunction) {
   const user = req.user;
-  if (!user || (user.role !== "admin" && user.role !== "manager")) {
-    return res.status(403).json({ error: "Admin or Manager only" });
+  if (!user || !canManageQuotation(user.role)) {
+    return res.status(403).json({ error: "Quyền truy cập bị từ chối: Chỉ Admin hoặc Quản lý (Manager) mới có quyền này." });
   }
   next();
+}
+
+/**
+ * Kiểm tra quyền chỉnh sửa ô (Default Deny - Phân quyền chặt chẽ cấp Backend).
+ * Chống triệt để việc nhân viên dùng Postman bắn request sửa ô ngoài phạm vi cho phép.
+ */
+export function checkCellPermission(
+  user: AuthUser,
+  project: ProjectRow,
+  sheetName: string,
+  cell: string
+): { allowed: boolean; reason?: string } {
+  // Admin và Manager có toàn quyền sửa/xóa mọi ô trên mọi sheet
+  if (user.role === "admin" || user.role === "manager") {
+    return { allowed: true };
+  }
+
+  // Đối với Nhân viên (user):
+  // 1. Kiểm tra trạng thái dự án (phải là dang_lam) và user phải được phân công
+  if (!canEditProjectCells(user, toPermProject(project))) {
+    return {
+      allowed: false,
+      reason: "Báo giá hiện không ở trạng thái cho phép nhập liệu hoặc bạn chưa được phân công vào báo giá này.",
+    };
+  }
+
+  // 2. Kiểm tra quyền riêng theo nhân viên trong project_member_permissions (Chương 11)
+  const customRanges = getMemberCustomRanges(project.id, user.id, sheetName);
+  if (customRanges !== null) {
+    if (!isCellInRange(cell, customRanges)) {
+      return {
+        allowed: false,
+        reason: `Ô ${cell} trên sheet "${sheetName}" nằm ngoài phạm vi được cấp quyền cho bạn (${customRanges || "không có ô nào"}).`,
+      };
+    }
+    return { allowed: true };
+  }
+
+  // 3. Nếu không có cấu hình riêng, kiểm tra theo editableRanges chung của project
+  const projectRanges: Record<string, string> = JSON.parse(project.editable_ranges || "{}");
+  const sheetRange = projectRanges[sheetName];
+  if (!sheetRange || !isCellInRange(cell, sheetRange)) {
+    return {
+      allowed: false,
+      reason: `Ô ${cell} trên sheet "${sheetName}" nằm ngoài phạm vi được phép chỉnh sửa của báo giá này.`,
+    };
+  }
+
+  return { allowed: true };
 }
 
 export function hashPassword(password: string): string {

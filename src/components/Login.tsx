@@ -64,8 +64,8 @@ export function Login() {
     }
   };
 
-  const handleQuickLogin = async (role: "admin" | "user") => {
-    const defaultUser = role === "admin" ? "admin" : "user";
+  const handleQuickLogin = async (role: "admin" | "manager" | "user") => {
+    const defaultUser = role === "admin" ? "admin" : role === "manager" ? "manager" : "user";
     const defaultPass = "password";
 
     setUsername(defaultUser);
@@ -76,9 +76,9 @@ export function Login() {
     try {
       const user = await api.login(defaultUser, defaultPass);
       login(user);
-      toast.success(`Đăng nhập nhanh thành công với quyền ${role === "admin" ? "Quản trị" : "Nhân viên"}!`);
+      const roleLabel = role === "admin" ? "Quản trị" : role === "manager" ? "Quản lý" : "Nhân viên";
+      toast.success(`Đăng nhập nhanh thành công với quyền ${roleLabel}!`);
     } catch (error: any) {
-      console.error("Quick login failed:", error);
       setErrorMessage(error.message || "Không thể thực hiện đăng nhập nhanh. Vui lòng thử lại.");
       toast.error("Đăng nhập nhanh thất bại!");
     } finally {
@@ -203,28 +203,28 @@ export function Login() {
                     <div className="flex-grow border-t border-slate-200"></div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
-                    <button
-                      type="button"
-                      disabled={isLoading}
-                      onClick={() => handleQuickLogin("admin")}
-                      className="group flex cursor-pointer flex-col items-center justify-center rounded-lg border border-blue-100 bg-blue-50/60 px-3 py-2 transition-all hover:border-blue-300 hover:bg-blue-50"
-                    >
-                      <span className="text-xs font-semibold text-[#0b4f9c]">Quản trị viên</span>
-                      <span className="mt-0.5 text-[10px] text-slate-500">Admin Dashboard</span>
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isLoading}
-                      onClick={() => handleQuickLogin("user")}
-                      className="group flex cursor-pointer flex-col items-center justify-center rounded-lg border border-emerald-100 bg-emerald-50/60 px-3 py-2 transition-all hover:border-emerald-300 hover:bg-emerald-50"
-                    >
-                      <span className="text-xs font-semibold text-emerald-700">Nhân viên</span>
-                      <span className="mt-0.5 text-[10px] text-slate-500">User Dashboard</span>
-                    </button>
-                  </div>
-                </>
-              )}
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  disabled={isLoading}
+                  onClick={() => handleQuickLogin("admin")}
+                  className="group flex cursor-pointer flex-col items-center justify-center rounded-lg border border-blue-100 bg-blue-50/60 px-3 py-2 transition-all hover:border-blue-300 hover:bg-blue-50"
+                >
+                  <span className="text-xs font-semibold text-[#0b4f9c]">Quản trị viên</span>
+                  <span className="mt-0.5 text-[10px] text-slate-500">Admin Dashboard</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isLoading}
+                  onClick={() => handleQuickLogin("user")}
+                  className="group flex cursor-pointer flex-col items-center justify-center rounded-lg border border-emerald-100 bg-emerald-50/60 px-3 py-2 transition-all hover:border-emerald-300 hover:bg-emerald-50"
+                >
+                  <span className="text-xs font-semibold text-emerald-700">Nhân viên</span>
+                  <span className="mt-0.5 text-[10px] text-slate-500">User Dashboard</span>
+                </button>
+              </div>
+            </>
+          )}
             </CardContent>
           </div>
         </Card>

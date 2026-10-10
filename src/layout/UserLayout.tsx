@@ -14,8 +14,8 @@ type UserLayoutProps = {
   onTabChange: (tab: string) => void;
   onMobileOpenChange: (open: boolean) => void;
   onToggleNavigation: () => void;
-  onLogout: () => void;
   onProfile?: () => void;
+  onLogout: () => void;
   children: ReactNode;
 };
 
@@ -29,8 +29,8 @@ export function UserLayout({
   onTabChange,
   onMobileOpenChange,
   onToggleNavigation,
-  onLogout,
   onProfile,
+  onLogout,
   children,
 }: UserLayoutProps) {
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);

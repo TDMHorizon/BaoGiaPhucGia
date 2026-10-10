@@ -99,18 +99,6 @@ Xem chi tiết: [DEPLOY_VPS.md](./DEPLOY_VPS.md)
 
 ---
 
-## Phase 6 — Nâng cấp Bộ Động cơ Bảng tính & Phân quyền Nâng cao
-
-- [x] **P0 — Kiến trúc Dữ liệu & Logger**: Schema migration (`project_role_visibility`, snapshots, commands) + Telemetry Logger có Masking.
-- [x] **P1 — Universal Merge Resolver**: Xử lý gộp ô tập trung (`mergeResolver.ts`), chọn ô Merge trong công thức chuẩn xác 100%.
-- [x] **P2 — Format Cell 2 chiều & Format Painter**: Whitelist Command Adapter (`univerCommandAdapter.ts`), debounce lưu trữ, sao chép định dạng ô đơn/ô gộp.
-- [x] **P3 — Sort & Filter và Find & Replace**: Lọc tự động, sắp xếp A-Z/Z-A, tìm kiếm & thay thế (`FindReplaceModal.tsx`) trực tiếp trên sheet (Ctrl + F).
-- [x] **P4 — Phân quyền & Ẩn File**: Quản lý ẩn/hiện file dự án cho Admin & Manager (`/api/projects/:id/visibility`), chặn truy cập cấp server.
-- [x] **P5 — Xuất Mẫu Tạm & In Ấn Khổ A4**: Trích xuất snapshot -> `.xlsx` tức thì (`exportExcel.ts`); Dedicated Print Engine lặp header, chuẩn A4 (`printEngine.ts`).
-- [x] **P6 — Test Suite & Log Minh Chứng**: Kiểm thử tự động toàn diện (`scripts/verify-all-features.ts`), xuất `test-run-verification.log` 29/29 (100% Passed).
-
----
-
 ## Tài khoản mặc định (dev)
 
 | Username | Password | Role |
@@ -122,8 +110,8 @@ Xem chi tiết: [DEPLOY_VPS.md](./DEPLOY_VPS.md)
 
 ## File chính
 
-1. `server.ts`, `server/db.ts`, `server/auth.ts`, `server/files.ts`, `server/logger.ts`
-2. `src/lib/api.ts`, `src/lib/auth.tsx`, `src/lib/mergeResolver.ts`, `src/lib/logger.ts`, `src/lib/exportExcel.ts`, `src/lib/printEngine.ts`
-3. `src/components/SpreadsheetViewer/index.tsx`, `univerCommandAdapter.ts`, `FindReplaceModal.tsx`
-4. `src/components/AdminDashboard.tsx`, `UserDashboard.tsx`, `Login.tsx`, `App.tsx`
-5. `scripts/verify-all-features.ts`, `docs/DEEP_ANALYSIS_AND_ACTION_PLAN.md`
+1. `server.ts`, `server/db.ts`, `server/auth.ts`, `server/files.ts`
+2. `src/lib/api.ts`, `src/lib/auth.tsx`, `src/lib/constants.ts`, `src/lib/printPdf.ts`
+3. `src/components/AdminDashboard.tsx`, `UserDashboard.tsx`, `Login.tsx`, `App.tsx`
+4. `src/components/ProjectMetaForm.tsx`, `UserManagement.tsx`, `StatusWorkflow.tsx`, `VersionPanel.tsx`, `TemplateLibrary.tsx`
+5. `docs/KE_HOACH_TRIEN_KHAI.md`, `docs/DEPLOY_VPS.md`

@@ -11,6 +11,7 @@ import {
   Users,
 } from "lucide-react";
 import { useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { StatusBadge } from "../components/StatusBadge";
 import type { TrangThai } from "../lib/constants";
 
@@ -29,7 +30,7 @@ type AdminSidebarProps = {
   onAccountsExpandedChange: () => void;
   onProjectDialogOpen: () => void;
   onTemplateDialogOpen: () => void;
-  onUserDialogOpen: () => void;
+  onAccountManagement: () => void;
   onDeletedProjectsOpen: () => void;
   onLogout: () => void;
 };
@@ -49,12 +50,17 @@ export function AdminSidebar({
   onAccountsExpandedChange,
   onProjectDialogOpen,
   onTemplateDialogOpen,
-  onUserDialogOpen,
+  onAccountManagement,
   onDeletedProjectsOpen,
   onLogout,
 }: AdminSidebarProps) {
+  const location = useLocation();
+  const navigate = useNavigate();
   const itemClass = (active: boolean) => `w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left text-sm font-semibold transition-colors ${isCollapsed ? "justify-center" : ""} ${active ? "bg-white text-[#0b4f9c] shadow-sm" : "text-blue-50 hover:bg-white/10"}`;
-  const childClass = "w-full rounded-md px-3 py-2 text-left text-sm font-medium text-blue-100 hover:bg-white/10 hover:text-white flex items-center gap-2";
+  const childClass = (active: boolean) => `w-full rounded-md px-3 py-2 text-left text-sm font-medium flex items-center gap-2 transition-colors ${active ? "bg-white/15 text-white" : "text-blue-100 hover:bg-white/10 hover:text-white"}`;
+  const isAccountPage = location.pathname === "/admin/accounts";
+  const isDeletedProjectsPage = location.pathname === "/admin/deleted-projects";
+  const isProfilePage = location.pathname === "/admin/profile";
 
   return (
     <aside className={`${isMobileOpen ? "fixed inset-y-0 left-0 z-50 flex shadow-2xl" : "hidden"} md:flex ${isCollapsed ? "md:w-[76px]" : "md:w-[248px]"} w-[248px] shrink-0 flex-col bg-[#0b4f9c] text-white border-r border-[#0a4384] transition-[width] duration-200`}>
@@ -68,15 +74,31 @@ export function AdminSidebar({
       {!isCollapsed && <div className="px-4 pt-6 pb-3 text-[10px] uppercase tracking-[0.16em] text-blue-200 font-bold">Không gian làm việc</div>}
       <nav className="px-3 space-y-1" aria-label="Điều hướng quản trị">
         <button type="button" onClick={() => { onMainTabChange("dashboard"); onMobileOpenChange(false); }} title={isCollapsed ? "Dashboard" : undefined} className={itemClass(mainTab === "dashboard")}><LayoutDashboard className="h-4 w-4 shrink-0" />{!isCollapsed && <><span className="flex-1">Dashboard</span><ChevronRight className="h-3.5 w-3.5 opacity-60" /></>}</button>
+        {(userRole === "admin" || userRole === "manager") && (
+          <button
+            type="button"
+            onClick={() => {
+              navigate("/management/overview");
+              onMobileOpenChange(false);
+            }}
+            title={isCollapsed ? "Quản trị & Điều hành" : undefined}
+            className={itemClass(location.pathname.startsWith("/management"))}
+          >
+            <ShieldCheck className="h-4 w-4 shrink-0" />
+            {!isCollapsed && <span className="flex-1">Quản trị & Điều hành</span>}
+          </button>
+        )}
         <button type="button" onClick={() => { onMainTabChange("file"); onQuotesExpandedChange(); }} title={isCollapsed ? "Quản lý báo giá" : undefined} className={itemClass(mainTab === "file")}><FolderOpen className="h-4 w-4 shrink-0" />{!isCollapsed && <><span className="flex-1">Quản lý báo giá</span><ChevronRight className={`h-3.5 w-3.5 opacity-60 transition-transform ${isQuotesExpanded ? "rotate-90" : ""}`} /></>}</button>
         {!isCollapsed && isQuotesExpanded && <div className="ml-7 space-y-1 border-l border-white/20 pl-2">
-          <button type="button" onClick={() => { onMainTabChange("file"); onProjectDialogOpen(); onMobileOpenChange(false); }} className={childClass}><FolderOpen className="h-4 w-4 shrink-0" /><span>Mở dự án</span></button>
-          <button type="button" onClick={() => { onMainTabChange("file"); onTemplateDialogOpen(); onMobileOpenChange(false); }} className={childClass}><FileText className="h-4 w-4 shrink-0" /><span>Templates</span></button>
+          <button type="button" onClick={() => { onMainTabChange("file"); onProjectDialogOpen(); onMobileOpenChange(false); }} className={childClass(false)}><FolderOpen className="h-4 w-4 shrink-0" /><span>Mở dự án</span></button>
+          <button type="button" onClick={() => { onMainTabChange("file"); onTemplateDialogOpen(); onMobileOpenChange(false); }} className={childClass(false)}><FileText className="h-4 w-4 shrink-0" /><span>Templates</span></button>
         </div>}
         <button type="button" onClick={() => { onMainTabChange("home"); onMobileOpenChange(false); }} disabled={!selectedProject} title={isCollapsed ? "Biên tập file" : undefined} className={`${itemClass(mainTab === "home")} disabled:opacity-40 disabled:cursor-not-allowed`}><FileText className="h-4 w-4 shrink-0" />{!isCollapsed && <><span className="flex-1">Biên tập file</span><ChevronRight className="h-3.5 w-3.5 opacity-60" /></>}</button>
         {userRole === "admin" && <>
           <button type="button" onClick={() => { onMainTabChange("admin"); onAccountsExpandedChange(); }} title={isCollapsed ? "Quản lý tài khoản" : undefined} className={itemClass(mainTab === "admin")}><ShieldCheck className="h-4 w-4 shrink-0" />{!isCollapsed && <><span className="flex-1">Quản lý tài khoản</span><ChevronRight className={`h-3.5 w-3.5 opacity-60 transition-transform ${isAccountsExpanded ? "rotate-90" : ""}`} /></>}</button>
-          {!isCollapsed && isAccountsExpanded && <div className="ml-7 space-y-1 border-l border-white/20 pl-2"><button type="button" onClick={() => { onMainTabChange("admin"); onUserDialogOpen(); onMobileOpenChange(false); }} className={childClass}><Users className="h-4 w-4 shrink-0" /><span>Tài khoản</span></button><button type="button" onClick={() => { onMainTabChange("admin"); onDeletedProjectsOpen(); onMobileOpenChange(false); }} className={childClass}><RotateCcw className="h-4 w-4 shrink-0" /><span>Khôi phục file đã xóa</span></button></div>}
+          {!isCollapsed && isAccountsExpanded && <div className="ml-7 space-y-1 border-l border-white/20 pl-2"><button type="button" onClick={() => { onAccountManagement(); onMobileOpenChange(false); }} className={childClass(isAccountPage || isProfilePage)}><Users className="h-4 w-4 shrink-0" /><span>Tài khoản</span></button>
+          <button type="button" onClick={() => { onMainTabChange("admin"); onDeletedProjectsOpen(); onMobileOpenChange(false); }} className={childClass(isDeletedProjectsPage)}><RotateCcw className="h-4 w-4 shrink-0" /><span>Khôi phục file đã xóa</span></button></div>}
+
         </>}
       </nav>
       <div className={`mt-auto p-4 ${isCollapsed ? "px-3" : ""}`}>
@@ -90,7 +112,9 @@ export function AdminSidebar({
 type AdminHeaderProps = {
   selectedProject: { name?: string; trangThai?: TrangThai } | null;
   username?: string;
+  canManageAccounts?: boolean;
   onToggleNavigation: () => void;
+  onAccountManagement: () => void;
   onLogout: () => void;
   onProfile?: () => void;
 };

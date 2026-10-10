@@ -133,7 +133,7 @@ export function getRowHeight(ejWs: any, ws: XLSX.WorkSheet | undefined, r: numbe
 }
 
 export function isCellInRange(cellRef: string, rangeStr: string): boolean {
-  if (!rangeStr?.trim()) return false;
+  if (!rangeStr || !rangeStr.trim()) return false; // Default Deny
   try {
     const ranges = rangeStr.split(',').map(r => r.trim()).filter(Boolean);
     if (ranges.length === 0) return false;
@@ -141,21 +141,12 @@ export function isCellInRange(cellRef: string, rangeStr: string): boolean {
     const cell = XLSX.utils.decode_cell(cellRef);
 
     return ranges.some(rStr => {
-      if (rStr === '*') return true;
-
       // Handle full column ranges like "A:A" or "A:C"
       if (/^[A-Za-z]+:[A-Za-z]+$/.test(rStr)) {
         const [startCol, endCol] = rStr.split(':');
         const sColIdx = XLSX.utils.decode_col(startCol);
         const eColIdx = XLSX.utils.decode_col(endCol);
         return cell.c >= sColIdx && cell.c <= eColIdx;
-      }
-
-      // Handle full row ranges like "1:1" or "1:5"
-      if (/^[1-9]\d*:[1-9]\d*$/.test(rStr)) {
-        const [startRow, endRow] = rStr.split(':').map(Number);
-        return cell.r >= Math.min(startRow, endRow) - 1 &&
-          cell.r <= Math.max(startRow, endRow) - 1;
       }
 
       // Handle single column like "A"
@@ -477,3 +468,92 @@ function argbToCssHex(argbObj: any): string | undefined {
   }
   return undefined;
 }
+
+export function parseCellCoord(cell: string): { col: string; row: number } | null {
+  const match = cell.trim().toUpperCase().match(/^([A-Z]+)(\d+)$/);
+  if (!match) return null;
+  return {
+    col: match[1],
+    row: parseInt(match[2], 10),
+  };
+}
+
+export function isCellDisabled(
+  sheetName: string,
+  cell: string,
+  disabledRangesConfig: any
+): boolean {
+  if (!disabledRangesConfig) return false;
+  let config = disabledRangesConfig;
+  if (typeof disabledRangesConfig === "string") {
+    try {
+      config = JSON.parse(disabledRangesConfig);
+    } catch {
+      return false;
+    }
+  }
+
+  const sheetConfig = config?.[sheetName];
+  if (!sheetConfig) return false;
+
+  const cleanCell = cell.trim().toUpperCase();
+
+  // 1. Kiểm tra trong danh sách cells
+  if (Array.isArray(sheetConfig.cells) && sheetConfig.cells.map((c: any) => String(c).trim().toUpperCase()).includes(cleanCell)) {
+    return true;
+  }
+
+  const coord = parseCellCoord(cleanCell);
+  if (!coord) return false;
+
+  // 2. Kiểm tra trong danh sách rows
+  if (Array.isArray(sheetConfig.rows) && sheetConfig.rows.map(Number).includes(coord.row)) {
+    return true;
+  }
+
+  // 3. Kiểm tra trong danh sách columns
+  if (Array.isArray(sheetConfig.columns) && sheetConfig.columns.map((c: any) => String(c).trim().toUpperCase()).includes(coord.col)) {
+    return true;
+  }
+
+  return false;
+}
+
+export function isRowDisabled(
+  sheetName: string,
+  rowNumber: number,
+  disabledRangesConfig: any
+): boolean {
+  if (!disabledRangesConfig) return false;
+  let config = disabledRangesConfig;
+  if (typeof disabledRangesConfig === "string") {
+    try {
+      config = JSON.parse(disabledRangesConfig);
+    } catch {
+      return false;
+    }
+  }
+  const sheetConfig = config?.[sheetName];
+  if (!Array.isArray(sheetConfig?.rows)) return false;
+  return sheetConfig.rows.map(Number).includes(Number(rowNumber));
+}
+
+export function isColDisabled(
+  sheetName: string,
+  colLetter: string,
+  disabledRangesConfig: any
+): boolean {
+  if (!disabledRangesConfig) return false;
+  let config = disabledRangesConfig;
+  if (typeof disabledRangesConfig === "string") {
+    try {
+      config = JSON.parse(disabledRangesConfig);
+    } catch {
+      return false;
+    }
+  }
+  const sheetConfig = config?.[sheetName];
+  if (!Array.isArray(sheetConfig?.columns)) return false;
+  return sheetConfig.columns.map((c: any) => String(c).trim().toUpperCase()).includes(colLetter.trim().toUpperCase());
+}
+
