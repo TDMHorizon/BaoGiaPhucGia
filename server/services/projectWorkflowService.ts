@@ -5,7 +5,7 @@ import type { AuthUser } from "../auth";
 
 export const USER_TRANSITIONS: Record<string, TrangThai[]> = {
   nhap: ["dang_lam"],
-  dang_lam: ["cho_gui"],
+  dang_lam: ["cho_gui", "da_gui"],
   cho_gui: ["da_gui"],
   da_gui: [],
   cho_duyet: ["dang_lam", "cho_gui", "da_gui"],

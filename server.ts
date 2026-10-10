@@ -34,7 +34,8 @@ import {
   type TemplateRow,
   isCellDisabled,
   updateProjectDisabledRange,
-  recordProjectEvent
+  recordProjectEvent,
+  hardDeleteProject
 } from "./server/db";
 import {
   authenticateUser,
@@ -134,8 +135,12 @@ async function purgeExpiredDeletedProjects() {
     .all() as { id: string }[];
 
   for (const project of expiredProjects) {
-    await deleteProjectFiles(project.id);
-    getDb().prepare("DELETE FROM projects WHERE id = ? AND isDelete = 1").run(project.id);
+    hardDeleteProject(project.id);
+    try {
+      await deleteProjectFiles(project.id);
+    } catch (e) {
+      console.error(`[Purge Warning] Failed to delete files for project ${project.id}:`, e);
+    }
   }
 }
 
@@ -167,7 +172,7 @@ async function startServer() {
     maxHttpBufferSize: 1e8,
   });
 
-  // [P0-06] Socket.IO Handshake Authentication: Xác thực JWT token
+  // [P0-11] Socket.IO Handshake Authentication: Bắt buộc xác thực JWT token
   io.use((socket, next) => {
     const token =
       (socket.handshake.auth?.token as string) ||
@@ -175,41 +180,47 @@ async function startServer() {
         ? socket.handshake.headers.authorization.slice(7)
         : (socket.handshake.query?.token as string));
 
-    if (token) {
-      const user = verifyToken(token);
-      if (user) {
-        const dbUser = getDb().prepare("SELECT active, token_version FROM users WHERE id = ?").get(user.id) as
-          | { active: number; token_version: number }
-          | undefined;
-        if (dbUser && dbUser.active && (user.tokenVersion === undefined || user.tokenVersion === dbUser.token_version)) {
-          (socket as any).user = user;
-          return next();
-        }
-      }
+    if (!token) {
+      return next(new Error("Unauthorized: Thiếu token xác thực"));
     }
-    // Cho phép kết nối nhưng gắn cờ unauthenticated
+
+    const user = verifyToken(token);
+    if (!user) {
+      return next(new Error("Unauthorized: Token không hợp lệ"));
+    }
+
+    const dbUser = getDb().prepare("SELECT active, token_version FROM users WHERE id = ?").get(user.id) as
+      | { active: number; token_version: number }
+      | undefined;
+    if (!dbUser || !dbUser.active || (user.tokenVersion !== undefined && user.tokenVersion !== dbUser.token_version)) {
+      return next(new Error("Unauthorized: Tài khoản đã bị khóa hoặc phiên đăng nhập hết hạn"));
+    }
+
+    (socket as any).user = user;
     next();
   });
 
   io.on("connection", (socket) => {
     const socketUser = (socket as any).user;
+    if (!socketUser) {
+      socket.disconnect(true);
+      return;
+    }
 
     socket.on("identify_user", (userId: string) => {
       // Chỉ cho phép user join user-room của chính mình (hoặc admin)
-      if (userId && (socketUser?.id === userId || socketUser?.role === "admin" || !socketUser)) {
+      if (userId && (socketUser.id === userId || socketUser.role === "admin")) {
         socket.join(`user:${userId}`);
       }
     });
 
     socket.on("join_project", (projectId: string) => {
       if (!projectId) return;
-      // [P0-06] Kiểm tra quyền truy cập dự án trước khi cho phép lắng nghe sự kiện tài chính/sửa ô
-      if (socketUser) {
-        const project = loadProject(projectId);
-        if (!project || !userCanAccessProject(socketUser, project)) {
-          socket.emit("error", { message: "Forbidden: Bạn không có quyền truy cập room dự án này" });
-          return;
-        }
+      // Kiểm tra quyền truy cập dự án trước khi cho phép lắng nghe sự kiện tài chính/sửa ô
+      const project = loadProject(projectId);
+      if (!project || !userCanAccessProject(socketUser, project)) {
+        socket.emit("error", { message: "Forbidden: Bạn không có quyền truy cập room dự án này" });
+        return;
       }
       socket.join(`project:${projectId}`);
     });
@@ -966,8 +977,8 @@ async function startServer() {
     res.json(listSummary(updated));
   }));
 
-  // UC11: Xóa cứng vĩnh viễn (Admin only)
-  app.delete("/api/projects/:id/permanent", authMiddleware, requireAdmin, catchAsync(async (req, res) => {
+  // UC11: Xóa cứng vĩnh viễn (Admin & Manager)
+  app.delete("/api/projects/:id/permanent", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
     const user = req.user!;
     const project = loadProject(req.params.id, true) || loadProject(req.params.id, false);
     if (!project) return res.status(404).json({ error: "Project not found" });

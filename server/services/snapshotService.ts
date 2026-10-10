@@ -37,9 +37,12 @@ export async function getSnapshotBufferForVersion(
     throw new AppError(`Không tìm thấy file snapshot vật lý của phiên bản v${version} trên máy chủ`, 404);
   }
 
-  // Kiểm tra tính toàn vẹn Checksum
+  // Kiểm tra tính toàn vẹn Checksum [P0-08]
   if (versionRow.checksum && sha256(buffer) !== versionRow.checksum) {
-    console.warn(`[Integrity Warning] Snapshot v${version} checksum mismatch!`);
+    throw new AppError(
+      `Tệp snapshot v${version} không đảm bảo tính toàn vẹn dữ liệu (checksum mismatch). Thao tác bị từ chối.`,
+      422
+    );
   }
 
   return { buffer, versionRow };
@@ -88,12 +91,15 @@ export async function restoreSnapshotAsWorkingRevision(
          updated_at = excluded.updated_at`
     );
 
+    const processedCells = new Set<string>();
+
     // Duyệt qua tất cả worksheet và ô trong snapshot để so sánh và tạo compensating edits
     for (const ws of snapshotWb.worksheets) {
       const sheetName = ws.name;
       ws.eachRow({ includeEmpty: false }, (row, rowNumber) => {
         row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
           const cellRef = cell.address;
+          processedCells.add(`${sheetName}!${cellRef}`);
           const snapVal = cellValueToString(cell.value);
 
           const currentDbCell = getCellValue(project.id, sheetName, cellRef);
@@ -129,6 +135,45 @@ export async function restoreSnapshotAsWorkingRevision(
         });
       });
     }
+
+    // [P0-06] Xử lý các ô có trong overlay hiện tại nhưng không có trong snapshot (ô bị thêm sau snapshot => đưa về "")
+    const existingDbCells = database
+      .prepare("SELECT sheet_name, cell, value FROM project_cell_values WHERE project_id = ? AND value != ''")
+      .all(project.id) as { sheet_name: string; cell: string; value: string }[];
+
+    for (const c of existingDbCells) {
+      const key = `${c.sheet_name}!${c.cell}`;
+      if (!processedCells.has(key)) {
+        nextSeq += 1;
+        compensatingEditsCount += 1;
+        const editId = `rest-${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${nextSeq}`;
+
+        insertEdit.run(
+          editId,
+          project.id,
+          actor.id,
+          actor.username,
+          c.sheet_name,
+          c.cell,
+          c.value,
+          "",
+          nextSeq,
+          now
+        );
+
+        upsertCellValue.run(
+          project.id,
+          c.sheet_name,
+          c.cell,
+          "",
+          actor.username,
+          now
+        );
+      }
+    }
+
+    // Invalidate review cũ sau khi khôi phục snapshot
+    database.prepare("UPDATE financial_reviews SET is_stale = 1 WHERE project_id = ?").run(project.id);
 
     // Tăng revision của project và finance
     database

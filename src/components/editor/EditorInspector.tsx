@@ -283,15 +283,8 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
             sheetName: targetSheet,
           },
         };
-      } else {
-        payload.financialConfig = {
-          ...(project?.financialConfig || {}),
-          cellMapping: {
-            ...(project?.financialConfig?.cellMapping || cellMapping),
-            sheetName: targetSheet,
-          },
-        };
       }
+      // [P0-10] Nhân viên kỹ thuật (user) chỉ gửi otHours, không gửi financialConfig để tránh lỗi 403 Forbidden
 
       if (onUpdateFinancial) {
         await onUpdateFinancial(payload);

@@ -168,7 +168,25 @@ export async function submitFinancialReview(
     );
   }
 
+  // Validation customCost [P1-30]
+  if (payload.customCost !== undefined && payload.customCost !== null) {
+    const cost = Number(payload.customCost);
+    if (!Number.isFinite(cost) || cost < 0) {
+      throw new AppError("Chi phí ước tính / giá vốn phải là số hữu hạn lớn hơn hoặc bằng 0", 400);
+    }
+  }
+
   const calc = calculateProjectFinancials(project, payload.customCost);
+
+  // Validation điều kiện PASS [P1-12]: Không cho PASS nếu biên lợi nhuận âm khi có doanh thu
+  if (payload.status === "PASS") {
+    if (calc.revenueAmount > 0 && calc.marginAmount < 0) {
+      throw new AppError(
+        `Không thể thẩm định PASS: Biên lợi nhuận đang âm (${calc.marginAmount.toLocaleString()} VNĐ). Vui lòng điều chỉnh đơn giá hoặc chi phí trước khi thông qua.`,
+        422
+      );
+    }
+  }
   const reviewId = `rev-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const now = new Date().toISOString();
 

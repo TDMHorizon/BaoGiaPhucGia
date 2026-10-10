@@ -121,10 +121,19 @@ export const QuotesListPage: React.FC = () => {
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (!window.confirm(`Bạn có chắc muốn xóa báo giá "${name}" vào thùng rác không?`)) return;
+    const isHardDelete = user?.role === "admin" || user?.role === "manager";
+    const confirmMsg = isHardDelete
+      ? `CẢNH BÁO: Báo giá "${name}" và toàn bộ tệp, dữ liệu liên quan sẽ bị XÓA VĨNH VIỄN ngay lập tức và không thể khôi phục. Bạn có chắc chắn muốn tiếp tục?`
+      : `Bạn có chắc muốn xóa bản nháp "${name}" vào Thùng rác không? (Dữ liệu sẽ được lưu trữ 30 ngày)`;
+
+    if (!window.confirm(confirmMsg)) return;
     try {
-      await api.deleteProject(id);
-      toast.success("Đã xóa báo giá (lưu tại Thùng rác 30 ngày)");
+      const res: any = await api.deleteProject(id);
+      if (res?.mode === "hard" || isHardDelete) {
+        toast.success(`Đã xóa vĩnh viễn báo giá "${name}" thành công!`);
+      } else {
+        toast.success(`Đã xóa bản nháp "${name}" vào Thùng rác (lưu trữ 30 ngày)`);
+      }
       loadData();
     } catch (e: any) {
       toast.error(e?.message || "Không thể xóa dự án");

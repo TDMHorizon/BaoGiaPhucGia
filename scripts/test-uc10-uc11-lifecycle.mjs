@@ -181,14 +181,24 @@ async function main() {
   const draftId = draftRes.data.id;
   ok("User tạo bản nháp trạng thái nhap thành công");
 
-  // 2.2 User xóa bản nháp của chính mình -> Thành công (soft-delete vào thùng rác)
+  // 2.2 User xóa bản nháp của chính mình -> Thành công (soft-delete vào thùng rác 30 ngày)
   const delDraftRes = await api(`/api/projects/${draftId}`, {
     method: "DELETE",
     token: userToken,
   });
   assert(delDraftRes.status === 200, "User soft-delete bản nháp thành công");
   assert(delDraftRes.data.isDelete === true, "isDelete = true");
-  ok("User xóa bản nháp của chính mình thành công (UC11)");
+  assert(delDraftRes.data.mode === "soft", "mode = soft (vào Thùng rác 30 ngày)");
+  ok("User xóa bản nháp của chính mình thành công (soft delete, mode='soft')");
+
+  // 2.2b Kiểm tra bản nháp xuất hiện trong Thùng rác
+  const deletedListRes = await api("/api/projects/deleted", {
+    method: "GET",
+    token: managerToken,
+  });
+  assert(deletedListRes.status === 200, "Manager lấy danh sách thùng rác thành công");
+  assert(deletedListRes.data.some((p) => p.id === draftId), "Bản nháp của User có trong Thùng rác");
+  ok("Bản nháp của User lưu tại Thùng rác chính xác");
 
   // 2.3 User cố xóa project đang làm hoặc của người khác -> 403
   const delP10ByUser = await api(`/api/projects/${p10Id}`, {
@@ -233,16 +243,56 @@ async function main() {
   assert(unarchRes.data.isArchived === false, "isArchived = false");
   ok("Manager unarchive hồ sơ thành công");
 
-  // 2.8 Admin xóa vĩnh viễn (hard delete) dự án draftId
+  // 2.8 CHÍNH SÁCH MỚI: Manager DELETE trực tiếp dự án -> XÓA CỨNG NGAY (mode='hard')
+  const mgrProjRes = await api("/api/projects", {
+    method: "POST",
+    token: managerToken,
+    body: {
+      name: "Báo giá Manager cần xóa ngay",
+      fileBase64,
+      sheets: ["BaoGia"],
+      soBaoGia: "BG-MGR-DEL",
+    },
+  });
+  assert(mgrProjRes.status === 201 || mgrProjRes.status === 200, "Manager tạo dự án thành công");
+  const mgrProjId = mgrProjRes.data.id;
+
+  const delMgrRes = await api(`/api/projects/${mgrProjId}`, {
+    method: "DELETE",
+    token: managerToken,
+  });
+  assert(delMgrRes.status === 200, "Manager DELETE dự án thành công");
+  assert(delMgrRes.data.mode === "hard", "Manager DELETE trực tiếp phải là HARD delete (mode='hard')");
+  ok("Manager DELETE trực tiếp dự án là XÓA CỨNG NGAY (mode='hard', không qua Thùng rác)");
+
+  // 2.8b Kiểm tra dự án của Manager KHÔNG xuất hiện trong Thùng rác
+  const deletedListAfterMgr = await api("/api/projects/deleted", {
+    method: "GET",
+    token: adminToken,
+  });
+  assert(!deletedListAfterMgr.data.some((p) => p.id === mgrProjId), "Dự án Manager xóa cứng không nằm trong Thùng rác");
+  const getMgrPurged = await api(`/api/projects/${mgrProjId}`, { method: "GET", token: adminToken });
+  assert(getMgrPurged.status === 404, "Dự án xóa cứng trả về 404 Not Found");
+  ok("Xác nhận dự án Manager xóa cứng không vào Thùng rác và biến mất hoàn toàn (404)");
+
+  // 2.9 User cố gọi DELETE /permanent -> 403 Forbidden
+  const userPermRes = await api(`/api/projects/${draftId}/permanent`, {
+    method: "DELETE",
+    token: userToken,
+  });
+  assert(userPermRes.status === 403, "User bị từ chối 403 khi gọi /permanent");
+  ok("User bị từ chối 403 khi cố xóa cứng vĩnh viễn");
+
+  // 2.10 Admin xóa vĩnh viễn (hard delete) dự án draftId trong Thùng rác
   const permDelRes = await api(`/api/projects/${draftId}/permanent`, {
     method: "DELETE",
     token: adminToken,
   });
   assert(permDelRes.status === 200, "Admin xóa vĩnh viễn thành công");
   assert(permDelRes.data.ok === true, "ok = true");
-  ok("Admin xóa cứng vĩnh viễn (cascade + files purge) thành công (UC11)");
+  ok("Admin xóa cứng vĩnh viễn hồ sơ trong Thùng rác thành công (UC11)");
 
-  // 2.9 Sau khi xóa vĩnh viễn, truy vấn lại trả về 404
+  // 2.11 Sau khi xóa vĩnh viễn, truy vấn lại trả về 404
   const getPurged = await api(`/api/projects/${draftId}`, {
     method: "GET",
     token: adminToken,
@@ -251,7 +301,7 @@ async function main() {
   ok("Dự án đã bị xóa sạch hoàn toàn khỏi DB và đĩa");
 
   console.log("\n======================================================================");
-  console.log("✅ TẤT CẢ TEST CASES UC10 VÀ UC11 ĐÃ PASS 100%!");
+  console.log("✅ TẤT CẢ TEST CASES UC10 VÀ UC11 THEO CHÍNH SÁCH MỚI ĐÃ PASS 100%!");
   console.log("======================================================================");
 }
 

@@ -308,63 +308,13 @@ export const QuoteEditorPage: React.FC = () => {
         return;
       } catch (backendErr: any) {
         if (backendErr?.status === 400 && backendErr?.message?.includes("phê duyệt")) {
-          toast.warning("Chưa có phiên bản nào được Admin phê duyệt (UC09). Chuyển sang tải bản dự thảo!");
+          toast.warning("Chưa có phiên bản nào được Admin phê duyệt (UC09). Chuyển sang tải bản dự thảo (UC17)!");
           return handleExportDraftExcel();
         }
-        console.warn("Backend official export fallback:", backendErr);
-      }
-
-      if (exceljsWorkbook) {
-        // [P1-16] Clone một đối tượng workbook độc lập, KHÔNG MUTATE workbook state trên React!
-        const exportWb = await cloneExcelJSWorkbook(exceljsWorkbook);
-
-        // Apply gray style to disabled ranges in export clone
-        if (disabledRanges && typeof disabledRanges === "object") {
-          for (const [sName, cfg] of Object.entries(disabledRanges as any)) {
-            const ws = exportWb.getWorksheet(sName);
-            if (!ws) continue;
-            const config = cfg as any;
-            const disabledFill: any = {
-              type: "pattern",
-              pattern: "solid",
-              fgColor: { argb: "FF64748B" },
-            };
-            if (Array.isArray(config.rows)) {
-              for (const r of config.rows) {
-                try {
-                  const row = ws.getRow(Number(r));
-                  if (row) row.eachCell({ includeEmpty: true }, (c) => (c.fill = disabledFill));
-                } catch {}
-              }
-            }
-            if (Array.isArray(config.columns)) {
-              for (const col of config.columns) {
-                try {
-                  const column = ws.getColumn(String(col));
-                  if (column) column.eachCell({ includeEmpty: true }, (c) => (c.fill = disabledFill));
-                } catch {}
-              }
-            }
-            if (Array.isArray(config.cells)) {
-              for (const cRef of config.cells) {
-                try {
-                  const cell = ws.getCell(String(cRef));
-                  if (cell) cell.fill = disabledFill;
-                } catch {}
-              }
-            }
-          }
-        }
-        const base64 = await workbookToBase64(exportWb);
-        downloadBase64File(base64, project.name?.replace(/\.xlsx$/i, "") || "baogia");
-        toast.success("Đã xuất tệp Excel chính thức thành công!");
+        // [P0-05] Fail closed: Tuyệt đối không tự sinh bản chính thức không watermark từ state client!
+        toast.error("Không thể xuất tệp chính thức: " + (backendErr?.message || "Lỗi máy chủ khi tải snapshot"));
         return;
       }
-
-      // Fallback SheetJS export
-      const out = XLSX.write(workbook, { bookType: "xlsx", type: "base64" });
-      downloadBase64File(out, project.name?.replace(/\.xlsx$/i, "") || "baogia");
-      toast.success("Đã tải xuống file Excel");
     } catch (e: any) {
       toast.error("Lỗi xuất file: " + e?.message);
     }
