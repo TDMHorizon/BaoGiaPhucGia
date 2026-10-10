@@ -20,8 +20,25 @@ import {
   FiLayers,
   FiX,
   FiCheckCircle,
+  FiArchive,
+  FiChevronLeft,
+  FiChevronRight,
 } from "react-icons/fi";
 import { RiBuilding4Line, RiFileExcel2Line } from "react-icons/ri";
+
+const PAGE_SIZE = 25;
+
+function getPageNumbers(current: number, total: number): (number | string)[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const pages: (number | string)[] = [1];
+  if (current > 3) pages.push("...");
+  const start = Math.max(2, current - 1);
+  const end = Math.min(total - 1, current + 1);
+  for (let i = start; i <= end; i++) pages.push(i);
+  if (current < total - 2) pages.push("...");
+  pages.push(total);
+  return pages;
+}
 
 export const QuotesListPage: React.FC = () => {
   const { user } = useAuth();
@@ -32,6 +49,7 @@ export const QuotesListPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [currentPage, setCurrentPage] = useState(1);
 
   // Modal create quote
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -120,13 +138,33 @@ export const QuotesListPage: React.FC = () => {
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (!window.confirm(`Bạn có chắc muốn xóa báo giá "${name}" vào thùng rác không?`)) return;
+    const isHardDelete = user?.role === "admin" || user?.role === "manager";
+    const confirmMsg = isHardDelete
+      ? `CẢNH BÁO: Báo giá "${name}" và toàn bộ tệp, dữ liệu liên quan sẽ bị XÓA VĨNH VIỄN ngay lập tức và không thể khôi phục. Bạn có chắc chắn muốn tiếp tục?`
+      : `Bạn có chắc muốn xóa bản nháp "${name}" vào Thùng rác không? (Dữ liệu sẽ được lưu trữ 30 ngày)`;
+
+    if (!window.confirm(confirmMsg)) return;
     try {
-      await api.deleteProject(id);
-      toast.success("Đã xóa báo giá (lưu tại Thùng rác 30 ngày)");
+      const res: any = await api.deleteProject(id);
+      if (res?.mode === "hard" || isHardDelete) {
+        toast.success(`Đã xóa vĩnh viễn báo giá "${name}" thành công!`);
+      } else {
+        toast.success(`Đã xóa bản nháp "${name}" vào Thùng rác (lưu trữ 30 ngày)`);
+      }
       loadData();
     } catch (e: any) {
       toast.error(e?.message || "Không thể xóa dự án");
+    }
+  };
+
+  const handleArchive = async (id: string, name: string) => {
+    if (!window.confirm(`Bạn có chắc muốn chuyển báo giá "${name}" vào danh sách lưu trữ lâu dài không?`)) return;
+    try {
+      await api.archiveProject(id);
+      toast.success(`Đã lưu trữ báo giá "${name}" (UC11)`);
+      loadData();
+    } catch (e: any) {
+      toast.error(e?.message || "Không thể lưu trữ báo giá");
     }
   };
 
@@ -141,10 +179,18 @@ export const QuotesListPage: React.FC = () => {
       !searchQuery ||
       p.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       p.soBaoGia?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.khachHang?.toLowerCase().includes(searchQuery.toLowerCase());
+      (p.tenKhachHang || p.khachHang)?.toLowerCase().includes(searchQuery.toLowerCase());
     const matchStatus = !statusFilter || p.trangThai === statusFilter;
     return matchSearch && matchStatus;
   });
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, statusFilter]);
+
+  const totalPages = Math.ceil(filteredProjects.length / PAGE_SIZE) || 1;
+  const startIndex = (currentPage - 1) * PAGE_SIZE;
+  const displayedProjects = filteredProjects.slice(startIndex, startIndex + PAGE_SIZE);
 
   return (
     <AppShell
@@ -214,99 +260,171 @@ export const QuotesListPage: React.FC = () => {
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {filteredProjects.map((p) => (
-              <div
-                key={p.id}
-                className="group flex flex-col justify-between rounded-2xl border border-blue-100 bg-white p-5 shadow-xs hover:border-[#268DF0] hover:shadow-md transition-all"
-              >
-                <div>
-                  {/* Card Meta Top */}
-                  <div className="flex items-center justify-between gap-2 text-[11px] mb-2">
-                    <span className="font-mono font-bold text-[#105CB3] bg-blue-50 px-2 py-0.5 rounded border border-blue-100">
-                      {p.soBaoGia || "BG-000"}
-                    </span>
-                    <span className="text-slate-400 flex items-center gap-1">
-                      <FiClock className="h-3 w-3" />
-                      {p.updated_at ? new Date(p.updated_at).toLocaleDateString("vi-VN") : "—"}
-                    </span>
-                  </div>
-
-                  {/* Title */}
-                  <h3 className="text-sm font-bold text-slate-800 line-clamp-2 group-hover:text-[#105CB3] transition-colors">
-                    {p.name}
-                  </h3>
-
-                  {/* Client */}
-                  {p.khachHang && (
-                    <p className="mt-1.5 text-xs text-slate-500 truncate flex items-center gap-1.5">
-                      <RiBuilding4Line className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-                      <span>{p.khachHang}</span>
-                    </p>
-                  )}
-
-                  {/* Status Badge */}
-                  <div className="mt-3">
-                    {p.trangThai === "da_gui" && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700 border border-emerald-200">
-                        <FiCheckCircle className="h-3 w-3" />
-                        <span>Đã hoàn tất / Gửi</span>
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+              {displayedProjects.map((p) => (
+                <div
+                  key={p.id}
+                  className="group flex flex-col justify-between rounded-2xl border border-blue-100 bg-white p-5 shadow-xs hover:border-[#268DF0] hover:shadow-md transition-all"
+                >
+                  <div>
+                    {/* Card Meta Top */}
+                    <div className="flex items-center justify-between gap-2 text-[11px] mb-2">
+                      <span className="font-mono font-bold text-[#105CB3] bg-blue-50 px-2 py-0.5 rounded border border-blue-100">
+                        {p.soBaoGia || "BG-000"}
                       </span>
-                    )}
-                    {p.trangThai === "dang_lam" && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-0.5 text-[11px] font-bold text-[#105CB3] border border-blue-200">
-                        <span>Đang biên tập</span>
-                      </span>
-                    )}
-                    {p.trangThai === "nhap" && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-bold text-amber-700 border border-amber-200">
-                        <span>Mới giao (Nháp)</span>
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Assignees */}
-                  <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-                    <div className="flex items-center gap-1.5 truncate">
-                      <FiUser className="h-3.5 w-3.5 text-[#105CB3] shrink-0" />
-                      <span className="truncate">
-                        {getUserName(p.nguoi_phu_trach_id || p.nguoiPhuTrachId)}
+                      <span className="text-slate-400 flex items-center gap-1">
+                        <FiClock className="h-3 w-3" />
+                        {(p.updatedAt || p.updated_at) ? new Date(p.updatedAt || p.updated_at).toLocaleDateString("vi-VN") : "—"}
                       </span>
                     </div>
 
-                    {p.memberIds && p.memberIds.length > 0 && (
-                      <div className="flex items-center gap-1 text-slate-400" title={`${p.memberIds.length} kỹ sư phối hợp`}>
-                        <FiUsers className="h-3.5 w-3.5" />
-                        <span>+{p.memberIds.length}</span>
-                      </div>
+                    {/* Title */}
+                    <h3 className="text-sm font-bold text-slate-800 line-clamp-2 group-hover:text-[#105CB3] transition-colors">
+                      {p.name}
+                    </h3>
+
+                    {/* Client */}
+                    {(p.tenKhachHang || p.khachHang) && (
+                      <p className="mt-1.5 text-xs text-slate-500 truncate flex items-center gap-1.5">
+                        <RiBuilding4Line className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                        <span>{p.tenKhachHang || p.khachHang}</span>
+                      </p>
                     )}
+
+                    {/* Status Badge */}
+                    <div className="mt-3">
+                      {p.trangThai === "da_gui" && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700 border border-emerald-200">
+                          <FiCheckCircle className="h-3 w-3" />
+                          <span>Đã hoàn tất / Gửi</span>
+                        </span>
+                      )}
+                      {p.trangThai === "dang_lam" && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-0.5 text-[11px] font-bold text-[#105CB3] border border-blue-200">
+                          <span>Đang biên tập</span>
+                        </span>
+                      )}
+                      {p.trangThai === "nhap" && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-bold text-amber-700 border border-amber-200">
+                          <span>Mới giao (Nháp)</span>
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Assignees */}
+                    <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                      <div className="flex items-center gap-1.5 truncate">
+                        <FiUser className="h-3.5 w-3.5 text-[#105CB3] shrink-0" />
+                        <span className="truncate">
+                          {getUserName(p.nguoi_phu_trach_id || p.nguoiPhuTrachId)}
+                        </span>
+                      </div>
+
+                      {p.memberIds && p.memberIds.length > 0 && (
+                        <div className="flex items-center gap-1 text-slate-400" title={`${p.memberIds.length} kỹ sư phối hợp`}>
+                          <FiUsers className="h-3.5 w-3.5" />
+                          <span>+{p.memberIds.length}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Actions Footer */}
+                  <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1">
+                      {(isAdmin || isManager || (user?.role === "user" && p.trangThai === "nhap" && (p.nguoiPhuTrachId === user?.id || p.nguoi_phu_trach_id === user?.id))) && (
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(p.id, p.name)}
+                          className="rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600 transition-colors"
+                          title="Xóa vào thùng rác (UC11)"
+                        >
+                          <FiTrash2 className="h-4 w-4" />
+                        </button>
+                      )}
+                      {(isAdmin || isManager) && (
+                        <button
+                          type="button"
+                          onClick={() => handleArchive(p.id, p.name)}
+                          className="rounded-lg p-2 text-slate-400 hover:bg-amber-50 hover:text-amber-600 transition-colors"
+                          title="Lưu trữ báo giá (UC11)"
+                        >
+                          <FiArchive className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
+
+                    <Link
+                      to={`/quotes/${p.id}/editor`}
+                      className="ml-auto inline-flex items-center gap-1.5 rounded-xl bg-[#105CB3] px-3.5 py-1.5 text-xs font-bold text-white shadow-xs hover:bg-[#268DF0] transition-colors"
+                    >
+                      <span>Mở Soạn Thảo (UC05)</span>
+                      <FiExternalLink className="h-3.5 w-3.5" />
+                    </Link>
                   </div>
                 </div>
+              ))}
+            </div>
 
-                {/* Actions Footer */}
-                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
-                  {isAdmin && (
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(p.id, p.name)}
-                      className="rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600 transition-colors"
-                      title="Xóa vào thùng rác"
-                    >
-                      <FiTrash2 className="h-4 w-4" />
-                    </button>
-                  )}
+            {/* Pagination Controls */}
+            {filteredProjects.length > 0 && (
+              <div className="mt-6 flex flex-col sm:flex-row items-center justify-between gap-3 rounded-xl border border-blue-100 bg-white p-4 shadow-xs text-xs text-slate-500">
+                <div>
+                  Hiển thị{" "}
+                  <strong className="text-[#105CB3]">
+                    {startIndex + 1} - {Math.min(startIndex + PAGE_SIZE, filteredProjects.length)}
+                  </strong>{" "}
+                  trong tổng số <strong className="text-slate-800">{filteredProjects.length}</strong> hồ sơ báo giá (Trang {currentPage}/{totalPages})
+                </div>
 
-                  <Link
-                    to={`/quotes/${p.id}/editor`}
-                    className="ml-auto inline-flex items-center gap-1.5 rounded-xl bg-[#105CB3] px-3.5 py-1.5 text-xs font-bold text-white shadow-xs hover:bg-[#268DF0] transition-colors"
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={currentPage <= 1}
+                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-2xs"
                   >
-                    <span>Mở Soạn Thảo (UC05)</span>
-                    <FiExternalLink className="h-3.5 w-3.5" />
-                  </Link>
+                    <FiChevronLeft className="h-3.5 w-3.5" />
+                    <span>Trước</span>
+                  </button>
+
+                  <div className="flex items-center gap-1">
+                    {getPageNumbers(currentPage, totalPages).map((p, idx) =>
+                      p === "..." ? (
+                        <span key={`ellipsis-${idx}`} className="px-1 text-slate-400 font-bold select-none">
+                          ...
+                        </span>
+                      ) : (
+                        <button
+                          key={`page-${p}`}
+                          type="button"
+                          onClick={() => setCurrentPage(Number(p))}
+                          className={`min-w-[28px] h-7 rounded-lg text-xs font-bold transition-colors ${
+                            currentPage === p
+                              ? "bg-[#105CB3] text-white shadow-xs"
+                              : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                          }`}
+                        >
+                          {p}
+                        </button>
+                      )
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={currentPage >= totalPages}
+                    onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-2xs"
+                  >
+                    <span>Sau</span>
+                    <FiChevronRight className="h-3.5 w-3.5" />
+                  </button>
                 </div>
               </div>
-            ))}
-          </div>
+            )}
+          </>
         )}
       </div>
 

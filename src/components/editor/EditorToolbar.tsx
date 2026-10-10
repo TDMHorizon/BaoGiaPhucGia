@@ -28,6 +28,7 @@ interface EditorToolbarProps {
   userRole?: string;
   onBack: () => void;
   onExportExcel: () => void;
+  onExportDraftExcel?: () => void;
   onPrint?: () => void;
   onToggleInspector: () => void;
   isInspectorOpen: boolean;
@@ -60,6 +61,7 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
   userRole,
   onBack,
   onExportExcel,
+  onExportDraftExcel,
   onPrint,
   onToggleInspector,
   isInspectorOpen,
@@ -167,10 +169,23 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
         <div className="flex items-center gap-2">
           {renderSaveBadge()}
 
+          {onExportDraftExcel && (
+            <button
+              type="button"
+              onClick={onExportDraftExcel}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50/80 px-2.5 py-1.5 text-xs font-bold text-amber-900 shadow-2xs hover:bg-amber-100 transition-colors"
+              title="Xuất tệp Excel dự thảo có Watermark 'BẢN DỰ THẢO - CHƯA DUYỆT' (UC17)"
+            >
+              <RiFileExcel2Line className="h-3.5 w-3.5 text-amber-600" />
+              <span className="hidden sm:inline">Xuất Nháp (Watermark)</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={onExportExcel}
             className="inline-flex items-center gap-1.5 rounded-lg bg-[#105CB3] px-3 py-1.5 text-xs font-bold text-white shadow-xs hover:bg-[#268DF0] transition-colors"
+            title="Tải tệp Excel bảng tính"
           >
             <FiDownload className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Tải Excel</span>

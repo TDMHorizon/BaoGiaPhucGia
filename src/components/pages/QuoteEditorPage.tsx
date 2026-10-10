@@ -372,6 +372,79 @@ export const QuoteEditorPage: React.FC = () => {
       toast.success(`Quản trị viên đã khôi phục vùng tại sheet ${payload.sheetName || activeSheet}`);
     };
 
+    const handleProjectUpdated = (payload: any) => {
+      if (payload.projectId !== projectId) return;
+      setProject((prev: any) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          ...(payload.otHours !== undefined ? { otHours: payload.otHours } : {}),
+          ...(payload.otRate !== undefined ? { otRate: payload.otRate } : {}),
+          ...(payload.vatRate !== undefined ? { vatRate: payload.vatRate } : {}),
+          ...(payload.discountAmount !== undefined ? { discountAmount: payload.discountAmount } : {}),
+          ...(payload.financialConfig !== undefined ? { financialConfig: payload.financialConfig } : {}),
+          ...(payload.financeRevision !== undefined ? { financeRevision: payload.financeRevision } : {}),
+        };
+      });
+    };
+
+    const handleBatchUpdated = (payload: any) => {
+      if (payload.projectId !== projectId || !Array.isArray(payload.edits)) return;
+      const editsList = payload.edits;
+      setCellRevisions((prev) => {
+        const next = { ...prev };
+        for (const e of editsList) {
+          next[`${e.sheetName}!${e.cell}`] = e.revision;
+        }
+        return next;
+      });
+      setEdits((prev) => [...prev, ...editsList]);
+      if (workbook) {
+        applyEditsToWorkbook(workbook, editsList);
+        setSheetData(getSheetData(workbook, activeSheet));
+      }
+      if (exceljsWorkbook) {
+        for (const e of editsList) {
+          try {
+            const ws = exceljsWorkbook.getWorksheet(e.sheetName);
+            if (ws) updateMergedCellInExcelJS(ws, e.cell, e.newValue);
+          } catch {}
+        }
+      }
+    };
+
+    const handleStatusUpdated = (payload: any) => {
+      if (payload.projectId !== projectId) return;
+      const newStatus = payload.trangThai || payload.status;
+      setProject((prev: any) => (prev ? { ...prev, trangThai: newStatus } : prev));
+      toast.info(`Trạng thái báo giá đã chuyển sang: ${newStatus}`);
+    };
+
+    const handleProjectLocked = (payload: any) => {
+      if (payload.projectId !== projectId) return;
+      setProject((prev: any) => (prev ? { ...prev, isLocked: true } : prev));
+      toast.warning("Báo giá vừa bị khóa!");
+    };
+
+    const handleProjectRestored = (payload: any) => {
+      if (payload.projectId !== projectId) return;
+      toast.info("Báo giá vừa được khôi phục phiên bản! Đang tải lại dữ liệu...");
+      loadProjectData();
+    };
+
+    const handleMemberPermissionsUpdated = (payload: any) => {
+      if (payload.projectId !== projectId) return;
+      loadProjectData();
+    };
+
+    const handleMembershipRevoked = (payload: any) => {
+      if (payload.projectId !== projectId) return;
+      if (payload.userId === user?.id) {
+        toast.error("Bạn đã bị thu hồi quyền truy cập báo giá này!");
+        navigate("/quotes");
+      }
+    };
+
     socket.on("cell.updated", handleCellUpdated);
     socket.on("cell_focused", handleCellFocused);
     socket.on("cell_blurred", handleCellBlurred);
@@ -538,6 +611,7 @@ export const QuoteEditorPage: React.FC = () => {
         }
         toast.error(e.message || "Lỗi khi lưu dữ liệu!");
       }
+      throw e;
     }
   };
 

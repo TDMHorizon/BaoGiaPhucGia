@@ -1,4 +1,5 @@
 import { io, Socket } from "socket.io-client";
+import { getToken } from "./api";
 
 let socket: Socket | null = null;
 
@@ -9,6 +10,9 @@ export function getSocket(): Socket {
       reconnection: true,
       reconnectionAttempts: 10,
       reconnectionDelay: 1000,
+      auth: (cb) => {
+        cb({ token: getToken() });
+      },
     });
   }
   return socket;

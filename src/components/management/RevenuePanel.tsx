@@ -2,17 +2,31 @@ import React, { useEffect, useState } from "react";
 import { api } from "../../lib/api";
 import {
   FiTrendingUp,
-  FiAlertCircle,
-  FiInfo,
   FiDollarSign,
   FiPieChart,
-  FiCalendar,
   FiCheckCircle,
+  FiChevronLeft,
+  FiChevronRight,
 } from "react-icons/fi";
+
+const PAGE_SIZE = 25;
+
+function getPageNumbers(current: number, total: number): (number | string)[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const pages: (number | string)[] = [1];
+  if (current > 3) pages.push("...");
+  const start = Math.max(2, current - 1);
+  const end = Math.min(total - 1, current + 1);
+  for (let i = start; i <= end; i++) pages.push(i);
+  if (current < total - 2) pages.push("...");
+  pages.push(total);
+  return pages;
+}
 
 export const RevenuePanel: React.FC = () => {
   const [projects, setProjects] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [currentPage, setCurrentPage] = useState(1);
 
   useEffect(() => {
     async function load() {
@@ -33,20 +47,12 @@ export const RevenuePanel: React.FC = () => {
   const daGui = projects.filter((p) => p.trangThai === "da_gui").length;
   const dangLam = projects.filter((p) => p.trangThai === "dang_lam").length;
 
+  const totalPages = Math.ceil(total / PAGE_SIZE) || 1;
+  const startIndex = (currentPage - 1) * PAGE_SIZE;
+  const displayedProjects = projects.slice(startIndex, startIndex + PAGE_SIZE);
+
   return (
     <div className="space-y-6">
-      {/* Disclaimer Banner per Textbook Spec */}
-      <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-4 text-xs text-amber-900 shadow-xs flex items-start gap-3">
-        <FiInfo className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
-        <div className="space-y-1">
-          <p className="font-bold">Quy định xác thực nguồn dữ liệu tài chính (Chương III - UC01)</p>
-          <p className="text-amber-800 leading-relaxed">
-            Dữ liệu tài chính hiển thị dưới đây là <strong>giá trị dự toán/báo giá kỹ thuật</strong> từ các hồ sơ trắc địa.
-            Hệ thống chưa kết nối cổng hóa đơn điện tử hoặc thanh toán kế toán thực thu, do đó không hiển thị chỉ tiêu
-            lợi nhuận/doanh số giả định để đảm bảo tính minh bạch theo chuẩn kiểm toán.
-          </p>
-        </div>
-      </div>
 
       {/* Financial Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -92,10 +98,15 @@ export const RevenuePanel: React.FC = () => {
 
       {/* Verified Data Details */}
       <div className="rounded-xl border border-blue-100 bg-white p-6 shadow-xs">
-        <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2 mb-4">
-          <FiPieChart className="h-4 w-4 text-[#105CB3]" />
-          <span>Danh mục Báo giá Kỹ thuật Phục vụ Quyết toán</span>
-        </h3>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+          <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+            <FiPieChart className="h-4 w-4 text-[#105CB3]" />
+            <span>Danh mục Báo giá Kỹ thuật Phục vụ Quyết toán</span>
+          </h3>
+          <span className="text-xs font-semibold text-slate-500">
+            Tổng cộng: <strong className="text-[#105CB3]">{total}</strong> hồ sơ
+          </span>
+        </div>
 
         {loading ? (
           <div className="py-8 text-center text-xs text-slate-400">Đang tải dữ liệu hồ sơ...</div>
@@ -104,50 +115,110 @@ export const RevenuePanel: React.FC = () => {
             Chưa có hồ sơ báo giá nào trong cơ sở dữ liệu
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-[#F0F7FF] text-[#105CB3] uppercase text-[10px] font-bold">
-                <tr>
-                  <th className="px-4 py-3 rounded-l-lg">Mã Báo Giá</th>
-                  <th className="px-4 py-3">Tên Dự Án</th>
-                  <th className="px-4 py-3">Khách Hàng / Đối Tác</th>
-                  <th className="px-4 py-3">Trạng Thái Kỹ Thuật</th>
-                  <th className="px-4 py-3 text-right rounded-r-lg">Ghi Chú Kế Toán</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {projects.map((p) => (
-                  <tr key={p.id} className="hover:bg-slate-50/80">
-                    <td className="px-4 py-3 font-mono font-semibold text-[#105CB3]">
-                      {p.soBaoGia || "—"}
-                    </td>
-                    <td className="px-4 py-3 font-medium text-slate-800">{p.name}</td>
-                    <td className="px-4 py-3 text-slate-600">{p.khachHang || "Khách hàng vãng lai"}</td>
-                    <td className="px-4 py-3">
-                      {p.trangThai === "da_gui" && (
-                        <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold text-emerald-800">
-                          Đã gửi khách
-                        </span>
-                      )}
-                      {p.trangThai === "dang_lam" && (
-                        <span className="rounded-full bg-blue-100 px-2.5 py-0.5 text-[10px] font-bold text-[#105CB3]">
-                          Đang lập báo giá
-                        </span>
-                      )}
-                      {p.trangThai === "nhap" && (
-                        <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-[10px] font-bold text-amber-800">
-                          Mới tạo / Nháp
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-right text-slate-400 italic">
-                      Dự toán kỹ thuật
-                    </td>
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-[#F0F7FF] text-[#105CB3] uppercase text-[10px] font-bold">
+                  <tr>
+                    <th className="px-4 py-3 rounded-l-lg">Mã Báo Giá</th>
+                    <th className="px-4 py-3">Tên Dự Án</th>
+                    <th className="px-4 py-3">Khách Hàng / Đối Tác</th>
+                    <th className="px-4 py-3">Trạng Thái Kỹ Thuật</th>
+                    <th className="px-4 py-3 text-right rounded-r-lg">Ghi Chú Kế Toán</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {displayedProjects.map((p) => (
+                    <tr key={p.id} className="hover:bg-slate-50/80">
+                      <td className="px-4 py-3 font-mono font-semibold text-[#105CB3]">
+                        {p.soBaoGia || "—"}
+                      </td>
+                      <td className="px-4 py-3 font-medium text-slate-800">{p.name}</td>
+                      <td className="px-4 py-3 text-slate-600">{p.tenKhachHang || p.khachHang || "Khách hàng vãng lai"}</td>
+                      <td className="px-4 py-3">
+                        {p.trangThai === "da_gui" && (
+                          <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold text-emerald-800">
+                            Đã gửi khách
+                          </span>
+                        )}
+                        {p.trangThai === "dang_lam" && (
+                          <span className="rounded-full bg-blue-100 px-2.5 py-0.5 text-[10px] font-bold text-[#105CB3]">
+                            Đang lập báo giá
+                          </span>
+                        )}
+                        {p.trangThai === "nhap" && (
+                          <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-[10px] font-bold text-amber-800">
+                            Mới tạo / Nháp
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right text-slate-400 italic">
+                        Dự toán kỹ thuật
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination Controls */}
+            {total > 0 && (
+              <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-slate-100 pt-4 text-xs text-slate-500">
+                <div>
+                  Hiển thị{" "}
+                  <strong className="text-[#105CB3]">
+                    {startIndex + 1} - {Math.min(startIndex + PAGE_SIZE, total)}
+                  </strong>{" "}
+                  trong tổng số <strong className="text-slate-800">{total}</strong> hồ sơ (Trang {currentPage}/{totalPages})
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={currentPage <= 1}
+                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-2xs"
+                  >
+                    <FiChevronLeft className="h-3.5 w-3.5" />
+                    <span>Trước</span>
+                  </button>
+
+                  <div className="flex items-center gap-1">
+                    {getPageNumbers(currentPage, totalPages).map((p, idx) =>
+                      p === "..." ? (
+                        <span key={`ellipsis-${idx}`} className="px-1 text-slate-400 font-bold select-none">
+                          ...
+                        </span>
+                      ) : (
+                        <button
+                          key={`page-${p}`}
+                          type="button"
+                          onClick={() => setCurrentPage(Number(p))}
+                          className={`min-w-[28px] h-7 rounded-lg text-xs font-bold transition-colors ${
+                            currentPage === p
+                              ? "bg-[#105CB3] text-white shadow-xs"
+                              : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                          }`}
+                        >
+                          {p}
+                        </button>
+                      )
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={currentPage >= totalPages}
+                    onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-2xs"
+                  >
+                    <span>Sau</span>
+                    <FiChevronRight className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

@@ -33,7 +33,9 @@ import {
   type VersionRow,
   type TemplateRow,
   isCellDisabled,
-  updateProjectDisabledRange
+  updateProjectDisabledRange,
+  recordProjectEvent,
+  hardDeleteProject
 } from "./server/db";
 import {
   authenticateUser,
@@ -50,6 +52,7 @@ import {
   ensureDataDirs,
   saveProjectFile,
   readProjectFile,
+  readProjectFileBuffer,
   readVersionSnapshot,
   saveTemplateFile,
   readTemplateFile,
@@ -57,25 +60,41 @@ import {
   deleteProjectFiles,
   toDataUrl,
 } from "./server/files";
+import { buildFinalWorkbookBuffer, loadWorkbookFromBuffer, validateXlsxUpload } from "./server/services/excelService";
+import { applyDraftWatermarkToWorkbook } from "./src/lib/exceljs-helper";
 import * as XLSX from "xlsx";
-
-/** Bản gốc không bị ghi đè. User chỉ điền ô được phép rồi tải Excel gửi khách. */
-const USER_TRANSITIONS: Record<string, TrangThai[]> = {
-  nhap: ["dang_lam"],
-  dang_lam: ["da_gui"],
-  // legacy statuses from older builds
-  cho_duyet: ["da_gui", "dang_lam"],
-  da_duyet: ["da_gui", "dang_lam"],
-  da_gui: [],
-};
-
-const ADMIN_TRANSITIONS: Record<string, TrangThai[]> = {
-  nhap: ["dang_lam", "da_gui"],
-  dang_lam: ["da_gui", "nhap"],
-  cho_duyet: ["dang_lam", "da_gui", "nhap"],
-  da_duyet: ["dang_lam", "da_gui", "nhap"],
-  da_gui: ["dang_lam", "nhap"],
-};
+import {
+  USER_TRANSITIONS,
+  ADMIN_TRANSITIONS,
+  canUserTransition,
+  isProjectMutationLocked,
+  transitionProjectStatus,
+  lockProjectManually,
+  unlockProjectManually,
+} from "./server/services/projectWorkflowService";
+import {
+  calculateProjectFinancials,
+  getProjectFinancialReviewStatus,
+  submitFinancialReview,
+} from "./server/services/financeReviewService";
+import {
+  approveQuotation,
+  rejectQuotation,
+} from "./server/services/approvalService";
+import {
+  getProjectVersionsList,
+  getSnapshotBufferForVersion,
+  restoreSnapshotAsWorkingRevision,
+  getOfficialA4ExportBuffer,
+} from "./server/services/snapshotService";
+import {
+  handleProjectDelete,
+  archiveProject,
+  unarchiveProject,
+  permanentDeleteProject,
+  getArchivedProjectsList,
+} from "./server/services/archiveService";
+import { queryGlobalEdits } from "./server/services/auditQueryService";
 
 function now() {
   return new Date().toISOString();
@@ -116,8 +135,12 @@ async function purgeExpiredDeletedProjects() {
     .all() as { id: string }[];
 
   for (const project of expiredProjects) {
-    await deleteProjectFiles(project.id);
-    getDb().prepare("DELETE FROM projects WHERE id = ? AND isDelete = 1").run(project.id);
+    hardDeleteProject(project.id);
+    try {
+      await deleteProjectFiles(project.id);
+    } catch (e) {
+      console.error(`[Purge Warning] Failed to delete files for project ${project.id}:`, e);
+    }
   }
 }
 
@@ -149,27 +172,73 @@ async function startServer() {
     maxHttpBufferSize: 1e8,
   });
 
+  // [P0-11] Socket.IO Handshake Authentication: Bắt buộc xác thực JWT token
+  io.use((socket, next) => {
+    const token =
+      (socket.handshake.auth?.token as string) ||
+      (socket.handshake.headers?.authorization?.startsWith("Bearer ")
+        ? socket.handshake.headers.authorization.slice(7)
+        : (socket.handshake.query?.token as string));
+
+    if (!token) {
+      return next(new Error("Unauthorized: Thiếu token xác thực"));
+    }
+
+    const user = verifyToken(token);
+    if (!user) {
+      return next(new Error("Unauthorized: Token không hợp lệ"));
+    }
+
+    const dbUser = getDb().prepare("SELECT active, token_version FROM users WHERE id = ?").get(user.id) as
+      | { active: number; token_version: number }
+      | undefined;
+    if (!dbUser || !dbUser.active || (user.tokenVersion !== undefined && user.tokenVersion !== dbUser.token_version)) {
+      return next(new Error("Unauthorized: Tài khoản đã bị khóa hoặc phiên đăng nhập hết hạn"));
+    }
+
+    (socket as any).user = user;
+    next();
+  });
+
   io.on("connection", (socket) => {
+    const socketUser = (socket as any).user;
+    if (!socketUser) {
+      socket.disconnect(true);
+      return;
+    }
+
     socket.on("identify_user", (userId: string) => {
-      if (userId) socket.join(`user:${userId}`);
+      // Chỉ cho phép user join user-room của chính mình (hoặc admin)
+      if (userId && (socketUser.id === userId || socketUser.role === "admin")) {
+        socket.join(`user:${userId}`);
+      }
     });
+
     socket.on("join_project", (projectId: string) => {
-      if (projectId) socket.join(`project:${projectId}`);
+      if (!projectId) return;
+      // Kiểm tra quyền truy cập dự án trước khi cho phép lắng nghe sự kiện tài chính/sửa ô
+      const project = loadProject(projectId);
+      if (!project || !userCanAccessProject(socketUser, project)) {
+        socket.emit("error", { message: "Forbidden: Bạn không có quyền truy cập room dự án này" });
+        return;
+      }
+      socket.join(`project:${projectId}`);
     });
+
     socket.on("leave_project", (projectId: string) => {
       if (projectId) socket.leave(`project:${projectId}`);
     });
 
     // Realtime Collaborative Presence: Nhân viên focus/bắt đầu sửa ô (UC07)
     socket.on("cell_focus", (data: { projectId: string; sheetName: string; r: number; c: number; cell: string; user: { id: string; username: string; color?: string } }) => {
-      if (data?.projectId) {
+      if (data?.projectId && socket.rooms.has(`project:${data.projectId}`)) {
         socket.to(`project:${data.projectId}`).emit("cell_focused", data);
       }
     });
 
     // Realtime Collaborative Presence: Nhân viên rời ô / kết thúc sửa (UC07)
     socket.on("cell_blur", (data: { projectId: string; sheetName: string; r: number; c: number; cell: string; userId: string }) => {
-      if (data?.projectId) {
+      if (data?.projectId && socket.rooms.has(`project:${data.projectId}`)) {
         socket.to(`project:${data.projectId}`).emit("cell_blurred", data);
       }
     });
@@ -437,6 +506,15 @@ async function startServer() {
       });
     }
 
+    const totalCount = rows.length;
+    res.setHeader("X-Total-Count", totalCount.toString());
+
+    if (req.query.limit !== undefined) {
+      const limit = Math.max(1, parseInt(String(req.query.limit), 10) || 20);
+      const offset = Math.max(0, parseInt(String(req.query.offset), 10) || 0);
+      rows = rows.slice(offset, offset + limit);
+    }
+
     res.json(rows.map((p) => listSummary(p, membersByProjectId)));
   });
 
@@ -499,6 +577,18 @@ async function startServer() {
 
     if (!name || !actualFile) return res.status(400).json({ error: "Missing name or file" });
 
+    // [P1-29] Validate file Excel tải lên và trích xuất danh sách sheet thực từ workbook
+    try {
+      const validated = await validateXlsxUpload(actualFile);
+      if (Array.isArray(validated.sheetNames) && validated.sheetNames.length > 0) {
+        actualSheets = validated.sheetNames;
+      }
+    } catch (valErr: any) {
+      if (mode !== "blank") {
+        return res.status(valErr?.status || 400).json({ error: valErr?.message || "File Excel không hợp lệ" });
+      }
+    }
+
     const id = newId();
     const ts = now();
     const ownerId = (user.role === "admin" || user.role === "manager") ? nguoiPhuTrachId || null : user.id;
@@ -524,7 +614,12 @@ async function startServer() {
       );
 
     if (members.length) setProjectMembers(id, members);
-    await saveProjectFile(id, actualFile);
+    try {
+      await saveProjectFile(id, actualFile);
+    } catch (saveErr: any) {
+      hardDeleteProject(id);
+      throw saveErr;
+    }
 
     const project = loadProject(id)!;
     res.json(await projectWithFile(project));
@@ -541,11 +636,19 @@ async function startServer() {
     res.json(await projectWithFile(project));
   }));
 
+  // UC11: Danh sách báo giá đã lưu trữ (Manager/Admin)
+  app.get("/api/projects/archived", authMiddleware, requireAdminOrManager, (_req, res) => {
+    const rows = getArchivedProjectsList();
+    res.json(rows.map((p) => listSummary(p)));
+  });
+
   app.get("/api/projects/:id", authMiddleware, catchAsync(async (req, res) => {
     const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
-    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+    if (!userCanAccessProject(user, project, user.role === "admin" || user.role === "manager")) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     res.json(await projectWithFile(project));
   }));
 
@@ -557,6 +660,11 @@ async function startServer() {
       return res.status(403).json({ error: "Forbidden" });
     }
 
+    // Kiểm tra trạng thái khóa (trừ Admin có quyền can thiệp đặc biệt)
+    if (user.role !== "admin" && isProjectMutationLocked(project)) {
+      return res.status(403).json({ error: "Báo giá đang ở trạng thái khóa/đã phát hành hoặc bị Admin khóa thủ công, không thể chỉnh sửa!" });
+    }
+
     const body = req.body || {};
     let name = project.name;
     let soBaoGia = project.so_bao_gia;
@@ -565,6 +673,97 @@ async function startServer() {
     let ghiChu = project.ghi_chu;
     let editableRanges = project.editable_ranges;
     let sheets = project.sheets;
+    let otHours = Number(project.ot_hours ?? 0);
+    let otRate = Number(project.ot_rate ?? 505000);
+    let vatRate = Number(project.vat_rate ?? 8);
+    let discountAmount = Number(project.discount_amount ?? 0);
+    let financialConfig = project.financial_config ?? "{}";
+
+    // [P0-05] Concurrency Control (OCC): Kiểm tra expectedFinanceRevision
+    const currentFinanceRevision = Number(project.finance_revision ?? 1);
+    if (body.expectedFinanceRevision !== undefined) {
+      const expRev = Number(body.expectedFinanceRevision);
+      if (expRev !== currentFinanceRevision) {
+        return res.status(409).json({
+          error: `Dữ liệu tài chính đã bị thay đổi bởi người khác (phiên bản máy chủ: ${currentFinanceRevision}, phiên bản gửi lên: ${expRev}). Vui lòng tải lại trước khi lưu!`,
+          currentRevision: currentFinanceRevision,
+          serverData: projectToJson(project),
+        });
+      }
+    }
+
+    // UC06: Nhập giờ OT (Nhân viên được phân công, Manager, Admin đều được phép nhập)
+    if (body.otHours !== undefined) {
+      const parsedOt = Number(body.otHours);
+      if (!Number.isFinite(parsedOt) || parsedOt < 0 || parsedOt > 100000) {
+        return res.status(400).json({ error: "Số giờ làm thêm OT phải là số hữu hạn lớn hơn hoặc bằng 0" });
+      }
+      otHours = parsedOt;
+    }
+
+    // UC06: Đơn giá OT định mức - chỉ Admin hoặc Manager được cấu hình (mặc định 505.000 VNĐ/giờ)
+    if (body.otRate !== undefined) {
+      if (user.role === "user") {
+        return res.status(403).json({ error: "Nhân viên kỹ thuật không có quyền thay đổi đơn giá OT định mức (UC06)!" });
+      }
+      const parsedRate = Number(body.otRate);
+      if (!Number.isFinite(parsedRate) || parsedRate < 0 || parsedRate > 1e12) {
+        return res.status(400).json({ error: "Đơn giá OT định mức phải là số hữu hạn >= 0" });
+      }
+      otRate = parsedRate;
+    }
+
+    // UC05: Phân quyền cấp trường tài chính (VAT, Chiết khấu, Phụ cấp)
+    // Nhân viên kỹ thuật (user) KHÔNG ĐƯỢC PHÉP sửa các trường tài chính - trả về 403 Forbidden!
+    if (body.vatRate !== undefined || body.discountAmount !== undefined || body.financialConfig !== undefined) {
+      if (user.role === "user") {
+        return res.status(403).json({
+          error: "Nhân viên kỹ thuật không có quyền sửa đơn giá, thuế VAT hoặc chiết khấu tài chính (UC05)!",
+        });
+      }
+      if (body.vatRate !== undefined) {
+        const parsedVat = Number(body.vatRate);
+        if (!Number.isFinite(parsedVat) || parsedVat < 0 || parsedVat > 100) {
+          return res.status(400).json({ error: "Thuế suất VAT phải là số từ 0% đến 100%" });
+        }
+        vatRate = parsedVat;
+      }
+      if (body.discountAmount !== undefined) {
+        const parsedDiscount = Number(body.discountAmount);
+        if (!Number.isFinite(parsedDiscount) || parsedDiscount < 0 || parsedDiscount > 1e12) {
+          return res.status(400).json({ error: "Chiết khấu phải là số hữu hạn >= 0" });
+        }
+        discountAmount = parsedDiscount;
+      }
+      if (body.financialConfig !== undefined) {
+        let parsedConfig: any = body.financialConfig;
+        if (typeof parsedConfig === "string") {
+          try {
+            parsedConfig = JSON.parse(parsedConfig);
+          } catch {
+            return res.status(400).json({ error: "Cấu hình tài chính financialConfig JSON không hợp lệ" });
+          }
+        }
+        if (typeof parsedConfig !== "object" || parsedConfig === null || Array.isArray(parsedConfig)) {
+          return res.status(400).json({ error: "financialConfig phải là một JSON object" });
+        }
+        if (parsedConfig.equipmentAllowance !== undefined) {
+          const eq = Number(parsedConfig.equipmentAllowance);
+          if (!Number.isFinite(eq) || eq < 0 || eq > 1e12) {
+            return res.status(400).json({ error: "Phụ cấp máy móc equipmentAllowance phải là số hợp lệ >= 0" });
+          }
+          parsedConfig.equipmentAllowance = eq;
+        }
+        if (parsedConfig.travelAllowance !== undefined) {
+          const tr = Number(parsedConfig.travelAllowance);
+          if (!Number.isFinite(tr) || tr < 0 || tr > 1e12) {
+            return res.status(400).json({ error: "Phụ cấp đi lại travelAllowance phải là số hợp lệ >= 0" });
+          }
+          parsedConfig.travelAllowance = tr;
+        }
+        financialConfig = JSON.stringify(parsedConfig);
+      }
+    }
 
     if (user.role === "admin" || user.role === "manager") {
       if (body.name !== undefined) name = body.name;
@@ -601,19 +800,90 @@ async function startServer() {
       if (body.ghiChu !== undefined) ghiChu = body.ghiChu;
     }
 
+    const hasFinancialChanges =
+      otHours !== Number(project.ot_hours ?? 0) ||
+      otRate !== Number(project.ot_rate ?? 505000) ||
+      vatRate !== Number(project.vat_rate ?? 8) ||
+      discountAmount !== Number(project.discount_amount ?? 0) ||
+      financialConfig !== (project.financial_config ?? "{}");
+
+    const nextFinanceRevision = hasFinancialChanges ? currentFinanceRevision + 1 : currentFinanceRevision;
+
     getDb()
       .prepare(
         `UPDATE projects SET name = ?, so_bao_gia = ?, ten_khach_hang = ?, nguoi_phu_trach_id = ?,
-         ghi_chu = ?, editable_ranges = ?, sheets = ?, updated_at = ? WHERE id = ?`
+         ghi_chu = ?, editable_ranges = ?, sheets = ?, ot_hours = ?, ot_rate = ?, vat_rate = ?,
+         discount_amount = ?, financial_config = ?, finance_revision = ?, updated_at = ? WHERE id = ?`
       )
-      .run(name, soBaoGia, tenKhachHang, nguoiPhuTrachId, ghiChu, editableRanges, sheets, now(), project.id);
+      .run(
+        name,
+        soBaoGia,
+        tenKhachHang,
+        nguoiPhuTrachId,
+        ghiChu,
+        editableRanges,
+        sheets,
+        otHours,
+        otRate,
+        vatRate,
+        discountAmount,
+        financialConfig,
+        nextFinanceRevision,
+        now(),
+        project.id
+      );
 
+    // [P1-07] Ghi nhận Audit Log chuyên biệt khi có điều chỉnh tài chính hoặc OT
+    if (hasFinancialChanges) {
+      recordAuditLog({
+        userId: user.id,
+        username: user.username,
+        action: "PROJECT_FINANCIAL_UPDATED",
+        resource: "projects",
+        resourceId: project.id,
+        detail: {
+          old: {
+            otHours: project.ot_hours,
+            otRate: project.ot_rate,
+            vatRate: project.vat_rate,
+            discountAmount: project.discount_amount,
+            financialConfig: project.financial_config,
+            financeRevision: currentFinanceRevision,
+          },
+          new: {
+            otHours,
+            otRate,
+            vatRate,
+            discountAmount,
+            financialConfig,
+            financeRevision: nextFinanceRevision,
+          },
+        },
+      });
+      // Đánh dấu kết quả thẩm định cũ là stale khi có điều chỉnh tài chính (P1-26)
+      getDb().prepare("UPDATE financial_reviews SET is_stale = 1 WHERE project_id = ?").run(project.id);
+    }
+
+    // [P1-12] Realtime Socket phát đầy đủ thông tin tài chính kèm financeRevision
     io.to(`project:${project.id}`).emit("project.updated", {
       projectId: project.id,
       updatedBy: user.username,
+      otHours,
+      otRate,
+      vatRate,
+      discountAmount,
+      financialConfig: (() => {
+        try {
+          return JSON.parse(financialConfig);
+        } catch {
+          return {};
+        }
+      })(),
+      financeRevision: nextFinanceRevision,
     });
 
-    res.json(await projectWithFile(loadProject(project.id)!));
+    // [P2-17] Trả về JSON metadata nhẹ kèm danh sách thành viên, không serialize lại toàn bộ file Base64
+    res.json(listSummary(loadProject(project.id)!));
   }));
 
   // Phân công thành viên chuyên biệt (Admin-only - UC07)
@@ -694,13 +964,56 @@ async function startServer() {
     res.json({ ok: true, memberIds: uniqueMembers, nguoiPhuTrachId: nextOwner });
   }));
 
-  app.delete("/api/projects/:id", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
+  // UC11: Xóa dự án (Nhân viên xóa nháp của mình, Quản lý/Admin xóa vào thùng rác)
+  app.delete("/api/projects/:id", authMiddleware, catchAsync(async (req, res) => {
+    const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
-    const deletedAt = now();
-    getDb().prepare("UPDATE projects SET isDelete = 1, deleted_at = ?, updated_at = ? WHERE id = ?").run(deletedAt, deletedAt, project.id);
-    const permanentlyDeletedAt = new Date(Date.parse(deletedAt) + 30 * 24 * 60 * 60 * 1000).toISOString();
-    res.json({ ok: true, isDelete: true, deletedAt, permanentlyDeletedAt });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+
+    const result = await handleProjectDelete(project, user);
+    res.json(result);
+  }));
+
+  // UC11: Lưu trữ báo giá (Manager/Admin)
+  app.post("/api/projects/:id/archive", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+
+    const updated = await archiveProject(project, user);
+    io.to(`project:${project.id}`).emit("project.updated", {
+      projectId: project.id,
+      archived: true,
+      archivedBy: user.username,
+    });
+    res.json(listSummary(updated));
+  }));
+
+  // UC11: Khôi phục lưu trữ báo giá (Manager/Admin)
+  app.post("/api/projects/:id/unarchive", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id, false) || loadProject(req.params.id, true);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project, true)) return res.status(403).json({ error: "Forbidden" });
+
+    const updated = await unarchiveProject(project, user);
+    io.to(`project:${project.id}`).emit("project.updated", {
+      projectId: project.id,
+      archived: false,
+    });
+    res.json(listSummary(updated));
+  }));
+
+  // UC11: Xóa cứng vĩnh viễn (Admin & Manager)
+  app.delete("/api/projects/:id/permanent", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id, true) || loadProject(req.params.id, false);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const result = await permanentDeleteProject(project, user);
+    res.json(result);
   }));
 
   app.post("/api/projects/:id/restore", authMiddleware, requireAdminOrManager, (req, res) => {
@@ -715,6 +1028,11 @@ async function startServer() {
   app.put("/api/projects/:id/ranges", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
+
+    // [P1-16] Kiểm tra khóa dự án trước khi cấu hình lại vùng
+    if (req.user!.role !== "admin" && isProjectMutationLocked(project)) {
+      return res.status(403).json({ error: "Báo giá đang bị khóa, không thể cấu hình lại vùng nhập liệu." });
+    }
 
     const updatedRanges = req.body.editableRanges || {};
     getDb()
@@ -735,17 +1053,30 @@ async function startServer() {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
 
+    // [P1-16] Kiểm tra khóa dự án
+    if (req.user!.role !== "admin" && isProjectMutationLocked(project)) {
+      return res.status(403).json({ error: "Báo giá đang bị khóa, không thể thay đổi tệp nền." });
+    }
+
+    // [P1-17] Chỉ cho phép thay đổi file nền khi ở trạng thái nhap và chưa có edit nào (editCount = 0)
+    const editCountRow = getDb().prepare("SELECT COUNT(*) AS c FROM edits WHERE project_id = ?").get(project.id) as { c: number };
+    const editCount = editCountRow?.c || 0;
+    if (project.trang_thai !== "nhap" || editCount > 0) {
+      return res.status(409).json({
+        error: "Chỉ được phép thay đổi tệp Excel nền khi báo giá ở trạng thái Mới giao (nháp) và chưa có lượt chỉnh sửa nào (editCount = 0).",
+      });
+    }
+
     const { fileBase64, sheets } = req.body || {};
     if (!fileBase64) return res.status(400).json({ error: "Missing file" });
 
+    const validated = await validateXlsxUpload(fileBase64);
     await saveProjectFile(project.id, fileBase64);
-    if (sheets) {
-      getDb()
-        .prepare("UPDATE projects SET sheets = ?, project_revision = project_revision + 1, updated_at = ? WHERE id = ?")
-        .run(JSON.stringify(sheets), now(), project.id);
-    } else {
-      getDb().prepare("UPDATE projects SET project_revision = project_revision + 1, updated_at = ? WHERE id = ?").run(now(), project.id);
-    }
+    const newSheets = Array.isArray(sheets) && sheets.length > 0 ? sheets : validated.sheetNames;
+
+    getDb()
+      .prepare("UPDATE projects SET sheets = ?, project_revision = project_revision + 1, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(newSheets), now(), project.id);
 
     io.to(`project:${project.id}`).emit("structure.updated", {
       projectId: project.id,
@@ -755,7 +1086,7 @@ async function startServer() {
     res.json(await projectWithFile(loadProject(project.id)!));
   }));
 
-  // Status workflow
+  // Status workflow (UC10)
   app.post("/api/projects/:id/status", authMiddleware, catchAsync(async (req, res) => {
     const user = req.user!;
     const project = loadProject(req.params.id);
@@ -763,23 +1094,51 @@ async function startServer() {
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
 
     const nextStatus = req.body?.trangThai as TrangThai;
-    const allowed =
-      (user.role === "admin" || user.role === "manager")
-        ? ADMIN_TRANSITIONS[project.trang_thai]
-        : USER_TRANSITIONS[project.trang_thai];
-
-    if (!allowed?.includes(nextStatus)) {
-      return res.status(400).json({ error: "Invalid status transition" });
-    }
-
-    getDb()
-      .prepare("UPDATE projects SET trang_thai = ?, updated_at = ? WHERE id = ?")
-      .run(nextStatus, now(), project.id);
+    const note = req.body?.note;
+    const updated = await transitionProjectStatus(project, nextStatus, user, note);
 
     io.to(`project:${project.id}`).emit("status.updated", {
       projectId: project.id,
-      status: nextStatus,
+      status: updated.trang_thai,
       updatedBy: user.username,
+    });
+
+    res.json(await projectWithFile(loadProject(project.id)!));
+  }));
+
+  // UC10: Khóa thủ công báo giá (Admin only)
+  app.post("/api/projects/:id/lock", authMiddleware, requireAdmin, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const reason = req.body?.reason || "Khóa bởi Admin";
+    const updated = await lockProjectManually(project, user, reason);
+
+    io.to(`project:${project.id}`).emit("project.locked", {
+      projectId: project.id,
+      locked: true,
+      lockedBy: user.username,
+      reason,
+    });
+
+    res.json(await projectWithFile(loadProject(project.id)!));
+  }));
+
+  // UC10: Mở khóa thủ công báo giá (Admin only)
+  app.post("/api/projects/:id/unlock", authMiddleware, requireAdmin, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const reason = req.body?.reason || "Mở khóa bởi Admin";
+    const updated = await unlockProjectManually(project, user, reason);
+
+    io.to(`project:${project.id}`).emit("project.locked", {
+      projectId: project.id,
+      locked: false,
+      unlockedBy: user.username,
+      reason,
     });
 
     res.json(await projectWithFile(loadProject(project.id)!));
@@ -797,6 +1156,9 @@ async function startServer() {
   app.put("/api/projects/:id/member-permissions", authMiddleware, requireAdminOrManager, (req, res) => {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
+    if (req.user!.role !== "admin" && isProjectMutationLocked(project)) {
+      return res.status(403).json({ error: "Báo giá đã bị khóa, không thể thay đổi phân quyền thành viên." });
+    }
     const permissions = Array.isArray(req.body.permissions) ? req.body.permissions : [];
     setProjectMemberPermissions(project.id, permissions);
 
@@ -838,28 +1200,95 @@ async function startServer() {
     res.json({ id: project.id, fileBase64 });
   }));
 
-  // Versions
-  app.get("/api/projects/:id/versions", authMiddleware, (req, res) => {
+  // UC17: Xuất tệp Excel Nháp có Watermark "BẢN DỰ THẢO - CHƯA DUYỆT"
+  // Kết hợp workbook nền + toàn bộ edits + tài chính đã commit trong SQLite, áp Watermark in ấn A4 & background, trả về .xlsx
+  // TUYỆT ĐỐI KHÔNG GHI ĐÈ FILE NỀN data/files/{id}.xlsx VÀ KHÔNG TẠO EDIT GIẢ TRÁI PHÉP.
+  app.get("/api/projects/:id/export/draft", authMiddleware, catchAsync(async (req, res) => {
     const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
 
-    const rows = getDb()
-      .prepare("SELECT * FROM versions WHERE project_id = ? ORDER BY version DESC")
-      .all(project.id) as VersionRow[];
+    const baseBuffer = await readProjectFileBuffer(project.id);
+    if (!baseBuffer) return res.status(404).json({ error: "Không tìm thấy file Excel nền của báo giá" });
 
-    res.json(
-      rows.map((v) => ({
-        id: v.id,
-        projectId: v.project_id,
-        version: v.version,
-        note: v.note,
-        createdBy: v.created_by,
-        createdAt: v.created_at,
-      }))
-    );
-  });
+    // Lấy toàn bộ edit đã được chấp nhận theo thứ tự sequence tăng dần (cũ -> mới)
+    const edits = getDb()
+      .prepare("SELECT sheet_name, cell, new_value, sequence FROM edits WHERE project_id = ? ORDER BY sequence ASC")
+      .all(project.id) as any[];
+
+    const financialMeta = {
+      otHours: project.ot_hours,
+      otRate: project.ot_rate,
+      vatRate: project.vat_rate,
+      discountAmount: project.discount_amount,
+      financialConfig: project.financial_config,
+    };
+
+    // [P0-01] Dựng workbook hoàn chỉnh kết hợp file nền + edits đã commit + siêu dữ liệu tài chính/OT
+    const { buffer: finalWbBuf } = await buildFinalWorkbookBuffer(baseBuffer, edits, financialMeta);
+    const wb = await loadWorkbookFromBuffer(finalWbBuf);
+
+    // Áp Watermark chuẩn UC17
+    applyDraftWatermarkToWorkbook(wb, "BẢN DỰ THẢO - CHƯA DUYỆT");
+
+    const outBuffer = Buffer.from(await wb.xlsx.writeBuffer());
+    const safeName = (project.name || "baogia").replace(/\.xlsx$/i, "");
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(safeName)}_BAN_DU_THAO.xlsx"`);
+    res.send(outBuffer);
+  }));
+
+  // [P0-04] Xuất tệp Excel theo chính sách (Export Policy):
+  // Chỉ Admin / Manager khi dự án ở trạng thái 'da_gui' mới được tải bản chính thức không watermark.
+  // Nhân viên (user) hoặc dự án chưa phát hành BẮT BUỘC mang watermark bản nháp (UC17).
+  app.get("/api/projects/:id/export", authMiddleware, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+
+    const baseBuffer = await readProjectFileBuffer(project.id);
+    if (!baseBuffer) return res.status(404).json({ error: "Không tìm thấy file Excel nền của báo giá" });
+
+    const edits = getDb()
+      .prepare("SELECT sheet_name, cell, new_value, sequence FROM edits WHERE project_id = ? ORDER BY sequence ASC")
+      .all(project.id) as any[];
+
+    const financialMeta = {
+      otHours: project.ot_hours,
+      otRate: project.ot_rate,
+      vatRate: project.vat_rate,
+      discountAmount: project.discount_amount,
+      financialConfig: project.financial_config,
+    };
+
+    const { buffer: finalWbBuf } = await buildFinalWorkbookBuffer(baseBuffer, edits, financialMeta);
+    const wb = await loadWorkbookFromBuffer(finalWbBuf);
+
+    const isOfficialAllowed = (user.role === "admin" || user.role === "manager") && project.trang_thai === "da_gui";
+    if (!isOfficialAllowed) {
+      applyDraftWatermarkToWorkbook(wb, "BẢN DỰ THẢO - CHƯA DUYỆT");
+    }
+
+    const outBuffer = Buffer.from(await wb.xlsx.writeBuffer());
+    const safeName = (project.name || "baogia").replace(/\.xlsx$/i, "");
+    const suffix = isOfficialAllowed ? "" : "_BAN_DU_THAO";
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(safeName)}${suffix}.xlsx"`);
+    res.send(outBuffer);
+  }));
+
+  // Versions (UC14 - Actor: Thạnh)
+  app.get("/api/projects/:id/versions", authMiddleware, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+
+    const versions = await getProjectVersionsList(project);
+    res.json(versions);
+  }));
 
   app.get("/api/projects/:id/versions/:version", authMiddleware, catchAsync(async (req, res) => {
     const user = req.user!;
@@ -872,6 +1301,164 @@ async function startServer() {
     if (!fileBase64) return res.status(404).json({ error: "Version not found" });
     res.json({ version, fileBase64 });
   }));
+
+  // UC15: Khôi phục phiên bản snapshot cũ thành revision làm việc mới (Admin only)
+  app.post("/api/projects/:id/versions/:version/restore", authMiddleware, requireAdmin, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const targetVersion = Number(req.params.version);
+    const reason = req.body?.reason;
+    const result = await restoreSnapshotAsWorkingRevision(project, targetVersion, user, reason);
+
+    io.to(`project:${project.id}`).emit("project.restored", {
+      projectId: project.id,
+      version: targetVersion,
+      restoredBy: user.username,
+      newProjectRevision: result.newProjectRevision,
+    });
+    io.to(`project:${project.id}`).emit("structure.updated", {
+      projectId: project.id,
+      updatedBy: user.username,
+    });
+
+    res.json({ ok: true, ...result });
+  }));
+
+  // UC18: Xuất Excel A4 chính thức từ snapshot đã duyệt (Admin/Manager - Actor: Thạnh)
+  app.get("/api/projects/:id/export/official", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+
+    const targetVersion = req.query.version ? Number(req.query.version) : undefined;
+    const { buffer, fileName, version } = await getOfficialA4ExportBuffer(project, targetVersion);
+
+    recordProjectEvent(project.id, "OFFICIAL_EXPORTED", user.id, user.username, {
+      version,
+      fileName,
+    });
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(fileName)}"`);
+    res.send(buffer);
+  }));
+
+  // UC08: Lấy trạng thái thẩm định tài chính (Manager/Admin)
+  app.get("/api/projects/:id/financial-review", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+
+    const status = getProjectFinancialReviewStatus(project);
+    res.json(status);
+  }));
+
+  // UC08: Kế toán thực hiện thẩm định tài chính (Manager/Admin)
+  app.post("/api/projects/:id/financial-review", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+
+    const review = await submitFinancialReview(project, user, req.body || {});
+
+    io.to(`project:${project.id}`).emit("financial_review.updated", {
+      projectId: project.id,
+      review,
+      reviewedBy: user.username,
+    });
+
+    res.json({ ok: true, ...review, review });
+  }));
+
+  // UC09: Xem trạng thái phê duyệt (Manager/Admin)
+  app.get("/api/projects/:id/approval", authMiddleware, requireAdminOrManager, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
+
+    const reviewStatus = getProjectFinancialReviewStatus(project);
+    const latestDecision = getDb()
+      .prepare("SELECT * FROM approval_decisions WHERE project_id = ? ORDER BY created_at DESC LIMIT 1")
+      .get(project.id) as any;
+
+    res.json({
+      canApprove: reviewStatus.canApprove,
+      reviewStatus,
+      latestDecision,
+      finalizedSnapshotId: project.finalized_snapshot_id,
+    });
+  }));
+
+  // UC09: Admin phê duyệt phát hành (Admin only - Actor: Minh)
+  app.post("/api/projects/:id/approve", authMiddleware, requireAdmin, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const result = await approveQuotation(project, user, req.body || {});
+
+    io.to(`project:${project.id}`).emit("approval.updated", {
+      projectId: project.id,
+      decision: "APPROVED",
+      version: result.version,
+      snapshotId: result.snapshotId,
+      approvedBy: user.username,
+    });
+    io.to(`project:${project.id}`).emit("status.updated", {
+      projectId: project.id,
+      status: "da_gui",
+      updatedBy: user.username,
+    });
+
+    res.json({ ok: true, ...result });
+  }));
+
+  // UC09: Admin từ chối phê duyệt (Admin only - Actor: Minh)
+  app.post("/api/projects/:id/reject", authMiddleware, requireAdmin, catchAsync(async (req, res) => {
+    const user = req.user!;
+    const project = loadProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const reason = req.body?.reason || "Admin từ chối phê duyệt";
+    await rejectQuotation(project, user, { reason });
+
+    io.to(`project:${project.id}`).emit("approval.updated", {
+      projectId: project.id,
+      decision: "REJECTED",
+      rejectedBy: user.username,
+      reason,
+    });
+    io.to(`project:${project.id}`).emit("status.updated", {
+      projectId: project.id,
+      status: "dang_lam",
+      updatedBy: user.username,
+    });
+
+    res.json({ ok: true, decision: "REJECTED", message: "Đã từ chối phê duyệt và trả về trạng thái đang làm" });
+  }));
+
+  // UC21: Admin kiểm toán toàn bộ vết sửa đổi toàn hệ thống (Admin only)
+  app.get("/api/audit/edits", authMiddleware, requireAdmin, (req, res) => {
+    const user = req.user!;
+    const filter = {
+      projectId: req.query.projectId as string,
+      userId: req.query.userId as string,
+      sheet: req.query.sheet as string,
+      cell: req.query.cell as string,
+      from: req.query.from as string,
+      to: req.query.to as string,
+      page: req.query.page ? Number(req.query.page) : undefined,
+      limit: req.query.limit ? Number(req.query.limit) : undefined,
+    };
+    const result = queryGlobalEdits(user, filter);
+    res.json(result);
+  });
 
   // Lấy cấu hình các vùng đã bị vô hiệu hóa (disabled_ranges - UC04 Tình huống 10)
   app.get("/api/projects/:id/disabled-ranges", authMiddleware, (req, res) => {
@@ -894,6 +1481,9 @@ async function startServer() {
     const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
+    if (user.role !== "admin" && isProjectMutationLocked(project)) {
+      return res.status(403).json({ error: "Báo giá đã bị khóa, không thể thay đổi cấu hình vùng." });
+    }
 
     const { sheetName, type, target } = req.body || {};
     if (!sheetName || !type || target === undefined || target === null) {
@@ -939,6 +1529,9 @@ async function startServer() {
     const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
+    if (user.role !== "admin" && isProjectMutationLocked(project)) {
+      return res.status(403).json({ error: "Báo giá đã bị khóa, không thể thay đổi cấu hình vùng." });
+    }
 
     const { sheetName, type, target } = req.body || {};
     if (!sheetName || !type || target === undefined || target === null) {
@@ -979,13 +1572,39 @@ async function startServer() {
     }
   });
 
+  // [P1-19 & P1-20] Hàm tiện ích đồng bộ ô ánh xạ Giờ làm thêm (OT) vào bảng dự án nguyên tử
+  function syncMappedOtIfMatching(
+    project: any,
+    sheetName: string,
+    cell: string,
+    val: string,
+    timestamp: string
+  ): { updated: boolean; otHours?: number } {
+    try {
+      const finCfg = JSON.parse(project.financial_config || "{}");
+      const mapping = finCfg.cellMapping;
+      if (mapping && mapping.otHoursCell && mapping.otHoursCell.trim().toUpperCase() === cell.trim().toUpperCase()) {
+        if (!mapping.sheetName || mapping.sheetName.trim().toLowerCase() === sheetName.trim().toLowerCase()) {
+          const parsedH = parseFloat(val);
+          if (!isNaN(parsedH) && parsedH >= 0) {
+            getDb()
+              .prepare("UPDATE projects SET ot_hours = ?, finance_revision = finance_revision + 1, updated_at = ? WHERE id = ?")
+              .run(parsedH, timestamp, project.id);
+            return { updated: true, otHours: parsedH };
+          }
+        }
+      }
+    } catch {}
+    return { updated: false };
+  }
+
   // Edits - Dùng chung Edit Service cho Admin, Manager và Employee (Chương 8, 12, 13, 15, 16, 21, 22)
   app.post("/api/projects/:id/edits", authMiddleware, (req, res) => {
     const user = req.user!;
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
-    if (user.role !== "admin" && user.role !== "manager" && isProjectLocked(project.trang_thai)) {
+    if (user.role !== "admin" && isProjectMutationLocked(project)) {
       return res.status(403).json({ error: "Báo giá đã bị khóa, không thể chỉnh sửa." });
     }
 
@@ -1034,6 +1653,8 @@ async function startServer() {
     const oldVal = currentCell ? currentCell.value : (req.body.oldValue ? String(req.body.oldValue) : "");
 
     let nextSeq = 1;
+    let otSyncResult = { updated: false } as { updated: boolean; otHours?: number };
+
     getDb().transaction(() => {
       const maxSeqRow = getDb().prepare("SELECT COALESCE(MAX(sequence), 0) AS m FROM edits WHERE project_id = ?").get(project.id) as { m: number };
       nextSeq = maxSeqRow.m + 1;
@@ -1060,6 +1681,9 @@ async function startServer() {
         .run(project.id, sheetName, cell, val, nextRev, user.username, timestamp);
 
       getDb().prepare("UPDATE projects SET project_revision = project_revision + 1, updated_at = ? WHERE id = ?").run(timestamp, project.id);
+
+      // [P0-01, P1-19 & UC06] Đồng bộ hai chiều nếu ô chỉnh sửa là ô ánh xạ Giờ OT
+      otSyncResult = syncMappedOtIfMatching(project, sheetName, cell, val, timestamp);
     })();
 
     // 4. Realtime Broadcast tới Room Project sau khi COMMIT thành công (Chương 21 & 22)
@@ -1075,6 +1699,14 @@ async function startServer() {
       userId: user.id,
       timestamp,
     });
+
+    if (otSyncResult.updated) {
+      io.to(`project:${project.id}`).emit("project.updated", {
+        projectId: project.id,
+        otHours: otSyncResult.otHours,
+        financeRevision: (Number(project.finance_revision) || 1) + 1,
+      });
+    }
 
     res.json({
       id,
@@ -1097,7 +1729,7 @@ async function startServer() {
     const project = loadProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
     if (!userCanAccessProject(user, project)) return res.status(403).json({ error: "Forbidden" });
-    if (user.role !== "admin" && user.role !== "manager" && isProjectLocked(project.trang_thai)) {
+    if (user.role !== "admin" && isProjectMutationLocked(project)) {
       return res.status(403).json({ error: "Báo giá đã bị khóa, không thể chỉnh sửa." });
     }
 
@@ -1154,6 +1786,7 @@ async function startServer() {
     const timestamp = now();
     const results: any[] = [];
     let nextSeq = 1;
+    let lastOtSync: { updated: boolean; otHours?: number } = { updated: false };
 
     getDb().transaction(() => {
       const maxSeqRow = getDb().prepare("SELECT COALESCE(MAX(sequence), 0) AS m FROM edits WHERE project_id = ?").get(project.id) as { m: number };
@@ -1185,6 +1818,11 @@ async function startServer() {
         insertEdit.run(editId, project.id, user.id, user.username, item.sheetName, item.cell, oldVal, val, nextSeq, timestamp);
         upsertCell.run(project.id, item.sheetName, item.cell, val, nextRev, user.username, timestamp);
 
+        const otSync = syncMappedOtIfMatching(project, item.sheetName, item.cell, val, timestamp);
+        if (otSync.updated) {
+          lastOtSync = otSync;
+        }
+
         results.push({
           id: editId,
           projectId: project.id,
@@ -1211,6 +1849,15 @@ async function startServer() {
       userId: user.id,
       timestamp,
     });
+
+    if (lastOtSync.updated) {
+      const refreshedProj = loadProject(project.id);
+      io.to(`project:${project.id}`).emit("project.updated", {
+        projectId: project.id,
+        otHours: lastOtSync.otHours,
+        financeRevision: refreshedProj?.finance_revision ?? (Number(project.finance_revision) || 1) + 1,
+      });
+    }
 
     res.json({ ok: true, count: results.length, edits: results });
   });

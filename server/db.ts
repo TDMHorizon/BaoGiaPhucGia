@@ -61,6 +61,18 @@ export type ProjectRow = {
   nguoi_phu_trach_id: string | null;
   trang_thai: TrangThai;
   ghi_chu: string;
+  /** UC06 - Nhập OT: Số giờ làm thêm (>= 0) */
+  ot_hours?: number;
+  /** UC06 - Đơn giá OT chuẩn: mặc định 505.000 VNĐ/giờ */
+  ot_rate?: number;
+  /** UC05 - Thuế suất VAT (0, 8, 10, ...) */
+  vat_rate?: number;
+  /** UC05 - Chiết khấu (VNĐ) */
+  discount_amount?: number;
+  /** UC05/UC06 - Cấu hình mở rộng tài chính & tổ đội (JSON) */
+  financial_config?: string;
+  /** P0-05 - Optimistic concurrency revision riêng cho tài chính */
+  finance_revision?: number;
   /** Không còn dùng. Giữ lại cho tương thích dữ liệu cũ. Xem project_revision và versions.version. */
   version: number;
   /** Tăng mỗi khi dữ liệu làm việc thay đổi (edit, cấu trúc, trạng thái) - dùng cho optimistic concurrency. */
@@ -69,10 +81,47 @@ export type ProjectRow = {
   finalized_snapshot_id: string | null;
   archived_at: string | null;
   archived_by: string | null;
+  /** UC10 - Khóa thủ công độc lập với trạng thái */
+  locked_manually?: number;
+  locked_by?: string | null;
+  locked_at?: string | null;
+  lock_reason?: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
   isDelete: number;
+};
+
+export type FinancialReviewRow = {
+  id: string;
+  project_id: string;
+  reviewed_by: string;
+  reviewer_username: string;
+  status: "PASS" | "REQUEST_CHANGES";
+  reviewed_at: string;
+  source_project_revision: number;
+  source_finance_revision: number;
+  revenue_amount: number;
+  estimated_cost_amount: number;
+  margin_amount: number;
+  margin_rate: number;
+  findings_json: string;
+  note: string;
+  is_stale: number;
+};
+
+export type ApprovalDecisionRow = {
+  id: string;
+  project_id: string;
+  review_id: string | null;
+  actor_id: string;
+  actor_username: string;
+  decision: "APPROVED" | "REJECTED";
+  note: string;
+  project_revision: number;
+  finance_revision: number;
+  snapshot_id: string | null;
+  created_at: string;
 };
 
 export type EditRow = {
@@ -477,6 +526,76 @@ const MIGRATIONS: Migration[] = [
       addColumnIfMissing("projects", "disabled_ranges", "TEXT NOT NULL DEFAULT '{}'");
     },
   },
+  {
+    id: 8,
+    name: "projects.financial_and_ot: ot_hours, ot_rate, vat_rate, discount_amount, financial_config (UC06, UC05)",
+    up: () => {
+      addColumnIfMissing("projects", "ot_hours", "REAL NOT NULL DEFAULT 0");
+      addColumnIfMissing("projects", "ot_rate", "REAL NOT NULL DEFAULT 505000");
+      addColumnIfMissing("projects", "vat_rate", "REAL NOT NULL DEFAULT 8");
+      addColumnIfMissing("projects", "discount_amount", "REAL NOT NULL DEFAULT 0");
+      addColumnIfMissing("projects", "financial_config", "TEXT NOT NULL DEFAULT '{}'");
+    },
+  },
+  {
+    id: 9,
+    name: "projects.finance_revision: optimistic concurrency token for financial aggregates (P0-05)",
+    up: () => {
+      addColumnIfMissing("projects", "finance_revision", "INTEGER NOT NULL DEFAULT 1");
+    },
+  },
+  {
+    id: 10,
+    name: "financial_reviews + approval_decisions + project lock columns (UC08, UC09, UC10, UC21)",
+    up: () => {
+      addColumnIfMissing("projects", "locked_manually", "INTEGER NOT NULL DEFAULT 0");
+      addColumnIfMissing("projects", "locked_by", "TEXT");
+      addColumnIfMissing("projects", "locked_at", "TEXT");
+      addColumnIfMissing("projects", "lock_reason", "TEXT");
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS financial_reviews (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          reviewed_by TEXT NOT NULL,
+          reviewer_username TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('PASS', 'REQUEST_CHANGES')),
+          reviewed_at TEXT NOT NULL,
+          source_project_revision INTEGER NOT NULL DEFAULT 0,
+          source_finance_revision INTEGER NOT NULL DEFAULT 0,
+          revenue_amount REAL NOT NULL DEFAULT 0,
+          estimated_cost_amount REAL NOT NULL DEFAULT 0,
+          margin_amount REAL NOT NULL DEFAULT 0,
+          margin_rate REAL NOT NULL DEFAULT 0,
+          findings_json TEXT NOT NULL DEFAULT '{}',
+          note TEXT NOT NULL DEFAULT '',
+          is_stale INTEGER NOT NULL DEFAULT 0,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_financial_reviews_proj ON financial_reviews(project_id, reviewed_at DESC);
+
+        CREATE TABLE IF NOT EXISTS approval_decisions (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          review_id TEXT,
+          actor_id TEXT NOT NULL,
+          actor_username TEXT NOT NULL,
+          decision TEXT NOT NULL CHECK(decision IN ('APPROVED', 'REJECTED')),
+          note TEXT NOT NULL DEFAULT '',
+          project_revision INTEGER NOT NULL DEFAULT 0,
+          finance_revision INTEGER NOT NULL DEFAULT 0,
+          snapshot_id TEXT,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_approval_decisions_proj ON approval_decisions(project_id, created_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_edits_global_time ON edits(timestamp DESC);
+      `);
+    },
+  },
 ];
 
 function runMigrations() {
@@ -570,6 +689,12 @@ export function getProjectStats(project: ProjectRow): ProjectStats {
 
 export function projectToJson(p: ProjectRow, memberIds: string[] = [], stats?: ProjectStats) {
   const s = stats ?? getProjectStats(p);
+  let parsedFinancialConfig = {};
+  try {
+    parsedFinancialConfig = p.financial_config ? JSON.parse(p.financial_config) : {};
+  } catch {
+    parsedFinancialConfig = {};
+  }
   return {
     id: p.id,
     name: p.name,
@@ -578,10 +703,17 @@ export function projectToJson(p: ProjectRow, memberIds: string[] = [], stats?: P
     disabledRanges: p.disabled_ranges ? JSON.parse(p.disabled_ranges) : {},
     soBaoGia: p.so_bao_gia,
     tenKhachHang: p.ten_khach_hang,
+    khachHang: p.ten_khach_hang,
     nguoiPhuTrachId: p.nguoi_phu_trach_id,
     memberIds,
     trangThai: normalizeTrangThai(p.trang_thai),
     ghiChu: p.ghi_chu,
+    otHours: Number(p.ot_hours ?? 0),
+    otRate: Number(p.ot_rate ?? 505000),
+    vatRate: Number(p.vat_rate ?? 8),
+    discountAmount: Number(p.discount_amount ?? 0),
+    financialConfig: parsedFinancialConfig,
+    financeRevision: Number(p.finance_revision ?? 1),
     version: p.version ?? 1,
     /** Tăng khi dữ liệu làm việc đổi; client gửi lại dưới tên expectedRevision. */
     projectRevision: p.project_revision,
@@ -590,8 +722,16 @@ export function projectToJson(p: ProjectRow, memberIds: string[] = [], stats?: P
     finalizedSnapshotId: p.finalized_snapshot_id,
     finalizedVersion: s.finalizedVersion,
     editCount: s.editCount,
+    lockedManually: p.locked_manually === 1,
+    lockedBy: p.locked_by || null,
+    lockedAt: p.locked_at || null,
+    lockReason: p.lock_reason || null,
+    archivedAt: p.archived_at || null,
+    archivedBy: p.archived_by || null,
+    isArchived: !!p.archived_at,
     createdAt: p.created_at,
     updatedAt: p.updated_at,
+    updated_at: p.updated_at,
     deletedAt: p.deleted_at,
     isDelete: p.isDelete === 1,
   };
@@ -641,13 +781,15 @@ export function getProjectsWithMembers(includeDeleted = false): {
   projects: ProjectRow[];
   membersByProjectId: Map<string, string[]>;
 } {
-  const deletedClause = includeDeleted ? "p.isDelete = 1" : "p.isDelete = 0";
+  const whereClause = includeDeleted
+    ? "p.isDelete = 1"
+    : "p.isDelete = 0 AND p.archived_at IS NULL";
   const rows = db
     .prepare(
       `SELECT p.*, pm.user_id AS member_user_id
        FROM projects p
        LEFT JOIN project_members pm ON pm.project_id = p.id
-      WHERE ${deletedClause}
+      WHERE ${whereClause}
       ORDER BY ${includeDeleted ? "p.deleted_at" : "p.updated_at"} DESC`
     )
     .all() as (ProjectRow & { member_user_id: string | null })[];
@@ -690,8 +832,13 @@ export function toPermProject(project: ProjectRow, stats?: ProjectStats) {
   };
 }
 
-export function userCanAccessProject(user: { id: string; role: string }, project: ProjectRow): boolean {
-  if (project.archived_at) return false;
+export function userCanAccessProject(
+  user: { id: string; role: string },
+  project: ProjectRow | undefined | null,
+  allowArchived = false
+): boolean {
+  if (!project) return false;
+  if (project.archived_at && !allowArchived) return false;
   return canReadProject(user, {
     trangThai: project.trang_thai,
     nguoiPhuTrachId: project.nguoi_phu_trach_id,
@@ -991,4 +1138,209 @@ export function updateProjectDisabledRange(
 
   return updatedConfig;
 }
+
+/* ---------------- Project Events (Audit nghiệp vụ UC08/09/10/11/15) ---------------- */
+
+export function recordProjectEvent(
+  projectId: string,
+  type: string,
+  actorId: string | null,
+  actorName: string | null,
+  detail: any = {}
+) {
+  try {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const detailStr = typeof detail === "string" ? detail : JSON.stringify(detail || {});
+    getDb()
+      .prepare(
+        "INSERT INTO project_events (id, project_id, type, actor_id, actor_name, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      )
+      .run(id, projectId, type, actorId, actorName, detailStr, new Date().toISOString());
+  } catch (err) {
+    console.error("[project_events] Lỗi ghi project event:", err);
+  }
+}
+
+/* ---------------- UC08: Thẩm định tài chính (Financial Reviews) ---------------- */
+
+export function getLatestFinancialReview(projectId: string): FinancialReviewRow | undefined {
+  return getDb()
+    .prepare("SELECT * FROM financial_reviews WHERE project_id = ? ORDER BY reviewed_at DESC LIMIT 1")
+    .get(projectId) as FinancialReviewRow | undefined;
+}
+
+export function insertFinancialReview(review: Omit<FinancialReviewRow, "is_stale"> & { is_stale?: number }) {
+  getDb()
+    .prepare(
+      `INSERT INTO financial_reviews (
+        id, project_id, reviewed_by, reviewer_username, status, reviewed_at,
+        source_project_revision, source_finance_revision, revenue_amount,
+        estimated_cost_amount, margin_amount, margin_rate, findings_json, note, is_stale
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      review.id,
+      review.project_id,
+      review.reviewed_by,
+      review.reviewer_username,
+      review.status,
+      review.reviewed_at,
+      review.source_project_revision,
+      review.source_finance_revision,
+      review.revenue_amount,
+      review.estimated_cost_amount,
+      review.margin_amount,
+      review.margin_rate,
+      review.findings_json,
+      review.note,
+      review.is_stale ?? 0
+    );
+}
+
+/* ---------------- UC09: Phê duyệt phát hành (Approval Decisions) ---------------- */
+
+export function getLatestApprovalDecision(projectId: string): ApprovalDecisionRow | undefined {
+  return getDb()
+    .prepare("SELECT * FROM approval_decisions WHERE project_id = ? ORDER BY created_at DESC LIMIT 1")
+    .get(projectId) as ApprovalDecisionRow | undefined;
+}
+
+export function insertApprovalDecision(decision: ApprovalDecisionRow) {
+  getDb()
+    .prepare(
+      `INSERT INTO approval_decisions (
+        id, project_id, review_id, actor_id, actor_username, decision,
+        note, project_revision, finance_revision, snapshot_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      decision.id,
+      decision.project_id,
+      decision.review_id || null,
+      decision.actor_id,
+      decision.actor_username,
+      decision.decision,
+      decision.note,
+      decision.project_revision,
+      decision.finance_revision,
+      decision.snapshot_id || null,
+      decision.created_at
+    );
+}
+
+/* ---------------- UC21: Kiểm toán toàn bộ vết sửa đổi (Global Edits) ---------------- */
+
+export type GlobalEditsFilter = {
+  projectId?: string;
+  userId?: string;
+  sheet?: string;
+  cell?: string;
+  from?: string;
+  to?: string;
+  page?: number;
+  limit?: number;
+};
+
+export type GlobalEditItem = EditRow & {
+  project_name?: string;
+  current_username?: string;
+};
+
+export function getGlobalEdits(filter: GlobalEditsFilter = {}): {
+  items: GlobalEditItem[];
+  total: number;
+  page: number;
+  currentPage: number;
+  limit: number;
+  totalPages: number;
+} {
+  const page = Math.max(1, Number(filter.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(filter.limit) || 25));
+  const offset = (page - 1) * limit;
+
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (filter.projectId) {
+    conditions.push("e.project_id = ?");
+    params.push(filter.projectId);
+  }
+  if (filter.userId) {
+    conditions.push("e.user_id = ?");
+    params.push(filter.userId);
+  }
+  if (filter.sheet) {
+    conditions.push("e.sheet_name = ?");
+    params.push(filter.sheet);
+  }
+  if (filter.cell) {
+    conditions.push("UPPER(e.cell) = UPPER(?)");
+    params.push(filter.cell);
+  }
+  if (filter.from) {
+    conditions.push("e.timestamp >= ?");
+    params.push(filter.from);
+  }
+  if (filter.to) {
+    conditions.push("e.timestamp <= ?");
+    params.push(filter.to);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const totalRow = getDb()
+    .prepare(`SELECT COUNT(*) as count FROM edits e ${whereClause}`)
+    .get(...params) as { count: number };
+  const total = totalRow ? totalRow.count : 0;
+
+  const items = getDb()
+    .prepare(
+      `SELECT e.*, p.name as project_name, u.username as current_username
+       FROM edits e
+       LEFT JOIN projects p ON e.project_id = p.id
+       LEFT JOIN users u ON e.user_id = u.id
+       ${whereClause}
+       ORDER BY e.timestamp DESC, e.rowid DESC
+       LIMIT ? OFFSET ?`
+    )
+    .all(...params, limit, offset) as GlobalEditItem[];
+
+  return {
+    items: items.map((r: any) => ({
+      ...r,
+      projectId: r.project_id,
+      projectName: r.project_name,
+      userId: r.user_id,
+      username: r.current_username,
+      sheetName: r.sheet_name,
+      cell: r.cell,
+      oldValue: r.old_value,
+      newValue: r.new_value,
+      timestamp: r.timestamp,
+    })),
+    total,
+    page,
+    currentPage: page,
+    limit,
+    totalPages: Math.ceil(total / limit) || 1,
+  };
+}
+
+/* ---------------- UC11: Xóa vĩnh viễn (Hard Delete Cascade) ---------------- */
+
+export function hardDeleteProject(projectId: string): void {
+  const database = getDb();
+  database.transaction(() => {
+    database.prepare("DELETE FROM edits WHERE project_id = ?").run(projectId);
+    database.prepare("DELETE FROM project_cell_values WHERE project_id = ?").run(projectId);
+    database.prepare("DELETE FROM project_members WHERE project_id = ?").run(projectId);
+    database.prepare("DELETE FROM project_member_permissions WHERE project_id = ?").run(projectId);
+    database.prepare("DELETE FROM versions WHERE project_id = ?").run(projectId);
+    database.prepare("DELETE FROM project_events WHERE project_id = ?").run(projectId);
+    database.prepare("DELETE FROM financial_reviews WHERE project_id = ?").run(projectId);
+    database.prepare("DELETE FROM approval_decisions WHERE project_id = ?").run(projectId);
+    database.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
+  })();
+}
+
 

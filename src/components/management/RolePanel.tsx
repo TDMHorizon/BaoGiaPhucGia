@@ -140,16 +140,6 @@ export const RolePanel: React.FC = () => {
       {/* Header Info */}
       <div className="rounded-xl border border-blue-100 bg-white p-5 shadow-xs">
         <div className="flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
-              <FiShield className="h-5 w-5 text-[#105CB3]" />
-              <span>Ma Trận Phân Quyền Hệ Thống (RBAC Matrix)</span>
-            </h2>
-            <p className="mt-1 text-xs text-slate-500 max-w-2xl leading-relaxed">
-              Mô hình phân quyền 3 vai trò chuẩn hóa theo đặc tả Chương III và nguyên tắc
-              <strong> Default Deny</strong>. Mọi thao tác đều được kiểm tra bắt buộc tại Backend Express & SQLite.
-            </p>
-          </div>
           <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-[#105CB3] border border-blue-200 shrink-0">
             3 Vai Trò Cốt Lõi
           </span>

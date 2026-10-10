@@ -241,15 +241,11 @@ export const OverviewPanel: React.FC = () => {
           <div>
             <div className="flex items-center gap-2 text-blue-200 text-xs font-bold uppercase tracking-wider mb-1.5">
               <RiBuilding4Line className="h-4 w-4 text-blue-200" />
-              <span>UC01 • Trung Tâm Giám Sát Vận Hành & Điều Phối Quản Lý</span>
+              <span>Trung Tâm Giám Sát Vận Hành & Điều Phối Quản Lý</span>
             </div>
             <h2 className="text-xl sm:text-2xl font-black tracking-tight">
               Giám Sát Tải Nhân Sự & Điểm Nghẽn Tiến Độ
             </h2>
-            <p className="mt-1 text-xs sm:text-sm text-blue-100 max-w-2xl leading-relaxed">
-              Trang phân tích chuyên biệt dành cho Ban Quản Lý: Kiểm soát tỷ lệ phân công công
-              việc, phát hiện tức thì các dự án ngâm trễ và theo dõi luồng kiểm toán thời gian thực.
-            </p>
           </div>
 
           <div className="flex items-center gap-2.5">
@@ -396,7 +392,7 @@ export const OverviewPanel: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-slate-900">
-                    Radar Cảnh Báo Điểm Nghẽn Vận Hành & Tiến Độ
+                    Cảnh Báo Điểm Nghẽn Vận Hành & Tiến Độ
                   </h3>
                   <p className="text-[11px] text-slate-500">
                     Tự động phát hiện các hồ sơ thiếu nhân sự chủ trì hoặc tồn đọng kéo dài
@@ -508,7 +504,7 @@ export const OverviewPanel: React.FC = () => {
                 </div>
               </div>
               <span className="text-[11px] font-semibold text-slate-500">
-                Ghi nhận tự động (SQLite)
+                Ghi nhận tự động
               </span>
             </div>
 

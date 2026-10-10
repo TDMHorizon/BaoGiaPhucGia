@@ -10,6 +10,7 @@ import {
   FiLayers,
   FiTrash2,
   FiUser,
+  FiClock,
 } from "react-icons/fi";
 import { RiShieldStarLine } from "react-icons/ri";
 
@@ -80,6 +81,13 @@ export const NAVIGATION_CONFIG: NavGroupItem[] = [
         label: "Phân quyền hệ thống",
         path: "/management/roles",
         icon: FiLock,
+        roles: ["admin"], // Admin only
+      },
+      {
+        id: "audit-edits",
+        label: "Kiểm toán chỉnh sửa (UC21)",
+        path: "/management/audit-edits",
+        icon: FiClock,
         roles: ["admin"], // Admin only
       },
     ],
