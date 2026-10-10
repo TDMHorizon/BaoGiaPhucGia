@@ -5,16 +5,28 @@ import {
   FiDollarSign,
   FiPieChart,
   FiCheckCircle,
-  FiChevronDown,
-  FiChevronUp,
+  FiChevronLeft,
+  FiChevronRight,
 } from "react-icons/fi";
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 25;
+
+function getPageNumbers(current: number, total: number): (number | string)[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const pages: (number | string)[] = [1];
+  if (current > 3) pages.push("...");
+  const start = Math.max(2, current - 1);
+  const end = Math.min(total - 1, current + 1);
+  for (let i = start; i <= end; i++) pages.push(i);
+  if (current < total - 2) pages.push("...");
+  pages.push(total);
+  return pages;
+}
 
 export const RevenuePanel: React.FC = () => {
   const [projects, setProjects] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [currentPage, setCurrentPage] = useState(1);
 
   useEffect(() => {
     async function load() {
@@ -35,17 +47,9 @@ export const RevenuePanel: React.FC = () => {
   const daGui = projects.filter((p) => p.trangThai === "da_gui").length;
   const dangLam = projects.filter((p) => p.trangThai === "dang_lam").length;
 
-  const displayedProjects = projects.slice(0, visibleCount);
-  const hasMore = visibleCount < projects.length;
-  const canCollapse = visibleCount > PAGE_SIZE;
-
-  const handleShowMore = () => {
-    setVisibleCount((prev) => prev + PAGE_SIZE);
-  };
-
-  const handleCollapse = () => {
-    setVisibleCount(PAGE_SIZE);
-  };
+  const totalPages = Math.ceil(total / PAGE_SIZE) || 1;
+  const startIndex = (currentPage - 1) * PAGE_SIZE;
+  const displayedProjects = projects.slice(startIndex, startIndex + PAGE_SIZE);
 
   return (
     <div className="space-y-6">
@@ -157,33 +161,60 @@ export const RevenuePanel: React.FC = () => {
               </table>
             </div>
 
-            {/* Pagination / Load more controls */}
-            {projects.length > PAGE_SIZE && (
-              <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-slate-100 pt-4">
-                <div className="text-xs text-slate-500 font-medium">
-                  Đang hiển thị <strong className="text-[#105CB3]">{displayedProjects.length}</strong> / <strong className="text-slate-700">{projects.length}</strong> hồ sơ
+            {/* Pagination Controls */}
+            {total > 0 && (
+              <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-slate-100 pt-4 text-xs text-slate-500">
+                <div>
+                  Hiển thị{" "}
+                  <strong className="text-[#105CB3]">
+                    {startIndex + 1} - {Math.min(startIndex + PAGE_SIZE, total)}
+                  </strong>{" "}
+                  trong tổng số <strong className="text-slate-800">{total}</strong> hồ sơ (Trang {currentPage}/{totalPages})
                 </div>
-                <div className="flex items-center gap-2">
-                  {hasMore && (
-                    <button
-                      type="button"
-                      onClick={handleShowMore}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50/80 px-3.5 py-1.5 text-xs font-bold text-[#105CB3] hover:bg-blue-100 transition-colors shadow-2xs"
-                    >
-                      <FiChevronDown className="h-3.5 w-3.5" />
-                      <span>Hiển thị thêm (+{Math.min(PAGE_SIZE, projects.length - visibleCount)} hồ sơ)</span>
-                    </button>
-                  )}
-                  {canCollapse && (
-                    <button
-                      type="button"
-                      onClick={handleCollapse}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 hover:text-slate-800 transition-colors shadow-2xs"
-                    >
-                      <FiChevronUp className="h-3.5 w-3.5" />
-                      <span>Thu gọn (về 20 hồ sơ ban đầu)</span>
-                    </button>
-                  )}
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={currentPage <= 1}
+                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-2xs"
+                  >
+                    <FiChevronLeft className="h-3.5 w-3.5" />
+                    <span>Trước</span>
+                  </button>
+
+                  <div className="flex items-center gap-1">
+                    {getPageNumbers(currentPage, totalPages).map((p, idx) =>
+                      p === "..." ? (
+                        <span key={`ellipsis-${idx}`} className="px-1 text-slate-400 font-bold select-none">
+                          ...
+                        </span>
+                      ) : (
+                        <button
+                          key={`page-${p}`}
+                          type="button"
+                          onClick={() => setCurrentPage(Number(p))}
+                          className={`min-w-[28px] h-7 rounded-lg text-xs font-bold transition-colors ${
+                            currentPage === p
+                              ? "bg-[#105CB3] text-white shadow-xs"
+                              : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                          }`}
+                        >
+                          {p}
+                        </button>
+                      )
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={currentPage >= totalPages}
+                    onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-2xs"
+                  >
+                    <span>Sau</span>
+                    <FiChevronRight className="h-3.5 w-3.5" />
+                  </button>
                 </div>
               </div>
             )}

@@ -10,8 +10,8 @@ import {
   FiExternalLink,
   FiSearch,
   FiUserPlus,
-  FiChevronDown,
-  FiChevronUp,
+  FiChevronLeft,
+  FiChevronRight,
 } from "react-icons/fi";
 import { RiBuilding4Line } from "react-icons/ri";
 import { ProjectMetaForm } from "../ProjectMetaForm";
@@ -31,7 +31,19 @@ interface Project {
   memberIds?: string[];
 }
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 25;
+
+function getPageNumbers(current: number, total: number): (number | string)[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const pages: (number | string)[] = [1];
+  if (current > 3) pages.push("...");
+  const start = Math.max(2, current - 1);
+  const end = Math.min(total - 1, current + 1);
+  for (let i = start; i <= end; i++) pages.push(i);
+  if (current < total - 2) pages.push("...");
+  pages.push(total);
+  return pages;
+}
 
 export const TaskPanel: React.FC = () => {
   const { user } = useAuth();
@@ -41,10 +53,10 @@ export const TaskPanel: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedProjectForMeta, setSelectedProjectForMeta] = useState<Project | null>(null);
 
-  const [columnLimits, setColumnLimits] = useState<Record<string, number>>({
-    nhap: PAGE_SIZE,
-    dang_lam: PAGE_SIZE,
-    da_gui: PAGE_SIZE,
+  const [columnPages, setColumnPages] = useState<Record<string, number>>({
+    nhap: 1,
+    dang_lam: 1,
+    da_gui: 1,
   });
 
   const loadProjects = async () => {
@@ -67,6 +79,10 @@ export const TaskPanel: React.FC = () => {
   useEffect(() => {
     loadProjects();
   }, []);
+
+  useEffect(() => {
+    setColumnPages({ nhap: 1, dang_lam: 1, da_gui: 1 });
+  }, [searchQuery]);
 
   const getUserName = (id?: string) => {
     if (!id) return "Chưa gán";
@@ -149,10 +165,10 @@ export const TaskPanel: React.FC = () => {
       {/* 3-Column Kanban Board */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
         {columns.map((col) => {
-          const limit = columnLimits[col.id] || PAGE_SIZE;
-          const displayedItems = col.items.slice(0, limit);
-          const hasMore = limit < col.items.length;
-          const canCollapse = limit > PAGE_SIZE;
+          const colTotalPages = Math.ceil(col.items.length / PAGE_SIZE) || 1;
+          const colPage = columnPages[col.id] || 1;
+          const colStartIndex = (colPage - 1) * PAGE_SIZE;
+          const displayedItems = col.items.slice(colStartIndex, colStartIndex + PAGE_SIZE);
 
           return (
             <div
@@ -255,43 +271,74 @@ export const TaskPanel: React.FC = () => {
                 )}
               </div>
 
-              {/* Column Progressive Pagination Footer */}
-              {col.items.length > PAGE_SIZE && (
+              {/* Column Numbered Pagination Footer */}
+              {col.items.length > 0 && (
                 <div className="mt-3 pt-3 border-t border-slate-200/80 flex flex-col gap-1.5 shrink-0">
                   <div className="text-[10px] text-slate-500 font-medium text-center">
-                    Đang hiển thị <strong className="text-[#105CB3]">{displayedItems.length}</strong> / <strong>{col.items.length}</strong> hồ sơ
+                    Hiển thị{" "}
+                    <strong className="text-[#105CB3]">
+                      {colStartIndex + 1} - {Math.min(colStartIndex + PAGE_SIZE, col.items.length)}
+                    </strong>{" "}
+                    / <strong>{col.items.length}</strong> (Trang {colPage}/{colTotalPages})
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    {hasMore && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setColumnLimits((prev) => ({
-                            ...prev,
-                            [col.id]: (prev[col.id] || PAGE_SIZE) + PAGE_SIZE,
-                          }))
-                        }
-                        className="flex-1 inline-flex items-center justify-center gap-1 rounded-lg border border-blue-200 bg-blue-50/80 py-1.5 px-2 text-[11px] font-bold text-[#105CB3] hover:bg-blue-100 transition-colors shadow-2xs"
-                      >
-                        <FiChevronDown className="h-3.5 w-3.5" />
-                        <span>Hiển thị thêm (+{Math.min(PAGE_SIZE, col.items.length - limit)})</span>
-                      </button>
-                    )}
-                    {canCollapse && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setColumnLimits((prev) => ({
-                            ...prev,
-                            [col.id]: PAGE_SIZE,
-                          }))
-                        }
-                        className="inline-flex items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white py-1.5 px-2.5 text-[11px] font-semibold text-slate-600 hover:bg-slate-50 hover:text-slate-800 transition-colors shadow-2xs"
-                      >
-                        <FiChevronUp className="h-3.5 w-3.5" />
-                        <span>Thu gọn (về 20)</span>
-                      </button>
-                    )}
+                  <div className="flex items-center justify-center gap-1">
+                    <button
+                      type="button"
+                      disabled={colPage <= 1}
+                      onClick={() =>
+                        setColumnPages((prev) => ({
+                          ...prev,
+                          [col.id]: Math.max(1, (prev[col.id] || 1) - 1),
+                        }))
+                      }
+                      className="inline-flex items-center gap-0.5 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-2xs"
+                    >
+                      <FiChevronLeft className="h-3 w-3" />
+                      <span>Trước</span>
+                    </button>
+
+                    <div className="flex items-center gap-1">
+                      {getPageNumbers(colPage, colTotalPages).map((p, idx) =>
+                        p === "..." ? (
+                          <span key={`ellipsis-${col.id}-${idx}`} className="px-1 text-slate-400 font-bold text-[11px] select-none">
+                            ...
+                          </span>
+                        ) : (
+                          <button
+                            key={`page-${col.id}-${p}`}
+                            type="button"
+                            onClick={() =>
+                              setColumnPages((prev) => ({
+                                ...prev,
+                                [col.id]: Number(p),
+                              }))
+                            }
+                            className={`min-w-[24px] h-6 rounded-md text-[11px] font-bold transition-colors ${
+                              colPage === p
+                                ? "bg-[#105CB3] text-white shadow-xs"
+                                : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                            }`}
+                          >
+                            {p}
+                          </button>
+                        )
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={colPage >= colTotalPages}
+                      onClick={() =>
+                        setColumnPages((prev) => ({
+                          ...prev,
+                          [col.id]: Math.min(colTotalPages, (prev[col.id] || 1) + 1),
+                        }))
+                      }
+                      className="inline-flex items-center gap-0.5 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-2xs"
+                    >
+                      <span>Sau</span>
+                      <FiChevronRight className="h-3 w-3" />
+                    </button>
                   </div>
                 </div>
               )}
