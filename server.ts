@@ -506,6 +506,15 @@ async function startServer() {
       });
     }
 
+    const totalCount = rows.length;
+    res.setHeader("X-Total-Count", totalCount.toString());
+
+    if (req.query.limit !== undefined) {
+      const limit = Math.max(1, parseInt(String(req.query.limit), 10) || 20);
+      const offset = Math.max(0, parseInt(String(req.query.offset), 10) || 0);
+      rows = rows.slice(offset, offset + limit);
+    }
+
     res.json(rows.map((p) => listSummary(p, membersByProjectId)));
   });
 

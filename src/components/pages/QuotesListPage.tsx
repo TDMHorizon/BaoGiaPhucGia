@@ -21,8 +21,12 @@ import {
   FiX,
   FiCheckCircle,
   FiArchive,
+  FiChevronDown,
+  FiChevronUp,
 } from "react-icons/fi";
 import { RiBuilding4Line, RiFileExcel2Line } from "react-icons/ri";
+
+const PAGE_SIZE = 20;
 
 export const QuotesListPage: React.FC = () => {
   const { user } = useAuth();
@@ -33,6 +37,7 @@ export const QuotesListPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   // Modal create quote
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -167,6 +172,22 @@ export const QuotesListPage: React.FC = () => {
     return matchSearch && matchStatus;
   });
 
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [searchQuery, statusFilter]);
+
+  const displayedProjects = filteredProjects.slice(0, visibleCount);
+  const hasMore = visibleCount < filteredProjects.length;
+  const canCollapse = visibleCount > PAGE_SIZE;
+
+  const handleShowMore = () => {
+    setVisibleCount((prev) => prev + PAGE_SIZE);
+  };
+
+  const handleCollapse = () => {
+    setVisibleCount(PAGE_SIZE);
+  };
+
   return (
     <AppShell
       title={user?.role === "user" ? "Báo Giá Của Tôi" : "Quản Lý Danh Mục Báo Giá"}
@@ -235,111 +256,144 @@ export const QuotesListPage: React.FC = () => {
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {filteredProjects.map((p) => (
-              <div
-                key={p.id}
-                className="group flex flex-col justify-between rounded-2xl border border-blue-100 bg-white p-5 shadow-xs hover:border-[#268DF0] hover:shadow-md transition-all"
-              >
-                <div>
-                  {/* Card Meta Top */}
-                  <div className="flex items-center justify-between gap-2 text-[11px] mb-2">
-                    <span className="font-mono font-bold text-[#105CB3] bg-blue-50 px-2 py-0.5 rounded border border-blue-100">
-                      {p.soBaoGia || "BG-000"}
-                    </span>
-                    <span className="text-slate-400 flex items-center gap-1">
-                      <FiClock className="h-3 w-3" />
-                      {(p.updatedAt || p.updated_at) ? new Date(p.updatedAt || p.updated_at).toLocaleDateString("vi-VN") : "—"}
-                    </span>
-                  </div>
-
-                  {/* Title */}
-                  <h3 className="text-sm font-bold text-slate-800 line-clamp-2 group-hover:text-[#105CB3] transition-colors">
-                    {p.name}
-                  </h3>
-
-                  {/* Client */}
-                  {(p.tenKhachHang || p.khachHang) && (
-                    <p className="mt-1.5 text-xs text-slate-500 truncate flex items-center gap-1.5">
-                      <RiBuilding4Line className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-                      <span>{p.tenKhachHang || p.khachHang}</span>
-                    </p>
-                  )}
-
-                  {/* Status Badge */}
-                  <div className="mt-3">
-                    {p.trangThai === "da_gui" && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700 border border-emerald-200">
-                        <FiCheckCircle className="h-3 w-3" />
-                        <span>Đã hoàn tất / Gửi</span>
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+              {displayedProjects.map((p) => (
+                <div
+                  key={p.id}
+                  className="group flex flex-col justify-between rounded-2xl border border-blue-100 bg-white p-5 shadow-xs hover:border-[#268DF0] hover:shadow-md transition-all"
+                >
+                  <div>
+                    {/* Card Meta Top */}
+                    <div className="flex items-center justify-between gap-2 text-[11px] mb-2">
+                      <span className="font-mono font-bold text-[#105CB3] bg-blue-50 px-2 py-0.5 rounded border border-blue-100">
+                        {p.soBaoGia || "BG-000"}
                       </span>
-                    )}
-                    {p.trangThai === "dang_lam" && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-0.5 text-[11px] font-bold text-[#105CB3] border border-blue-200">
-                        <span>Đang biên tập</span>
-                      </span>
-                    )}
-                    {p.trangThai === "nhap" && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-bold text-amber-700 border border-amber-200">
-                        <span>Mới giao (Nháp)</span>
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Assignees */}
-                  <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-                    <div className="flex items-center gap-1.5 truncate">
-                      <FiUser className="h-3.5 w-3.5 text-[#105CB3] shrink-0" />
-                      <span className="truncate">
-                        {getUserName(p.nguoi_phu_trach_id || p.nguoiPhuTrachId)}
+                      <span className="text-slate-400 flex items-center gap-1">
+                        <FiClock className="h-3 w-3" />
+                        {(p.updatedAt || p.updated_at) ? new Date(p.updatedAt || p.updated_at).toLocaleDateString("vi-VN") : "—"}
                       </span>
                     </div>
 
-                    {p.memberIds && p.memberIds.length > 0 && (
-                      <div className="flex items-center gap-1 text-slate-400" title={`${p.memberIds.length} kỹ sư phối hợp`}>
-                        <FiUsers className="h-3.5 w-3.5" />
-                        <span>+{p.memberIds.length}</span>
-                      </div>
+                    {/* Title */}
+                    <h3 className="text-sm font-bold text-slate-800 line-clamp-2 group-hover:text-[#105CB3] transition-colors">
+                      {p.name}
+                    </h3>
+
+                    {/* Client */}
+                    {(p.tenKhachHang || p.khachHang) && (
+                      <p className="mt-1.5 text-xs text-slate-500 truncate flex items-center gap-1.5">
+                        <RiBuilding4Line className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                        <span>{p.tenKhachHang || p.khachHang}</span>
+                      </p>
                     )}
+
+                    {/* Status Badge */}
+                    <div className="mt-3">
+                      {p.trangThai === "da_gui" && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700 border border-emerald-200">
+                          <FiCheckCircle className="h-3 w-3" />
+                          <span>Đã hoàn tất / Gửi</span>
+                        </span>
+                      )}
+                      {p.trangThai === "dang_lam" && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-0.5 text-[11px] font-bold text-[#105CB3] border border-blue-200">
+                          <span>Đang biên tập</span>
+                        </span>
+                      )}
+                      {p.trangThai === "nhap" && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-bold text-amber-700 border border-amber-200">
+                          <span>Mới giao (Nháp)</span>
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Assignees */}
+                    <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                      <div className="flex items-center gap-1.5 truncate">
+                        <FiUser className="h-3.5 w-3.5 text-[#105CB3] shrink-0" />
+                        <span className="truncate">
+                          {getUserName(p.nguoi_phu_trach_id || p.nguoiPhuTrachId)}
+                        </span>
+                      </div>
+
+                      {p.memberIds && p.memberIds.length > 0 && (
+                        <div className="flex items-center gap-1 text-slate-400" title={`${p.memberIds.length} kỹ sư phối hợp`}>
+                          <FiUsers className="h-3.5 w-3.5" />
+                          <span>+{p.memberIds.length}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Actions Footer */}
+                  <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1">
+                      {(isAdmin || isManager || (user?.role === "user" && p.trangThai === "nhap" && (p.nguoiPhuTrachId === user?.id || p.nguoi_phu_trach_id === user?.id))) && (
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(p.id, p.name)}
+                          className="rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600 transition-colors"
+                          title="Xóa vào thùng rác (UC11)"
+                        >
+                          <FiTrash2 className="h-4 w-4" />
+                        </button>
+                      )}
+                      {(isAdmin || isManager) && (
+                        <button
+                          type="button"
+                          onClick={() => handleArchive(p.id, p.name)}
+                          className="rounded-lg p-2 text-slate-400 hover:bg-amber-50 hover:text-amber-600 transition-colors"
+                          title="Lưu trữ báo giá (UC11)"
+                        >
+                          <FiArchive className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
+
+                    <Link
+                      to={`/quotes/${p.id}/editor`}
+                      className="ml-auto inline-flex items-center gap-1.5 rounded-xl bg-[#105CB3] px-3.5 py-1.5 text-xs font-bold text-white shadow-xs hover:bg-[#268DF0] transition-colors"
+                    >
+                      <span>Mở Soạn Thảo (UC05)</span>
+                      <FiExternalLink className="h-3.5 w-3.5" />
+                    </Link>
                   </div>
                 </div>
+              ))}
+            </div>
 
-                {/* Actions Footer */}
-                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-1">
-                    {(isAdmin || isManager || (user?.role === "user" && p.trangThai === "nhap" && (p.nguoiPhuTrachId === user?.id || p.nguoi_phu_trach_id === user?.id))) && (
-                      <button
-                        type="button"
-                        onClick={() => handleDelete(p.id, p.name)}
-                        className="rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600 transition-colors"
-                        title="Xóa vào thùng rác (UC11)"
-                      >
-                        <FiTrash2 className="h-4 w-4" />
-                      </button>
-                    )}
-                    {(isAdmin || isManager) && (
-                      <button
-                        type="button"
-                        onClick={() => handleArchive(p.id, p.name)}
-                        className="rounded-lg p-2 text-slate-400 hover:bg-amber-50 hover:text-amber-600 transition-colors"
-                        title="Lưu trữ báo giá (UC11)"
-                      >
-                        <FiArchive className="h-4 w-4" />
-                      </button>
-                    )}
-                  </div>
-
-                  <Link
-                    to={`/quotes/${p.id}/editor`}
-                    className="ml-auto inline-flex items-center gap-1.5 rounded-xl bg-[#105CB3] px-3.5 py-1.5 text-xs font-bold text-white shadow-xs hover:bg-[#268DF0] transition-colors"
-                  >
-                    <span>Mở Soạn Thảo (UC05)</span>
-                    <FiExternalLink className="h-3.5 w-3.5" />
-                  </Link>
+            {/* Pagination / Load more controls */}
+            {filteredProjects.length > PAGE_SIZE && (
+              <div className="mt-6 flex flex-col sm:flex-row items-center justify-between gap-3 rounded-xl border border-blue-100 bg-white p-4 shadow-xs">
+                <div className="text-xs text-slate-500 font-medium">
+                  Đang hiển thị <strong className="text-[#105CB3]">{displayedProjects.length}</strong> / <strong className="text-slate-700">{filteredProjects.length}</strong> hồ sơ báo giá
+                </div>
+                <div className="flex items-center gap-2">
+                  {hasMore && (
+                    <button
+                      type="button"
+                      onClick={handleShowMore}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50/80 px-3.5 py-1.5 text-xs font-bold text-[#105CB3] hover:bg-blue-100 transition-colors shadow-2xs"
+                    >
+                      <FiChevronDown className="h-3.5 w-3.5" />
+                      <span>Hiển thị thêm (+{Math.min(PAGE_SIZE, filteredProjects.length - visibleCount)} hồ sơ)</span>
+                    </button>
+                  )}
+                  {canCollapse && (
+                    <button
+                      type="button"
+                      onClick={handleCollapse}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 hover:text-slate-800 transition-colors shadow-2xs"
+                    >
+                      <FiChevronUp className="h-3.5 w-3.5" />
+                      <span>Thu gọn (về 20 hồ sơ ban đầu)</span>
+                    </button>
+                  )}
                 </div>
               </div>
-            ))}
-          </div>
+            )}
+          </>
         )}
       </div>
 
