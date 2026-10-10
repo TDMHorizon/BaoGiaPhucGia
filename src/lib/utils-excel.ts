@@ -168,6 +168,10 @@ export function isCellInRange(cellRef: string, rangeStr: string): boolean {
   }
 }
 
+export function isCellInEditableRange(cellRef: string, rangeStr: string): boolean {
+  return Boolean(rangeStr?.trim()) && isCellInRange(cellRef, rangeStr);
+}
+
 export function insertRowInSheet(ws: XLSX.WorkSheet, rowIndex: number): void {
   const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
   const R_max = range.e.r;

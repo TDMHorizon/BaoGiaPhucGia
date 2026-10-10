@@ -24,20 +24,62 @@ export function useExcelData({ workbook, exceljsWorkbook, activeSheet, sheetData
 
     if (!ws) return { rowHeights, colWidths, mergesMap };
 
-    // Cache row heights
+    // 1. Calculate spacious, clear row heights (never squeezed)
     for (let r = 0; r < numRows; r++) {
-      const h = getRowHeight(ejWs, ws, r);
-      if (h !== undefined) {
-        rowHeights[r] = h;
+      const origHeight = getRowHeight(ejWs, ws, r);
+
+      // Check content in row for dynamic height expansion
+      const rowCells = sheetData[r] || [];
+      let maxLen = 0;
+      let maxLines = 1;
+
+      rowCells.forEach((val) => {
+        if (val !== undefined && val !== null && val !== "") {
+          const str = String(val);
+          if (str.length > maxLen) maxLen = str.length;
+          const lines = str.split("\n").length;
+          if (lines > maxLines) maxLines = lines;
+        }
+      });
+
+      let contentHeight = 38; // Comfortable baseline height
+      if (maxLines > 1) {
+        contentHeight = Math.max(contentHeight, maxLines * 24 + 16);
+      } else if (maxLen > 100) {
+        contentHeight = 76;
+      } else if (maxLen > 50) {
+        contentHeight = 56;
+      } else if (maxLen > 25) {
+        contentHeight = 44;
       }
+
+      rowHeights[r] = Math.max(origHeight || 0, contentHeight, 38);
     }
 
-    // Cache col widths
+    // 2. Calculate spacious column widths
     for (let c = 0; c < numCols; c++) {
-      colWidths[c] = getColumnWidth(ejWs, ws, c);
+      const origWidth = getColumnWidth(ejWs, ws, c);
+      let maxLen = 0;
+
+      sheetData.forEach((row) => {
+        if (row && row[c] !== undefined && row[c] !== null) {
+          const str = String(row[c]);
+          str.split("\n").forEach((l) => {
+            if (l.length > maxLen) maxLen = l.length;
+          });
+        }
+      });
+
+      let dynamicWidth = 150;
+      if (maxLen > 50) dynamicWidth = 340;
+      else if (maxLen > 30) dynamicWidth = 260;
+      else if (maxLen > 15) dynamicWidth = 190;
+      else if (maxLen > 0) dynamicWidth = Math.max(140, maxLen * 9 + 20);
+
+      colWidths[c] = Math.max(origWidth, dynamicWidth, 140);
     }
 
-    // Cache merges
+    // 3. Cache merges
     for (let r = 0; r < numRows; r++) {
       for (let c = 0; c < numCols; c++) {
         const mergeInfo = getCellMergeInfo(ws, r, c, ejWs);
@@ -48,7 +90,7 @@ export function useExcelData({ workbook, exceljsWorkbook, activeSheet, sheetData
     }
 
     return { rowHeights, colWidths, mergesMap };
-  }, [ws, ejWs, numRows, numCols]);
+  }, [ws, ejWs, numRows, numCols, sheetData]);
 
   return { ws, ejWs, rowHeights, colWidths, mergesMap, numRows, numCols };
 }

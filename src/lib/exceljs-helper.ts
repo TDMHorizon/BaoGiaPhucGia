@@ -194,8 +194,9 @@ export function updateMergedCellInExcelJS(ws: any, cellRef: string, value: any) 
   const cell = ws.getCell(cellRef);
   
   const valStr = value === null || value === undefined ? "" : String(value);
-  const isNum = !isNaN(Number(valStr)) && valStr.trim() !== "";
-  const typedVal = isNum ? Number(valStr) : valStr;
+  const isFormula = typeof valStr === "string" && valStr.startsWith("=");
+  const isNum = !isFormula && !isNaN(Number(valStr)) && valStr.trim() !== "";
+  const typedVal = isFormula ? { formula: valStr.slice(1) } : isNum ? Number(valStr) : valStr;
 
   // In ExcelJS, if a cell is part of a merge range, cell.master holds the actual (top-left) cell.
   // Setting the value of the master cell directly updates the merged value without unmerging or duplicating cell values.

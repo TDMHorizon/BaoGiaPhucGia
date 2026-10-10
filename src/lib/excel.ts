@@ -71,9 +71,10 @@ export function getSheetData(workbook: XLSX.WorkBook, sheetName: string) {
 export function applyEditToSheetWithMergeClearing(sheet: XLSX.WorkSheet, cellRef: string, newValue: string) {
   const cell = XLSX.utils.decode_cell(cellRef);
   const valStr = newValue === null || newValue === undefined ? "" : String(newValue);
-  const isNum = !isNaN(Number(valStr)) && valStr.trim() !== "";
+  const isFormula = typeof valStr === 'string' && valStr.startsWith('=');
+  const isNum = !isFormula && !isNaN(Number(valStr)) && valStr.trim() !== "";
   const typedVal = isNum ? Number(valStr) : valStr;
-  const typeCode = isNum ? 'n' : 's';
+  const typeCode = isFormula ? 'n' : isNum ? 'n' : 's';
 
   // Ensure sheet !ref encompasses this cell so sheet_to_json never truncates edited cells
   if (sheet['!ref']) {
@@ -104,14 +105,18 @@ export function applyEditToSheetWithMergeClearing(sheet: XLSX.WorkSheet, cellRef
     // Set the master cell (top-left) of the merge
     const masterRef = XLSX.utils.encode_cell(foundMerge.s);
     if (!sheet[masterRef]) {
-      sheet[masterRef] = { t: typeCode, v: typedVal };
+      sheet[masterRef] = isFormula ? { t: 'n', f: valStr.slice(1), v: 0 } : { t: typeCode, v: typedVal };
     } else {
       const cObj = sheet[masterRef];
       cObj.t = typeCode;
       cObj.v = typedVal;
+      if (isFormula) {
+        cObj.f = valStr.slice(1);
+      } else {
+        delete cObj.f;
+      }
       delete cObj.w;
       delete cObj.r;
-      delete cObj.f;
     }
 
     // Completely clear all other cells in the merged range to avoid duplicates
@@ -125,14 +130,18 @@ export function applyEditToSheetWithMergeClearing(sheet: XLSX.WorkSheet, cellRef
   } else {
     // Standard unmerged cell edit
     if (!sheet[cellRef]) {
-      sheet[cellRef] = { t: typeCode, v: typedVal };
+      sheet[cellRef] = isFormula ? { t: 'n', f: valStr.slice(1), v: 0 } : { t: typeCode, v: typedVal };
     } else {
       const cObj = sheet[cellRef];
       cObj.t = typeCode;
       cObj.v = typedVal;
+      if (isFormula) {
+        cObj.f = valStr.slice(1);
+      } else {
+        delete cObj.f;
+      }
       delete cObj.w;
       delete cObj.r;
-      delete cObj.f;
     }
   }
 }

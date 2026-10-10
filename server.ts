@@ -525,6 +525,7 @@ async function startServer() {
     res.json({ count: row.c });
   });
 
+
   app.get("/api/projects/me", authMiddleware, (req, res) => {
     const user = req.user!;
     const q = String(req.query.q || "").trim().toLowerCase();
@@ -1987,7 +1988,7 @@ async function startServer() {
     });
   }
 
-  
+
   // Global Error Handler
   app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
     console.error(err);
@@ -2006,7 +2007,7 @@ async function startServer() {
     console.error('UNCAUGHT EXCEPTION! Shutting down...', err);
     process.exit(1);
   });
-  
+
   process.on('unhandledRejection', (err) => {
     console.error('UNHANDLED REJECTION! Shutting down...', err);
     process.exit(1);

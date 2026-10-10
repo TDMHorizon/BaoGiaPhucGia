@@ -13,6 +13,8 @@ import {
   FiAlertCircle,
   FiLoader,
   FiAlertTriangle,
+  FiCornerUpLeft,
+  FiFilter,
 } from "react-icons/fi";
 import { RiFileExcel2Line } from "react-icons/ri";
 
@@ -41,6 +43,14 @@ interface EditorToolbarProps {
   onDisableSelectedCell?: () => void;
   onEnableSelectedCell?: () => void;
   selectedRangeText?: string;
+  onUndo?: () => void;
+  canUndo?: boolean;
+  rowInsertIndex?: string;
+  onRowInsertIndexChange?: (val: string) => void;
+  colInsertIndex?: string;
+  onColInsertIndexChange?: (val: string) => void;
+  previewLimit?: number;
+  onPreviewLimitChange?: (limit: number) => void;
 }
 
 export const EditorToolbar: React.FC<EditorToolbarProps> = ({
@@ -64,8 +74,16 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
   onDisableSelectedCell,
   onEnableSelectedCell,
   selectedRangeText,
+  onUndo,
+  canUndo,
+  rowInsertIndex,
+  onRowInsertIndexChange,
+  colInsertIndex,
+  onColInsertIndexChange,
+  previewLimit = -1,
+  onPreviewLimitChange,
 }) => {
-  const isAdmin = userRole === "admin";
+  const isAdmin = userRole === "admin" || userRole === "manager";
 
   const renderSaveBadge = () => {
     switch (saveStatus) {
@@ -111,15 +129,19 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
   const getTrangThaiBadge = () => {
     if (trangThai === "da_gui")
       return <span className="rounded-md bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">ĐÃ GỬI KHÁCH</span>;
-    if (trangThai === "dang_lam")
+    if (trangThai === "dang_lam" || trangThai === "dang_sua")
       return <span className="rounded-md bg-blue-100 px-2 py-0.5 text-[10px] font-bold text-[#105CB3]">ĐANG SOẠN THẢO</span>;
+    if (trangThai === "da_duyet")
+      return <span className="rounded-md bg-teal-100 px-2 py-0.5 text-[10px] font-bold text-teal-800">ĐÃ DUYỆT</span>;
+    if (trangThai === "cho_duyet")
+      return <span className="rounded-md bg-purple-100 px-2 py-0.5 text-[10px] font-bold text-purple-800">CHỜ DUYỆT</span>;
     return <span className="rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">MỚI GIAO (NHÁP)</span>;
   };
 
   return (
     <div className="flex flex-col border-b border-slate-200 bg-white shadow-xs">
       {/* Top Meta Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 border-b border-slate-100 bg-[#F0F7FF]/50">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2 border-b border-slate-100 bg-[#F0F7FF]/50">
         <div className="flex items-center gap-3 min-w-0">
           <button
             type="button"
@@ -144,7 +166,7 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           {renderSaveBadge()}
 
           {onExportDraftExcel && (
@@ -174,9 +196,9 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
               type="button"
               onClick={onPrint}
               className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
-              title="In bảng tính"
+              title="In bảng tính PDF"
             >
-              <FiPrinter className="h-3.5 w-3.5" />
+              <FiPrinter className="h-3.5 w-3.5 text-slate-600" />
             </button>
           )}
 
@@ -197,103 +219,164 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
       </div>
 
       {/* Structural & Formatting Action Strip */}
-      {isAdmin && (
-        <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-1.5 text-xs bg-slate-50 border-t border-slate-100">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mr-1">
-              Cấu trúc bảng:
-            </span>
+      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-1.5 text-xs bg-slate-50 border-t border-slate-100">
+        <div className="flex items-center gap-2 flex-wrap">
+          {isAdmin && (
+            <>
+              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mr-1">
+                Cấu trúc:
+              </span>
 
-            {/* Row Controls */}
-            <div className="inline-flex items-center rounded-lg border border-slate-200 bg-white p-0.5 shadow-2xs">
-              <button
-                type="button"
-                onClick={onAddRow}
-                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-blue-50 hover:text-[#105CB3]"
-              >
-                <FiPlus className="h-3 w-3" />
-                <span>Thêm dòng</span>
-              </button>
-              <button
-                type="button"
-                onClick={onDisableSelectedRow}
-                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-red-600 hover:bg-red-50"
-                title="Vô hiệu hóa dòng đang chọn (khóa xám đen, giữ nguyên tọa độ)"
-              >
-                <FiMinusCircle className="h-3 w-3" />
-                <span>Vô hiệu hóa dòng</span>
-              </button>
-              <button
-                type="button"
-                onClick={onEnableSelectedRow}
-                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-emerald-600 hover:bg-emerald-50"
-                title="Khôi phục dòng đang chọn"
-              >
-                <FiRotateCcw className="h-3 w-3" />
-                <span>Khôi phục dòng</span>
-              </button>
-            </div>
+              {/* Row Controls */}
+              <div className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-0.5 shadow-2xs">
+                {onRowInsertIndexChange && (
+                  <input
+                    type="number"
+                    min="1"
+                    placeholder="Dòng"
+                    value={rowInsertIndex || ""}
+                    onChange={(e) => onRowInsertIndexChange(e.target.value)}
+                    className="w-12 h-6 text-[10px] px-1 border border-slate-200 rounded font-mono text-center focus:outline-hidden"
+                    title="Vị trí dòng (để trống = thêm cuối)"
+                  />
+                )}
+                <button
+                  type="button"
+                  onClick={onAddRow}
+                  className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-blue-50 hover:text-[#105CB3]"
+                  title="Thêm dòng mới"
+                >
+                  <FiPlus className="h-3 w-3 text-indigo-600" />
+                  <span>Dòng</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onDisableSelectedRow}
+                  className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-semibold text-red-600 hover:bg-red-50"
+                  title="Vô hiệu hóa dòng (khóa xám đen, giữ nguyên tọa độ)"
+                >
+                  <FiMinusCircle className="h-3 w-3" />
+                  <span>Khóa</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onEnableSelectedRow}
+                  className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-semibold text-emerald-600 hover:bg-emerald-50"
+                  title="Khôi phục dòng đã vô hiệu hóa"
+                >
+                  <FiRotateCcw className="h-3 w-3" />
+                  <span>Mở</span>
+                </button>
+              </div>
 
-            {/* Col Controls */}
-            <div className="inline-flex items-center rounded-lg border border-slate-200 bg-white p-0.5 shadow-2xs">
-              <button
-                type="button"
-                onClick={onAddCol}
-                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-blue-50 hover:text-[#105CB3]"
-              >
-                <FiPlus className="h-3 w-3" />
-                <span>Thêm cột</span>
-              </button>
-              <button
-                type="button"
-                onClick={onDisableSelectedCol}
-                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-red-600 hover:bg-red-50"
-                title="Vô hiệu hóa cột đang chọn"
-              >
-                <FiMinusCircle className="h-3 w-3" />
-                <span>Vô hiệu cột</span>
-              </button>
-              <button
-                type="button"
-                onClick={onEnableSelectedCol}
-                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-emerald-600 hover:bg-emerald-50"
-                title="Khôi phục cột đang chọn"
-              >
-                <FiRotateCcw className="h-3 w-3" />
-                <span>Khôi phục cột</span>
-              </button>
-            </div>
+              {/* Col Controls */}
+              <div className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-0.5 shadow-2xs">
+                {onColInsertIndexChange && (
+                  <input
+                    type="text"
+                    placeholder="Cột"
+                    value={colInsertIndex || ""}
+                    onChange={(e) => onColInsertIndexChange(e.target.value)}
+                    className="w-10 h-6 text-[10px] px-1 border border-slate-200 rounded font-mono text-center uppercase focus:outline-hidden"
+                    title="Vị trí cột (VD: C, D, để trống = thêm cuối)"
+                  />
+                )}
+                <button
+                  type="button"
+                  onClick={onAddCol}
+                  className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-blue-50 hover:text-[#105CB3]"
+                  title="Thêm cột mới"
+                >
+                  <FiPlus className="h-3 w-3 text-indigo-600" />
+                  <span>Cột</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onDisableSelectedCol}
+                  className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-semibold text-red-600 hover:bg-red-50"
+                  title="Vô hiệu hóa cột"
+                >
+                  <FiMinusCircle className="h-3 w-3" />
+                  <span>Khóa</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onEnableSelectedCol}
+                  className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-semibold text-emerald-600 hover:bg-emerald-50"
+                  title="Khôi phục cột"
+                >
+                  <FiRotateCcw className="h-3 w-3" />
+                  <span>Mở</span>
+                </button>
+              </div>
 
-            {/* Cell Lock Controls */}
-            <div className="inline-flex items-center rounded-lg border border-slate-200 bg-white p-0.5 shadow-2xs">
-              <button
-                type="button"
-                onClick={onDisableSelectedCell}
-                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-amber-700 hover:bg-amber-50"
-                title="Khóa vô hiệu hóa ô đang chọn"
-              >
-                <FiLock className="h-3 w-3" />
-                <span>Khóa ô</span>
-              </button>
-              <button
-                type="button"
-                onClick={onEnableSelectedCell}
-                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-emerald-600 hover:bg-emerald-50"
-                title="Mở khóa ô đang chọn"
-              >
-                <FiUnlock className="h-3 w-3" />
-                <span>Mở ô</span>
-              </button>
-            </div>
-          </div>
+              {/* Cell Lock Controls */}
+              <div className="inline-flex items-center rounded-lg border border-slate-200 bg-white p-0.5 shadow-2xs">
+                <button
+                  type="button"
+                  onClick={onDisableSelectedCell}
+                  className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-amber-700 hover:bg-amber-50"
+                  title="Khóa ô đang chọn"
+                >
+                  <FiLock className="h-3 w-3 text-red-500" />
+                  <span>Khóa ô</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onEnableSelectedCell}
+                  className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-emerald-600 hover:bg-emerald-50"
+                  title="Mở khóa ô đang chọn"
+                >
+                  <FiUnlock className="h-3 w-3 text-emerald-600" />
+                  <span>Mở ô</span>
+                </button>
+              </div>
 
-          {selectedRangeText && (
-            <div className="text-[11px] text-slate-500 font-mono bg-white px-2 py-0.5 rounded border border-slate-200">
-              Vùng chọn: <strong className="text-[#105CB3]">{selectedRangeText}</strong>
+              {/* Undo Control */}
+              {onUndo && (
+                <button
+                  type="button"
+                  onClick={onUndo}
+                  disabled={!canUndo}
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-purple-700 hover:bg-purple-50 disabled:opacity-40 disabled:cursor-not-allowed shadow-2xs"
+                  title="Hoàn tác thao tác vừa thực hiện"
+                >
+                  <FiCornerUpLeft className="h-3.5 w-3.5" />
+                  <span>Hoàn tác</span>
+                </button>
+              )}
+            </>
+          )}
+
+          {/* Row View Filter */}
+          {onPreviewLimitChange && (
+            <div className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-0.5 shadow-2xs text-[11px]">
+              <FiFilter className="h-3 w-3 text-slate-400" />
+              <select
+                value={previewLimit === -1 ? "all" : previewLimit}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  onPreviewLimitChange(val === "all" ? -1 : Number(val));
+                }}
+                className="bg-transparent text-[11px] font-semibold text-slate-700 focus:outline-hidden cursor-pointer"
+              >
+                <option value={10}>10 dòng</option>
+                <option value={20}>20 dòng</option>
+                <option value={55}>55 dòng</option>
+                <option value={100}>100 dòng</option>
+                <option value="all">Tất cả dòng</option>
+              </select>
             </div>
           )}
         </div>
-      )}
+
+        {selectedRangeText && (
+          <div className="text-[11px] text-slate-500 font-mono bg-white px-2 py-0.5 rounded border border-slate-200">
+            Vùng chọn: <strong className="text-[#105CB3]">{selectedRangeText}</strong>
+          </div>
+        )}
+      </div>
     </div>
   );
 };
+

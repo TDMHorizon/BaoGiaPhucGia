@@ -25,6 +25,7 @@ export interface SpreadsheetViewerProps {
   onCellEdit?: (r: number, c: number, newValue: string) => void;
   onCellFocus?: (r: number, c: number, cell: string) => void;
   onCellBlur?: (r: number, c: number, cell: string) => void;
+  onCellClick?: (r: number, c: number, cell: string, value: string) => void;
   onCellMouseDown?: (r: number, c: number) => void;
   onCellMouseEnter?: (r: number, c: number) => void;
 }
@@ -47,6 +48,7 @@ export function SpreadsheetViewer({
                                     onCellEdit,
                                     onCellFocus,
                                     onCellBlur,
+                                    onCellClick,
                                     onCellMouseDown,
                                     onCellMouseEnter
                                   }: SpreadsheetViewerProps) {
@@ -62,8 +64,8 @@ export function SpreadsheetViewer({
   });
 
   return (
-      <div className="flex-1 overflow-auto bg-white p-2 relative">
-        <table className="w-full border-collapse" style={{ tableLayout: "fixed" }}>
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto bg-white p-2 relative">
+        <table className="min-w-full w-max border-collapse" style={{ tableLayout: "fixed" }}>
           <thead>
           <tr className="shadow-3xs">
             <th className="border border-slate-300 p-2 bg-slate-200 w-12 text-slate-500 font-bold text-xs text-center select-none sticky top-0 left-0 z-20" style={{ width: "48px", minWidth: "48px", maxWidth: "48px" }}>#</th>
@@ -102,9 +104,11 @@ export function SpreadsheetViewer({
                   activeSheet={activeSheet}
                   disabledRanges={disabledRanges}
                   activeEditors={activeEditors}
+                  sheetData={displayData}
                   onCellEdit={onCellEdit}
                   onCellFocus={onCellFocus}
                   onCellBlur={onCellBlur}
+                  onCellClick={onCellClick}
                   onMouseDown={onCellMouseDown}
                   onMouseEnter={onCellMouseEnter}
                   onRowClick={onRowClick}

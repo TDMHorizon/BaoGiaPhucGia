@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { CellUIStyles } from '../utils/styleCalculator';
+import { evaluateCellValue } from '../../../lib/formulaEvaluator';
 
 export interface ActiveEditor {
   userId: string;
@@ -11,6 +12,7 @@ interface CellProps {
   r: number;
   c: number;
   value: string;
+  sheetData?: any[][];
   uiStyles: CellUIStyles;
   mode: 'user' | 'admin';
   isEditable: boolean;
@@ -19,6 +21,7 @@ interface CellProps {
   onCellEdit?: (r: number, c: number, newValue: string) => void;
   onCellFocus?: (r: number, c: number) => void;
   onCellBlur?: (r: number, c: number) => void;
+  onCellClick?: (r: number, c: number, value: string) => void;
   onMouseDown?: (r: number, c: number) => void;
   onMouseEnter?: (r: number, c: number) => void;
 }
@@ -27,6 +30,7 @@ export const Cell = React.memo(({
   r,
   c,
   value,
+  sheetData = [],
   uiStyles,
   mode,
   isEditable,
@@ -35,6 +39,7 @@ export const Cell = React.memo(({
   onCellEdit,
   onCellFocus,
   onCellBlur,
+  onCellClick,
   onMouseDown,
   onMouseEnter
 }: CellProps) => {
@@ -54,7 +59,21 @@ export const Cell = React.memo(({
     }
   }, [isDisabled, isEditing, onCellBlur, r, c]);
 
+  // Evaluate formula if value starts with '='
+  const { displayValue, isFormula } = useMemo(() => {
+    if (typeof value === 'string' && value.startsWith('=')) {
+      return evaluateCellValue(value, sheetData);
+    }
+    return { displayValue: value ?? "", isFormula: false, rawFormula: "" };
+  }, [value, sheetData]);
+
   if (uiStyles.shouldSkip) return null;
+
+  const handleClick = (e: React.MouseEvent) => {
+    if (onCellClick) {
+      onCellClick(r, c, value);
+    }
+  };
 
   const handleDoubleClick = () => {
     // Vùng bị vô hiệu hóa tuyệt đối không cho chỉnh sửa (kể cả admin/user)
@@ -98,7 +117,9 @@ export const Cell = React.memo(({
       ? `Ô đã bị Admin vô hiệu hóa (Không thể chỉnh sửa): ${value}`
       : activeEditor
           ? `${activeEditor.username} đang chỉnh sửa ô này: ${value}`
-          : value;
+          : isFormula
+              ? `Hàm fx: ${value} → Kết quả: ${displayValue}`
+              : value;
 
   const finalStyle = isDisabled
       ? { ...uiStyles.finalTdStyle, backgroundColor: '#334155', color: '#94a3b8' }
@@ -115,6 +136,7 @@ export const Cell = React.memo(({
           title={cellTitle}
           rowSpan={uiStyles.mergeInfo && 'rowSpan' in uiStyles.mergeInfo ? uiStyles.mergeInfo.rowSpan : undefined}
           colSpan={uiStyles.mergeInfo && 'colSpan' in uiStyles.mergeInfo ? uiStyles.mergeInfo.colSpan : undefined}
+          onClick={handleClick}
           onMouseDown={() => onMouseDown && onMouseDown(r, c)}
           onMouseEnter={() => onMouseEnter && onMouseEnter(r, c)}
           onDoubleClick={handleDoubleClick}
@@ -132,7 +154,7 @@ export const Cell = React.memo(({
         {isEditing && !isDisabled ? (
             <textarea
                 autoFocus
-                className="w-full h-full p-1 border-2 border-emerald-500 rounded bg-white shadow-inner focus:outline-none text-slate-800 resize-none min-h-[60px]"
+                className="w-full h-full p-1 border-2 border-emerald-500 rounded bg-white shadow-inner focus:outline-none text-slate-800 resize-none min-h-[60px] font-mono text-xs"
                 value={editValue}
                 onChange={(e) => setEditValue(e.target.value)}
                 onBlur={handleSave}
@@ -148,13 +170,16 @@ export const Cell = React.memo(({
                 }}
             />
         ) : (
-            <span style={spanStyle} className="flex items-center gap-1">
+            <span style={spanStyle} className="flex items-center gap-1 relative">
               {isDisabled && (
                 <svg className="w-3 h-3 text-slate-400 inline-block flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                 </svg>
               )}
-              {value}
+              {isFormula && (
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0" title={`Hàm: ${value}`} />
+              )}
+              <span>{displayValue}</span>
             </span>
         )}
       </td>

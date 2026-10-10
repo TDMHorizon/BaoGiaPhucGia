@@ -626,9 +626,6 @@ function runMigrations() {
 /* --------------------------------- Seed --------------------------------- */
 
 function seedUsers() {
-  const count = db.prepare("SELECT COUNT(*) as c FROM users").get() as { c: number };
-  if (count.c > 0) return;
-
   const now = new Date().toISOString();
   const insert = db.prepare(
     "INSERT INTO users (id, username, password_hash, role, active, created_at) VALUES (?, ?, ?, ?, 1, ?)"
@@ -650,9 +647,9 @@ function seedUsers() {
   }
 
   // Dev/test: tài khoản mẫu để thử nhanh (KHÔNG dùng khi production).
-  insert.run("admin1", "admin", bcrypt.hashSync("password", 10), "admin", now);
-  insert.run("manager1", "manager", bcrypt.hashSync("password", 10), "manager", now);
-  insert.run("user1", "user", bcrypt.hashSync("password", 10), "user", now);
+  // insert.run("admin1", "admin", bcrypt.hashSync("password", 10), "admin", now);
+  // insert.run("manager1", "manager", bcrypt.hashSync("password", 10), "manager", now);
+  // insert.run("user1", "user", bcrypt.hashSync("password", 10), "user", now);
 }
 
 /* ------------------------------- Helpers -------------------------------- */

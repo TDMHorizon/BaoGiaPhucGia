@@ -21,9 +21,11 @@ interface RowProps {
     activeSheet?: string;
     disabledRanges?: any;
     activeEditors?: Record<string, ActiveEditor>;
+    sheetData?: any[][];
     onCellEdit?: (r: number, c: number, newValue: string) => void;
     onCellFocus?: (r: number, c: number, cell: string) => void;
     onCellBlur?: (r: number, c: number, cell: string) => void;
+    onCellClick?: (r: number, c: number, cell: string, value: string) => void;
     onMouseDown?: (r: number, c: number) => void;
     onMouseEnter?: (r: number, c: number) => void;
     onRowClick?: (r: number) => void;
@@ -33,7 +35,7 @@ export const Row = React.memo(({
                                    r, rowData, numCols, rowHeight, ejWs, colWidths, mergesMap,
                                    mode, editableRange, isLocked, selectedColumn, selectedRange,
                                    activeSheet = "", disabledRanges,
-                                   activeEditors, onCellEdit, onCellFocus, onCellBlur, onMouseDown, onMouseEnter, onRowClick
+                                   activeEditors, sheetData = [], onCellEdit, onCellFocus, onCellBlur, onCellClick, onMouseDown, onMouseEnter, onRowClick
                                }: RowProps) => {
 
     const safeEditableRange = editableRange || "";
@@ -142,6 +144,7 @@ export const Row = React.memo(({
                         r={r}
                         c={c}
                         value={val}
+                        sheetData={sheetData}
                         uiStyles={uiStyles}
                         mode={mode}
                         isEditable={isEditable}
@@ -150,6 +153,7 @@ export const Row = React.memo(({
                         onCellEdit={onCellEdit}
                         onCellFocus={onCellFocus ? (rowIdx, colIdx) => onCellFocus(rowIdx, colIdx, cellRef) : undefined}
                         onCellBlur={onCellBlur ? (rowIdx, colIdx) => onCellBlur(rowIdx, colIdx, cellRef) : undefined}
+                        onCellClick={onCellClick ? (rowIdx, colIdx, cellVal) => onCellClick(rowIdx, colIdx, cellRef, cellVal) : undefined}
                         onMouseDown={onMouseDown}
                         onMouseEnter={onMouseEnter}
                     />

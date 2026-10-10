@@ -16,7 +16,7 @@ export function Login() {
   const [rememberMe, setRememberMe] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
-  const [allowQuickLogin, setAllowQuickLogin] = useState(false);
+  const [allowQuickLogin, setAllowQuickLogin] = useState(true);
   const { login } = useAuth();
 
   // Load remembered username if it exists
@@ -26,12 +26,16 @@ export function Login() {
       setUsername(saved);
       setRememberMe(true);
     }
-    api.getConfig().then((c) => setAllowQuickLogin(!!c.allowQuickLogin)).catch(() => setAllowQuickLogin(false));
+    api
+      .getConfig()
+      .then((c) => setAllowQuickLogin(c.allowQuickLogin !== false))
+      .catch(() => setAllowQuickLogin(true));
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username || !password) {
+    const trimmedUsername = username.trim();
+    if (!trimmedUsername || !password) {
       setErrorMessage("Vui lòng điền đầy đủ tên đăng nhập và mật khẩu.");
       return;
     }
@@ -40,11 +44,11 @@ export function Login() {
     setErrorMessage("");
 
     try {
-      const user = await api.login(username, password);
-      
+      const user = await api.login(trimmedUsername, password);
+
       // Save or clear remembered username
       if (rememberMe) {
-        localStorage.setItem("rememberedUsername", username);
+        localStorage.setItem("rememberedUsername", trimmedUsername);
       } else {
         localStorage.removeItem("rememberedUsername");
       }
@@ -53,7 +57,7 @@ export function Login() {
       toast.success("Đăng nhập thành công!");
     } catch (error: any) {
       console.error("Login failed:", error);
-      setErrorMessage("Tên đăng nhập hoặc mật khẩu không chính xác.");
+      setErrorMessage(error.message || "Tên đăng nhập hoặc mật khẩu không chính xác.");
       toast.error("Đăng nhập thất bại. Vui lòng kiểm tra lại thông tin!");
     } finally {
       setIsLoading(false);
@@ -106,98 +110,98 @@ export function Login() {
             </CardHeader>
 
             <CardContent className="space-y-6 p-0">
-          {errorMessage && (
-            <div role="alert" className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 transition-all duration-300">
-              <ShieldAlert className="size-4 shrink-0 text-red-500" />
-              <span>{errorMessage}</span>
-            </div>
-          )}
-
-          <form className="space-y-4" onSubmit={handleSubmit}>
-            <div className="space-y-1.5">
-              <Label htmlFor="username" className="text-xs font-semibold uppercase tracking-wider text-slate-600">Tên đăng nhập</Label>
-              <div className="relative">
-                <div className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
-                  <User className="size-4" />
+              {errorMessage && (
+                <div role="alert" className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 transition-all duration-300">
+                  <ShieldAlert className="size-4 shrink-0 text-red-500" />
+                  <span>{errorMessage}</span>
                 </div>
-                <Input
-                  id="username"
-                  name="username"
-                  type="text"
-                  required
-                  disabled={isLoading}
-                  placeholder="Nhập tên đăng nhập"
-                  className="h-11 border-slate-200 bg-slate-50 pl-10 text-slate-900 placeholder:text-slate-400 focus-visible:border-[#0b4f9c] focus-visible:ring-[#0b4f9c]/20"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                />
-              </div>
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="password" className="text-xs font-semibold uppercase tracking-wider text-slate-600">Mật khẩu</Label>
-              <div className="relative">
-                <div className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
-                  <Lock className="size-4" />
-                </div>
-                <Input
-                  id="password"
-                  name="password"
-                  type={showPassword ? "text" : "password"}
-                  required
-                  disabled={isLoading}
-                  placeholder="Nhập mật khẩu"
-                  className="h-11 border-slate-200 bg-slate-50 pl-10 pr-10 text-slate-900 placeholder:text-slate-400 focus-visible:border-[#0b4f9c] focus-visible:ring-[#0b4f9c]/20"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 cursor-pointer text-slate-400 transition-colors hover:text-[#0b4f9c] focus:outline-none"
-                  disabled={isLoading}
-                >
-                  {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                </button>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between pt-1">
-              <label className="flex cursor-pointer select-none items-center gap-2 text-sm text-slate-500">
-                <input
-                  type="checkbox"
-                  checked={rememberMe}
-                  disabled={isLoading}
-                  onChange={(e) => setRememberMe(e.target.checked)}
-                  className="size-4 cursor-pointer rounded border-slate-300 bg-white text-[#0b4f9c] focus:ring-[#0b4f9c]/30"
-                />
-                <span>Ghi nhớ tài khoản</span>
-              </label>
-            </div>
-
-            <Button 
-              type="submit" 
-              disabled={isLoading} 
-              className="mt-2 flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-[#0b4f9c] font-semibold text-white shadow-lg shadow-blue-900/15 transition-all hover:bg-[#083f7d]"
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="size-4 animate-spin" />
-                  <span>Đang kết nối...</span>
-                </>
-              ) : (
-                <span>Đăng nhập</span>
               )}
-            </Button>
-          </form>
 
-          {allowQuickLogin && (
-            <>
-              <div className="relative flex items-center py-2">
-                <div className="flex-grow border-t border-slate-200"></div>
-                <span className="mx-4 flex-shrink text-xs font-semibold uppercase tracking-wider text-slate-400">Đăng nhập nhanh</span>
-                <div className="flex-grow border-t border-slate-200"></div>
-              </div>
+              <form className="space-y-4" onSubmit={handleSubmit}>
+                <div className="space-y-1.5">
+                  <Label htmlFor="username" className="text-xs font-semibold uppercase tracking-wider text-slate-600">Tên đăng nhập</Label>
+                  <div className="relative">
+                    <div className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
+                      <User className="size-4" />
+                    </div>
+                    <Input
+                      id="username"
+                      name="username"
+                      type="text"
+                      required
+                      disabled={isLoading}
+                      placeholder="Nhập tên đăng nhập"
+                      className="h-11 border-slate-200 bg-slate-50 pl-10 text-slate-900 placeholder:text-slate-400 focus-visible:border-[#0b4f9c] focus-visible:ring-[#0b4f9c]/20"
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="password" className="text-xs font-semibold uppercase tracking-wider text-slate-600">Mật khẩu</Label>
+                  <div className="relative">
+                    <div className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
+                      <Lock className="size-4" />
+                    </div>
+                    <Input
+                      id="password"
+                      name="password"
+                      type={showPassword ? "text" : "password"}
+                      required
+                      disabled={isLoading}
+                      placeholder="Nhập mật khẩu"
+                      className="h-11 border-slate-200 bg-slate-50 pl-10 pr-10 text-slate-900 placeholder:text-slate-400 focus-visible:border-[#0b4f9c] focus-visible:ring-[#0b4f9c]/20"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 cursor-pointer text-slate-400 transition-colors hover:text-[#0b4f9c] focus:outline-none"
+                      disabled={isLoading}
+                    >
+                      {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-1">
+                  <label className="flex cursor-pointer select-none items-center gap-2 text-sm text-slate-500">
+                    <input
+                      type="checkbox"
+                      checked={rememberMe}
+                      disabled={isLoading}
+                      onChange={(e) => setRememberMe(e.target.checked)}
+                      className="size-4 cursor-pointer rounded border-slate-300 bg-white text-[#0b4f9c] focus:ring-[#0b4f9c]/30"
+                    />
+                    <span>Ghi nhớ tài khoản</span>
+                  </label>
+                </div>
+
+                <Button
+                  type="submit"
+                  disabled={isLoading}
+                  className="mt-2 flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-[#0b4f9c] font-semibold text-white shadow-lg shadow-blue-900/15 transition-all hover:bg-[#083f7d]"
+                >
+                  {isLoading ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" />
+                      <span>Đang kết nối...</span>
+                    </>
+                  ) : (
+                    <span>Đăng nhập</span>
+                  )}
+                </Button>
+              </form>
+
+              {allowQuickLogin && (
+                <>
+                  <div className="relative flex items-center py-2">
+                    <div className="flex-grow border-t border-slate-200"></div>
+                    <span className="mx-4 flex-shrink text-xs font-semibold uppercase tracking-wider text-slate-400">Đăng nhập nhanh</span>
+                    <div className="flex-grow border-t border-slate-200"></div>
+                  </div>
 
               <div className="grid grid-cols-3 gap-2">
                 <button

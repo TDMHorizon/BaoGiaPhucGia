@@ -7,6 +7,7 @@ import {
   PanelLeftClose,
   RotateCcw,
   ShieldCheck,
+  UserRound,
   Users,
 } from "lucide-react";
 import { useState } from "react";
@@ -115,15 +116,72 @@ type AdminHeaderProps = {
   onToggleNavigation: () => void;
   onAccountManagement: () => void;
   onLogout: () => void;
+  onProfile?: () => void;
 };
 
-export function AdminHeader({ selectedProject, username, canManageAccounts, onToggleNavigation, onAccountManagement, onLogout }: AdminHeaderProps) {
+export function AdminHeader({ selectedProject, username, onToggleNavigation, onLogout, onProfile }: AdminHeaderProps) {
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
 
   return (
     <header className="h-[72px] shrink-0 bg-white border-b border-blue-100 px-4 sm:px-6 flex items-center justify-between gap-4 shadow-[0_1px_4px_rgba(15,75,145,0.06)]">
-      <div className="flex items-center gap-3 min-w-0"><button type="button" onClick={onToggleNavigation} className="h-9 w-9 rounded-lg border border-blue-100 bg-blue-50 flex items-center justify-center text-[#0b4f9c] hover:bg-blue-100 transition-colors" aria-label="Đóng hoặc mở điều hướng" title="Đóng hoặc mở điều hướng"><PanelLeftClose className="h-4 w-4" /></button><div className="min-w-0"><p className="text-[11px] uppercase tracking-[0.14em] text-[#0b4f9c] font-bold">Không gian quản trị</p><h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900 truncate">{selectedProject?.name || "Tổng quan báo giá"}</h1></div></div>
-      <div className="flex items-center gap-3 shrink-0">{selectedProject ? <StatusBadge status={selectedProject.trangThai as TrangThai} /> : <span className="hidden sm:inline text-xs font-medium text-slate-500">Chưa chọn báo giá</span>}<div className="relative"><button type="button" onClick={() => setIsProfileMenuOpen(prev => !prev)} className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-[#0b4f9c] ring-offset-2 transition-colors hover:bg-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-300" aria-label="Mở menu tài khoản" aria-expanded={isProfileMenuOpen}>{(username || "AD").slice(0, 2).toUpperCase()}</button>{isProfileMenuOpen && <div className="absolute right-0 top-11 z-50 w-48 rounded-lg border border-blue-100 bg-white p-1.5 shadow-lg">{canManageAccounts && <button type="button" onClick={() => { setIsProfileMenuOpen(false); onAccountManagement(); }} className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium text-slate-700 transition-colors hover:bg-blue-50 hover:text-[#0b4f9c]"><Users className="h-4 w-4" /><span>Quản lý tài khoản</span></button>}<button type="button" onClick={onLogout} className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium text-slate-700 transition-colors hover:bg-red-50 hover:text-red-600"><LogOut className="h-4 w-4" /><span>Đăng xuất</span></button></div>}</div></div>
+      <div className="flex items-center gap-3 min-w-0">
+        <button
+          type="button"
+          onClick={onToggleNavigation}
+          className="h-9 w-9 rounded-lg border border-blue-100 bg-blue-50 flex items-center justify-center text-[#0b4f9c] hover:bg-blue-100 transition-colors"
+          aria-label="Đóng hoặc mở điều hướng"
+          title="Đóng hoặc mở điều hướng"
+        >
+          <PanelLeftClose className="h-4 w-4" />
+        </button>
+        <div className="min-w-0">
+          <p className="text-[11px] uppercase tracking-[0.14em] text-[#0b4f9c] font-bold">Không gian quản trị</p>
+          <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900 truncate">
+            {selectedProject?.name || "Tổng quan báo giá"}
+          </h1>
+        </div>
+      </div>
+      <div className="flex items-center gap-3 shrink-0">
+        {selectedProject ? (
+          <StatusBadge status={selectedProject.trangThai as TrangThai} />
+        ) : (
+          <span className="hidden sm:inline text-xs font-medium text-slate-500">Chưa chọn báo giá</span>
+        )}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setIsProfileMenuOpen((prev) => !prev)}
+            className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-[#0b4f9c] ring-offset-2 transition-colors hover:bg-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-300"
+            aria-label="Mở menu tài khoản"
+            aria-expanded={isProfileMenuOpen}
+          >
+            {(username || "AD").slice(0, 2).toUpperCase()}
+          </button>
+          {isProfileMenuOpen && (
+            <div className="absolute right-0 top-11 z-50 w-48 rounded-lg border border-blue-100 bg-white p-1.5 shadow-lg">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsProfileMenuOpen(false);
+                  onProfile?.();
+                }}
+                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium text-slate-700 transition-colors hover:bg-blue-50 hover:text-[#0b4f9c]"
+              >
+                <UserRound className="h-4 w-4" />
+                <span>Hồ sơ cá nhân</span>
+              </button>
+              <button
+                type="button"
+                onClick={onLogout}
+                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium text-slate-700 transition-colors hover:bg-red-50 hover:text-red-600"
+              >
+                <LogOut className="h-4 w-4" />
+                <span>Đăng xuất</span>
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
     </header>
   );
 }
